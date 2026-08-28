@@ -13,7 +13,10 @@ import {
   Video
 } from 'lucide-react'
 
-import type { CanvasNodeData } from '@/api/infinite-canvas-client'
+import {
+  canvasGeneratedImageContent,
+  type CanvasNodeData
+} from '@/api/infinite-canvas-client'
 import { cn } from '@/lib/utils'
 import type { CanvasTheme } from './canvas-theme'
 import type { ConnectionHandleType, Position } from './types'
@@ -151,7 +154,9 @@ export const CanvasNode = memo(function CanvasNode({
   // 批量图片（对齐参考 BatchFrame）：images 存全部结果，content 始终为主图。
   const batchImages =
     data.type === 'image' && Array.isArray(metadata.images)
-      ? metadata.images.filter((value): value is string => typeof value === 'string')
+      ? metadata.images
+          .map(canvasGeneratedImageContent)
+          .filter((value): value is string => Boolean(value))
       : []
   const batchCount = batchImages.length
   const isBatchRoot = batchCount > 1

@@ -257,6 +257,15 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
     );`,
   },
+  {
+    // 图片 Provider 协议配置。默认保持 OpenAI Images 兼容协议；APIMart 等异步
+    // 网关通过显式 media_protocol 选择自己的提交/轮询路径，避免按 URL 猜协议。
+    id: '016_add_provider_media_protocol',
+    sql: `ALTER TABLE providers ADD COLUMN media_protocol TEXT NOT NULL DEFAULT 'openai-images';
+    ALTER TABLE providers ADD COLUMN media_model TEXT NOT NULL DEFAULT '';
+    ALTER TABLE providers ADD COLUMN media_resolution TEXT NOT NULL DEFAULT '';
+    ALTER TABLE providers ADD COLUMN media_language TEXT NOT NULL DEFAULT 'en';`,
+  },
 ]
 
 /** 执行所有待执行的迁移 */

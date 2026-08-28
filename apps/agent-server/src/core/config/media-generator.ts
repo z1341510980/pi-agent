@@ -111,12 +111,21 @@ export function defaultImageModelForProtocol(protocol: MediaProtocol | undefined
 }
 
 function recordCandidates(value: unknown): Record<string, unknown>[] {
-  if (!isRecord(value)) return []
-  const candidates: Record<string, unknown>[] = [value]
-  const data = value.data
-  if (isRecord(data)) candidates.push(data)
-  if (Array.isArray(data)) {
-    for (const item of data) if (isRecord(item)) candidates.push(item)
+  const candidates: Record<string, unknown>[] = []
+  const queue: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }]
+  const seen = new Set<object>()
+  while (queue.length) {
+    const item = queue.shift()
+    if (!item || item.depth > 5 || !isRecord(item.value) || seen.has(item.value)) continue
+    seen.add(item.value)
+    candidates.push(item.value)
+    for (const key of ['data', 'result', 'task', 'output', 'response']) {
+      const nested = item.value[key]
+      if (isRecord(nested)) queue.push({ value: nested, depth: item.depth + 1 })
+      else if (Array.isArray(nested)) {
+        for (const child of nested) queue.push({ value: child, depth: item.depth + 1 })
+      }
+    }
   }
   return candidates
 }
@@ -145,9 +154,8 @@ function imageUrlValues(value: unknown): string[] {
   return []
 }
 
-/** Parse both OpenAI `data[].url/b64_json` and APIMart `data.result.images[].url`. */
+/** Parse both OpenAI `data[].url/b64_json` and nested APIMart task results. */
 export function parseImages(value: unknown): string[] {
-  if (!isRecord(value)) return []
   const urls: string[] = []
   const add = (candidate: unknown): void => {
     for (const url of imageUrlValues(candidate)) {
@@ -155,13 +163,14 @@ export function parseImages(value: unknown): string[] {
     }
   }
 
-  add(value.data && !isRecord(value.data) ? value.data : undefined)
-  if (isRecord(value.data)) {
-    add(value.data.images)
-    if (isRecord(value.data.result)) add(value.data.result.images)
+  for (const candidate of recordCandidates(value)) {
+    add(candidate.data)
+    add(candidate.images)
+    add(candidate.result)
+    add(candidate.output)
+    add(candidate.url)
+    add(candidate.image_url)
   }
-  add(value.images)
-  if (isRecord(value.result)) add(value.result.images)
   return urls
 }
 

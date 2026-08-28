@@ -116,66 +116,28 @@ describe('TeamDiscussionEngine', () => {
   it('动作图按节点驱动角色，并允许角色通过 mention 主动接戏', async () => {
     const sceneDraft: ScenePlanDraftHolder = {}
     const scenePlan: ScenePlanToolset = {
-      tools: [createNovelSubmitScenePlanTool(sceneDraft)],
+      tools: [createNovelSubmitScenePlanTool(sceneDraft, { requireActionBeats: true })],
       extractResult: () => sceneDraft.plan ?? null,
     }
-    const turnDrafts: CharacterTurnDraftHolder[] = []
-    const createAgUiSession = vi.fn().mockImplementation(async (input: { tools?: Array<{ name?: string; execute?: (id: string, args: unknown) => Promise<unknown> }> }) => ({
-      session: {
-        prompt: vi.fn().mockImplementation(async () => {
-          const tool = input.tools?.[0]
-          if (tool?.name === 'novel_submit_character_turn') {
-            const args = turnDrafts.length === 0
-              ? {
-                  publicText: '[赵岩抬手挡住门] “先别进来。”',
-                  innerThought: '他担心门外的人已经听见了。',
-                  conflictReading: '门外的脚步声正在逼近。',
-                  responsePlan: '先试探，再决定是否撤离。',
-                  consequence: '门外的人停了一下。',
-                  progress: 'escalate',
-                  mentionNames: ['林晚'],
-                }
-              : {
-                  publicText: '[林晚压低声音] “你终于承认门后有人了。”',
-                  innerThought: '她要借这个破绽逼赵岩说出真相。',
-                  conflictReading: '赵岩正在隐瞒门后的风险。',
-                  responsePlan: '继续施压，让他做出选择。',
-                  consequence: '赵岩失去继续隐瞒的空间。',
-                  progress: 'reveal',
-                  mentionNames: [],
-                }
-            const draft: CharacterTurnDraftHolder = {}
-            turnDrafts.push(draft)
-            const execute = tool.execute
-            if (execute) await execute('turn', args)
-          }
-          return ''
-        }),
-      },
-      streamEmitter: { finishTextMessage: vi.fn() },
-      messageId: `character-${turnDrafts.length + 1}`,
-      dispose: vi.fn(),
-    }))
-    const scene = {
+    const submittedScene = {
       title: '门前对峙',
       location: '旧宅门口',
       time: '夜里',
       conflict: '是否打开门确认来人身份',
       goal: '让赵岩失去隐瞒空间',
       emotion: '警惕升级为逼迫',
-      presentCharacters: ['char-zhao', 'char-lin'],
-      presentCharacterNames: ['赵岩', '林晚'],
+      presentCharacters: ['赵岩', '林晚'],
       actionBeats: [
         {
-          beatId: 'a1', actor: 'char-zhao', target: 'char-lin',
+          beatId: 'a1', actor: '赵岩', target: '林晚',
           pressure: '门外脚步逼近，赵岩不能再装作没有听见',
           action: '赵岩挡住门并试图让林晚保持安静',
           choice: '继续隐瞒或承认门后有危险',
           consequence: '门外的人停下，屋内关系变得紧张',
-          nextActor: 'char-lin', exitCondition: '林晚接住破绽并施压',
+          nextActor: '林晚', exitCondition: '林晚接住破绽并施压',
         },
         {
-          beatId: 'a2', actor: 'char-lin', target: 'char-zhao',
+          beatId: 'a2', actor: '林晚', target: '赵岩',
           pressure: '赵岩的遮掩暴露出新的危险',
           action: '林晚抓住停顿逼赵岩解释',
           choice: '替他保密或逼他说出门后真相',
@@ -184,71 +146,128 @@ describe('TeamDiscussionEngine', () => {
         },
       ],
     }
+    const turnPayloads = [
+      {
+        publicText: '[赵岩抬手挡住门] “先别进来，外面有人。”',
+        innerThought: '他担心门外的人已经听见了刚才那句话。',
+        conflictReading: '门外的脚步声正在逼近。',
+        responsePlan: '先试探，再决定是否撤离。',
+        consequence: '门外的人停了一下，屋里两人都不敢出声。',
+        progress: 'escalate',
+        mentionNames: ['林晚'],
+      },
+      {
+        publicText: '[林晚压低声音] “你终于承认门后有人了。”',
+        innerThought: '她要借这个破绽逼赵岩说出真相。',
+        conflictReading: '赵岩正在隐瞒门后的风险。',
+        responsePlan: '继续施压，让他做出选择。',
+        consequence: '赵岩失去继续隐瞒的空间。',
+        progress: 'reveal',
+        mentionNames: [],
+      },
+    ]
+    // 真实链路断言依赖「谁看到了什么」：按成员记录每次调用的 userMessage。
+    const invocations: Array<{ tools: string[]; userMessage: string }> = []
+    let turnIndex = 0
+    const createAgUiSession = vi.fn().mockImplementation(async (input: {
+      userMessage?: string
+      tools?: Array<{ name?: string; execute?: (id: string, args: unknown) => Promise<unknown> }>
+    }) => {
+      const tools = input.tools ?? []
+      invocations.push({
+        tools: tools.map(tool => tool.name ?? ''),
+        userMessage: String(input.userMessage ?? ''),
+      })
+      const planTool = tools.find(tool => tool.name === 'novel_submit_scene_plan')
+      const turnTool = tools.find(tool => tool.name === 'novel_submit_character_turn')
+      return {
+        session: {
+          prompt: vi.fn().mockImplementation(async () => {
+            if (planTool?.execute) {
+              await planTool.execute('plan-1', { scenes: [submittedScene] })
+              // 工具主路径已实证会返回空 stop：正文为空也必须完成规划。
+              return ''
+            }
+            if (turnTool?.execute) {
+              const payload = turnPayloads[Math.min(turnIndex, turnPayloads.length - 1)]
+              turnIndex++
+              await turnTool.execute(`turn-${turnIndex}`, payload)
+              return ''
+            }
+            return '门在夜色里合着。赵岩的手还压在门板上，掌心的汗把木纹洇出一道深色的印子。'
+              + '林晚没有再往前走，她盯着他的手，等他自己把话说完。门外的脚步停在第三级台阶，'
+              + '不上不下，像是在确认屋里有几个人。赵岩终于松了手，木门弹回一寸,又被他重新按住。'
+              + '他说不出撤离两个字，因为那意味着承认门后的人已经找到了这里。林晚看懂了这个停顿，'
+              + '她的声音压得更低，把那句承认替他说了出来。屋里的空气一下子薄了，两个人都清楚，'
+              + '接下来无论谁先动，都不再有退回去的余地。'
+          }),
+        },
+        streamEmitter: { finishTextMessage: vi.fn() },
+        messageId: `msg-${invocations.length}`,
+        dispose: vi.fn(),
+      }
+    })
     const members = [
       makeMember({ id: 'novel-director', name: '导演' }),
       makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
       makeMember({ id: 'char-zhao', type: 'character', name: '赵岩' }),
       makeMember({ id: 'char-lin', type: 'character', name: '林晚' }),
     ]
+    // 新动作图路径不应读取 acting 的 Moderator 决策：只给 planning 一条 invite。
     const moderator = makeMockModerator([
       { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
-      // 新动作图路径不应读取 acting 的 Moderator 决策；此项只用于 planning 收敛。
-      { type: 'converge', agentId: 'novel-writer', scope: 'chapter', reason: '规划完成' },
     ])
     const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), {
       createAgUiSession,
       logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
     } as any)
     const options = makeOptions({
+      allowLegacyActing: false,
       buildScenePlanToolset: () => scenePlan,
-      buildCharacterTurnToolset: () => {
+      buildCharacterTurnToolset: ({ actionBeatId }) => {
         const draft: CharacterTurnDraftHolder = {}
         return {
-          tools: [createNovelSubmitCharacterTurnTool(draft)],
+          tools: [createNovelSubmitCharacterTurnTool(draft, actionBeatId)],
           extractResult: () => draft.turn ?? null,
         }
       },
     })
 
-    // 直接验证场景转换与新回合工具的闭包协议，避免把 Writer 收尾噪声混入本状态机断言。
-    const converted = (engine as any).toSceneDefinitions([
-      {
-        title: scene.title,
-        location: scene.location,
-        time: scene.time,
-        conflict: scene.conflict,
-        goal: scene.goal,
-        emotion: scene.emotion,
-        presentCharacters: scene.presentCharacterNames,
-        actionBeats: scene.actionBeats.map((beat) => ({
-          ...beat,
-          actor: beat.actor === 'char-zhao' ? '赵岩' : '林晚',
-          target: beat.target === 'char-lin' ? '林晚' : '赵岩',
-          nextActor: beat.nextActor === 'char-lin' ? '林晚' : undefined,
-        })),
-      },
-    ], members)
-    expect(converted[0].actionBeats).toHaveLength(2)
-    expect(converted[0].actionBeats[0].actor).toBe('char-zhao')
+    const result = await engine.run(goal, members, options)
 
-    const turnToolDraft: CharacterTurnDraftHolder = {}
-    const turnTool = createNovelSubmitCharacterTurnTool(turnToolDraft)
-    await (turnTool as any).execute('turn', {
-      publicText: '[赵岩抬手挡住门] “先别进来。”',
-      innerThought: '他担心门外的人已经听见了。',
-      conflictReading: '门外脚步逼近。',
-      responsePlan: '先试探，再撤离。',
-      consequence: '门外的人停了一下。',
-      progress: 'escalate',
-      mentionNames: ['林晚'],
-    })
-    expect(turnToolDraft.turn?.publicText).toContain('先别进来')
-    expect(turnToolDraft.turn?.mentionNames).toEqual(['林晚'])
-    expect(turnToolDraft.turn?.innerThought).toContain('担心')
+    expect(result.status).toBe('completed')
+    // 动作图落地为 canonical member ID
+    expect(result.scenes[0].actionBeats?.map(beat => beat.actor)).toEqual(['char-zhao', 'char-lin'])
+
+    // 正常 acting 不逐回合调用 Moderator：只有 planning 那一次决策
+    expect(result.diagnostics?.totalModeratorInvocations).toBe(1)
+    expect(result.diagnostics?.moderatorExceptionInvocations).toBe(0)
     expect(moderator.degradedRounds).toBe(0)
-    void engine
-    void createAgUiSession
-    void options
+    // 两个节点各一次角色调用；主路径不产生格式纠正调用
+    expect(result.diagnostics?.autonomousCharacterTurns).toBe(2)
+    expect(result.diagnostics?.completedActionBeats).toBe(2)
+    expect(result.diagnostics?.incompleteActionBeats).toBe(0)
+    expect(result.diagnostics?.formatCorrections).toBe(0)
+    // 赵岩的 mention 把林晚拉进 FIFO，而不是等 Moderator 点名
+    expect(result.diagnostics?.autonomousMentions).toBe(1)
+
+    const characterMessages = result.transcript.filter(message => message.type === 'member' && message.fromId.startsWith('char-'))
+    expect(characterMessages.map(message => message.fromId)).toEqual(['char-zhao', 'char-lin'])
+    // 公开气泡只承载 publicText，私有判断挂在 actorTurn 上
+    expect(characterMessages[0].content).toContain('先别进来')
+    expect(characterMessages[0].content).not.toContain('担心门外的人')
+    expect(characterMessages[0].actorTurn?.innerThought).toContain('担心门外的人')
+
+    // 可见性：林晚的 prompt 不含赵岩的私有字段；Writer 能读到
+    const linCall = invocations.find(call => call.tools.includes('novel_submit_character_turn')
+      && call.userMessage.includes('赵岩抬手挡住门'))
+    expect(linCall).toBeDefined()
+    expect(linCall!.userMessage).not.toContain('担心门外的人')
+    expect(linCall!.userMessage).not.toContain('先试探，再决定是否撤离')
+    const writerCall = invocations.find(call => call.userMessage.includes('全章剧本'))
+    expect(writerCall).toBeDefined()
+    expect(writerCall!.userMessage).toContain('担心门外的人')
+    expect(writerCall!.userMessage).toContain('仅 Writer 可见')
   })
 
   it('角色提纲输出会被归一化为动作和台词，不直接流入 Writer', () => {
@@ -2069,5 +2088,424 @@ describe('TeamDiscussionEngine', () => {
     expect(result.transcript.some(m => m.fromId.startsWith('char-') && m.fromId !== 'char-1')).toBe(false)
     // 拦截写入 system 警告，用户与 Moderator 可见
     expect(result.transcript.some(m => m.type === 'system' && m.content.includes('【编排约束】') && m.content.includes('赵父'))).toBe(true)
+  })
+
+  // ───────────────────────── 失败 / 取消 / 旧快照兼容（T5） ─────────────────────────
+
+  /**
+   * 动作图场景的公共装配：默认两个节点、两个角色，节点与角色可按用例覆写。
+   * `turnFor` 决定每次角色回合的产出：返回 null 表示该次调用不提交工具（视为失败）。
+   */
+  function makeActionBeatRun(input: {
+    turnFor: (memberId: string, callIndex: number) => Record<string, unknown> | null
+    scenePlan?: Record<string, unknown>
+    signal?: AbortSignal
+    onSessionCreate?: (memberIdHint: string) => void
+    moderatorDecisions?: ModeratorDecision[]
+    allowLegacyActing?: boolean
+  }): {
+    engine: TeamDiscussionEngine
+    members: DiscussionMember[]
+    options: DiscussionOptions
+    moderator: Moderator
+    createAgUiSession: ReturnType<typeof vi.fn>
+    callsByMember: Map<string, number>
+  } {
+    const sceneDraft: ScenePlanDraftHolder = {}
+    const scenePlanToolset: ScenePlanToolset = {
+      tools: [createNovelSubmitScenePlanTool(sceneDraft, { requireActionBeats: true })],
+      extractResult: () => sceneDraft.plan ?? null,
+    }
+    const submittedScene = input.scenePlan ?? {
+      title: '门前对峙',
+      location: '旧宅门口',
+      time: '夜里',
+      conflict: '是否开门',
+      goal: '让赵岩失去隐瞒空间',
+      presentCharacters: ['赵岩', '林晚'],
+      actionBeats: [
+        {
+          beatId: 'a1', actor: '赵岩', target: '林晚',
+          pressure: '门外脚步逼近', action: '赵岩挡住门',
+          choice: '隐瞒或承认', consequence: '门外的人停下',
+          nextActor: '林晚', exitCondition: '林晚接住破绽',
+        },
+        {
+          beatId: 'a2', actor: '林晚', target: '赵岩',
+          pressure: '遮掩暴露危险', action: '林晚逼他解释',
+          choice: '保密或逼问', consequence: '赵岩失去隐瞒空间',
+          exitCondition: '信息发生变化',
+        },
+      ],
+    }
+    const callsByMember = new Map<string, number>()
+    const turnBeatIds: string[] = []
+    const createAgUiSession = vi.fn().mockImplementation(async (opts: {
+      userMessage?: string
+      tools?: Array<{ name?: string; execute?: (id: string, args: unknown) => Promise<unknown> }>
+    }) => {
+      const tools = opts.tools ?? []
+      const planTool = tools.find(tool => tool.name === 'novel_submit_scene_plan')
+      const turnTool = tools.find(tool => tool.name === 'novel_submit_character_turn')
+      const userMessage = String(opts.userMessage ?? '')
+      // 角色成员没有显式 ID 参数，用 prompt 里的动作节点归属反推当前 actor。
+      const memberId = userMessage.includes('赵岩挡住门') && !userMessage.includes('当前动作节点：a1')
+        ? 'char-lin'
+        : userMessage.includes('当前动作节点：a1') ? 'char-zhao' : 'char-lin'
+      return {
+        session: {
+          prompt: vi.fn().mockImplementation(async () => {
+            if (planTool?.execute) {
+              await planTool.execute('plan', { scenes: [submittedScene] })
+              return ''
+            }
+            if (turnTool?.execute) {
+              const index = callsByMember.get(memberId) ?? 0
+              callsByMember.set(memberId, index + 1)
+              input.onSessionCreate?.(memberId)
+              const payload = input.turnFor(memberId, index)
+              if (!payload) return ''
+              await turnTool.execute('turn', payload)
+              turnBeatIds.push(String(payload.__beatId ?? ''))
+              return ''
+            }
+            return '章节正文'.repeat(60)
+          }),
+        },
+        streamEmitter: { finishTextMessage: vi.fn() },
+        messageId: `msg-${createAgUiSession.mock.calls.length}`,
+        dispose: vi.fn(),
+      }
+    })
+    const members = [
+      makeMember({ id: 'novel-director', name: '导演' }),
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'char-zhao', type: 'character', name: '赵岩' }),
+      makeMember({ id: 'char-lin', type: 'character', name: '林晚' }),
+    ]
+    const moderator = makeMockModerator(input.moderatorDecisions ?? [
+      { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
+      { type: 'next_scene', reason: '继续' },
+    ])
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), {
+      createAgUiSession,
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    } as any)
+    const options = makeOptions({
+      allowLegacyActing: input.allowLegacyActing ?? false,
+      signal: input.signal,
+      buildScenePlanToolset: () => scenePlanToolset,
+      buildCharacterTurnToolset: ({ actionBeatId }) => {
+        const draft: CharacterTurnDraftHolder = {}
+        return {
+          tools: [createNovelSubmitCharacterTurnTool(draft, actionBeatId)],
+          extractResult: () => draft.turn ?? null,
+        }
+      },
+    })
+    return { engine, members, options, moderator, createAgUiSession, callsByMember }
+  }
+
+  const validTurn = (publicText: string, mentionNames: string[] = []): {
+    publicText: string
+    innerThought: string
+    conflictReading: string
+    responsePlan: string
+    consequence: string
+    progress: 'advance'
+    mentionNames: string[]
+  } => ({
+    publicText,
+    innerThought: '内心判断',
+    conflictReading: '阻力判断',
+    responsePlan: '应对方案',
+    consequence: '造成了具体后果',
+    progress: 'advance' as const,
+    mentionNames,
+  })
+
+  it('角色首次未提交回合会重试一次，重试成功则节点正常完成且不惊动 Moderator', async () => {
+    const { engine, members, options, callsByMember } = makeActionBeatRun({
+      // 赵岩第一次不提交工具（空 stop 且无 payload），第二次成功
+      turnFor: (memberId, index) => {
+        if (memberId === 'char-zhao') {
+          return index === 0 ? null : validTurn('[赵岩挡住门] “先别进来。”')
+        }
+        return validTurn('[林晚压低声音] “你承认了。”')
+      },
+    })
+
+    const result = await engine.run(goal, members, options)
+
+    expect(result.status).toBe('completed')
+    // 赵岩被调用两次（首次 + 重试），林晚一次
+    expect(callsByMember.get('char-zhao')).toBe(2)
+    expect(callsByMember.get('char-lin')).toBe(1)
+    // 重试成功 ⇒ 不进入异常仲裁，两个节点都完成
+    expect(result.diagnostics?.moderatorExceptionInvocations).toBe(0)
+    expect(result.diagnostics?.completedActionBeats).toBe(2)
+    expect(result.diagnostics?.autonomousCharacterTurns).toBe(3)
+  })
+
+  it('角色连续两次失败：标记节点失败并交一次 Moderator 仲裁，其余节点继续演出', async () => {
+    const { engine, members, options, callsByMember } = makeActionBeatRun({
+      // 赵岩始终不提交；林晚正常
+      turnFor: memberId => (memberId === 'char-zhao' ? null : validTurn('[林晚压低声音] “你承认了。”')),
+      moderatorDecisions: [
+        { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
+        // 异常仲裁：跳过失败节点继续
+        { type: 'next_scene', reason: '跳过失败节点继续' },
+      ],
+      // 有节点未完成时严格模式会阻断盲写，这里验证「继续演出」本身
+      allowLegacyActing: true,
+    })
+
+    const result = await engine.run(goal, members, options)
+
+    // 首次 + 一次重试，不无界重试
+    expect(callsByMember.get('char-zhao')).toBe(2)
+    // 赵岩失败没有中断整个 run：林晚的节点仍然演出
+    expect(callsByMember.get('char-lin')).toBe(1)
+    expect(result.diagnostics?.characterTurnFailures).toBe(0)
+    expect(result.diagnostics?.completedActionBeats).toBe(1)
+    expect(result.transcript.some(message =>
+      message.type === 'system' && message.content.includes('【动作节点失败】a1'))).toBe(true)
+    expect(result.transcript.some(message =>
+      message.type === 'member' && message.fromId === 'char-lin')).toBe(true)
+  })
+
+  it('AbortSignal 取消后立即结束 acting，不再调用 Moderator 也不盲写正文', async () => {
+    const controller = new AbortController()
+    const { engine, members, options, moderator } = makeActionBeatRun({
+      signal: controller.signal,
+      // 赵岩这一回合触发取消：模拟用户在角色调用期间点停止
+      turnFor: memberId => {
+        if (memberId === 'char-zhao') {
+          controller.abort(new Error('用户手动停止'))
+          throw controller.signal.reason
+        }
+        return validTurn('[林晚压低声音] “你承认了。”')
+      },
+    })
+    const decide = vi.spyOn(moderator, 'decide')
+    const decideCallsBeforeActing = 1 // planning 的那次 invite
+
+    const result = await engine.run(goal, members, options)
+
+    expect(result.status).toBe('cancelled')
+    // 取消后不得再进入异常仲裁：decide 总次数仍是 planning 的那一次
+    expect(decide).toHaveBeenCalledTimes(decideCallsBeforeActing)
+    // 场景计划与已有 transcript 保留，正文不盲写
+    expect(result.scenes).toHaveLength(1)
+    expect(result.content).toBeUndefined()
+  })
+
+  it('严格模式下全部角色失败会显式报错阻断盲写，并带 acting 断点位置', async () => {
+    const { engine, members, options } = makeActionBeatRun({
+      // 两个角色都不提交
+      turnFor: () => null,
+      moderatorDecisions: [
+        { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
+        { type: 'observe', reason: '继续观察' },
+      ],
+      allowLegacyActing: false,
+    })
+
+    const result = await engine.run(goal, members, options)
+
+    expect(result.status).toBe('error')
+    expect(result.error).toContain('阻止 Writer 盲写')
+    expect(result.failedPhase).toBe('acting')
+    expect(result.failedSceneId).toBe(1)
+    // 断点必须带动作节点位置，否则续跑只能整场重演
+    expect(result.failedActionBeatId).toBeTruthy()
+    // 正文没有产出，但场景计划保留供续跑
+    expect(result.content).toBeUndefined()
+    expect(result.scenes[0].actionBeats).toHaveLength(2)
+  })
+
+  it('acting 续跑按 transcript 还原完成度：已演节点不重复，中断节点会重演', async () => {
+    const invoked: string[] = []
+    const createAgUiSession = vi.fn().mockImplementation(async (opts: {
+      userMessage?: string
+      tools?: Array<{ name?: string; execute?: (id: string, args: unknown) => Promise<unknown> }>
+    }) => {
+      const tools = opts.tools ?? []
+      const turnTool = tools.find(tool => tool.name === 'novel_submit_character_turn')
+      const userMessage = String(opts.userMessage ?? '')
+      const beatId = /当前动作节点：(\S+)/.exec(userMessage)?.[1]
+      return {
+        session: {
+          prompt: vi.fn().mockImplementation(async () => {
+            if (turnTool?.execute && beatId) {
+              invoked.push(beatId)
+              await turnTool.execute('turn', validTurn(`[${beatId}] “继续。”`))
+              return ''
+            }
+            return '章节正文'.repeat(60)
+          }),
+        },
+        streamEmitter: { finishTextMessage: vi.fn() },
+        messageId: `resume-${invoked.length}`,
+        dispose: vi.fn(),
+      }
+    })
+    const members = [
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'char-zhao', type: 'character', name: '赵岩' }),
+      makeMember({ id: 'char-lin', type: 'character', name: '林晚' }),
+    ]
+    const engine = new TeamDiscussionEngine(makeMockModerator([]), new AgentChannel(), {
+      createAgUiSession,
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    } as any)
+    const scene = {
+      sceneId: 1,
+      title: '门前对峙',
+      location: '旧宅门口',
+      time: '夜里',
+      goal: '让赵岩失去隐瞒空间',
+      presentCharacters: ['char-zhao', 'char-lin'],
+      presentCharacterNames: ['赵岩', '林晚'],
+      actionBeats: [
+        {
+          beatId: 'a1', actor: 'char-zhao', pressure: '压力', action: '行动',
+          choice: '选择', consequence: '后果', exitCondition: '出口',
+        },
+        {
+          beatId: 'a2', actor: 'char-lin', pressure: '压力', action: '行动',
+          choice: '选择', consequence: '后果', exitCondition: '出口',
+        },
+      ],
+    }
+
+    const result = await engine.resumeSceneActing(
+      goal,
+      members,
+      makeOptions({
+        allowLegacyActing: false,
+        buildCharacterTurnToolset: ({ actionBeatId }) => {
+          const draft: CharacterTurnDraftHolder = {}
+          return {
+            tools: [createNovelSubmitCharacterTurnTool(draft, actionBeatId)],
+            extractResult: () => draft.turn ?? null,
+          }
+        },
+      }),
+      {
+        phase: 'acting',
+        failedSceneId: 1,
+        // 中断发生在 a2；a1 已有带 actorTurn 的角色消息
+        failedActionBeatId: 'a2',
+        transcript: [{
+          id: 'done-a1',
+          fromId: 'char-zhao',
+          fromName: '赵岩',
+          content: '[赵岩挡住门] “先别进来。”',
+          timestamp: 1,
+          type: 'member',
+          sceneId: 1,
+          actorTurn: { ...validTurn('[赵岩挡住门] “先别进来。”'), actionBeatId: 'a1' },
+        }],
+        scenes: [scene],
+      },
+    )
+
+    expect(result.status).toBe('completed')
+    // a1 已在快照里完成 ⇒ 不重演；a2 是中断节点 ⇒ 必须重演
+    expect(invoked).toEqual(['a2'])
+    // 续跑不得改写调用方持有的快照对象
+    expect(scene.actionBeats).toHaveLength(2)
+  })
+
+  it('旧快照无 actionBeats 时走有界 legacy 路径，并标记 legacyPlanScenes', async () => {
+    const members = [
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'char-1', name: '叶明远', type: 'character' }),
+    ]
+    const createAgUiSession = vi.fn().mockImplementation(async (opts: { userMessage: string }) => ({
+      session: {
+        prompt: vi.fn().mockResolvedValue(
+          opts.userMessage.includes('请将以下各场景') || opts.userMessage.includes('请基于群聊记录')
+            ? '章节正文'.repeat(60)
+            : '[叶明远抬头] “这里有刻痕。”',
+        ),
+      },
+      streamEmitter: { finishTextMessage: vi.fn() },
+      messageId: 'legacy',
+      dispose: vi.fn(),
+    }))
+    const moderator = makeMockModerator([
+      { type: 'invite', agentId: 'char-1', prompt: '演出', reason: '角色发言' },
+      { type: 'converge', agentId: 'novel-writer', scope: 'scene', reason: '场景演完' },
+    ])
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), {
+      createAgUiSession,
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    } as any)
+
+    const result = await engine.resumeSceneActing(
+      goal,
+      members,
+      // 旧快照兼容入口显式允许 legacy 轮询
+      makeOptions({ allowLegacyActing: true }),
+      {
+        phase: 'acting',
+        failedSceneId: 1,
+        transcript: [],
+        scenes: [{
+          sceneId: 1,
+          title: '矿道入口',
+          location: '矿道',
+          time: '夜',
+          goal: '进入矿道',
+          presentCharacters: ['char-1'],
+          presentCharacterNames: ['叶明远'],
+          // 旧快照没有 actionBeats
+        }],
+      },
+    )
+
+    expect(result.status).toBe('completed')
+    // legacy 路径仍由 Moderator 驱动，且有界收敛（不无限轮询）
+    expect(result.transcript.some(message => message.type === 'member' && message.fromId === 'char-1')).toBe(true)
+  })
+
+  it('严格模式拒绝没有动作图的场景，不静默回退 Moderator 轮询', async () => {
+    const members = [
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'char-1', name: '叶明远', type: 'character' }),
+    ]
+    const moderator = makeMockModerator([{ type: 'observe', reason: '等待' }])
+    const decide = vi.spyOn(moderator, 'decide')
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), {
+      createAgUiSession: vi.fn(),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    } as any)
+
+    const result = await engine.resumeSceneActing(
+      goal,
+      members,
+      makeOptions({ allowLegacyActing: false }),
+      {
+        phase: 'acting',
+        failedSceneId: 1,
+        transcript: [],
+        scenes: [{
+          sceneId: 1,
+          title: '矿道入口',
+          location: '矿道',
+          time: '夜',
+          goal: '进入矿道',
+          presentCharacters: ['char-1'],
+          presentCharacterNames: ['叶明远'],
+        }],
+      },
+    )
+
+    expect(result.status).toBe('error')
+    expect(result.error).toContain('动作节点')
+    // 严格模式不允许退回 Moderator 轮询
+    expect(decide).not.toHaveBeenCalled()
   })
 })

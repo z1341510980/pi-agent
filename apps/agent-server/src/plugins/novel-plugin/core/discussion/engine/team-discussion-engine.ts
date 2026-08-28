@@ -436,13 +436,24 @@ export class TeamDiscussionEngine {
       const message = err instanceof Error ? err.message : String(err)
       this.context.logger.error({ err }, '群聊引擎异常')
       if (options.signal?.aborted) {
-        return { status: 'cancelled', content: finalContent || undefined, transcript: history, scenes }
+        return {
+          status: 'cancelled',
+          content: finalContent || undefined,
+          transcript: history,
+          scenes,
+          diagnostics: this.buildDiagnosticsSnapshot({ sceneSource, scenes, history, members, planningRetries }),
+        }
       }
       return {
         status: 'error',
         error: message,
         failedPhase: track.phase,
         failedSceneId: this.sceneIdForFailure(track),
+        // acting 中断必须带上动作节点位置，否则续跑只能整场重演。
+        // resumeSceneActing 早已返回该字段，首跑漏了同一口径。
+        failedActionBeatId: this.currentActionBeatSceneId === track.sceneId
+          ? this.currentActionBeatId
+          : undefined,
         content: finalContent || undefined,
         transcript: history,
         scenes,
@@ -452,6 +463,8 @@ export class TeamDiscussionEngine {
       // 先关闭插话通道再收尾：收尾期间（dropped flush 等）新到插话直接拒绝，
       // 不进入无人消费的死队列。
       this.acceptingInterjects = false
+      this.currentActionBeatId = undefined
+      this.currentActionBeatSceneId = undefined
       for (const member of members) {
         this.channel.unsubscribe(channelName, member.id)
       }
@@ -598,30 +611,45 @@ export class TeamDiscussionEngine {
   }): Promise<void> {
     const { history, members, options, channelName, track, scene, activeMembers } = params
     const actionBeats = scene.actionBeats ?? []
-    const resumeAfter = params.failedActionBeatId
-    const failedBeatIndex = resumeAfter
-      ? actionBeats.findIndex(beat => beat.beatId === resumeAfter)
-      : -1
-    const firstBeatIndex = failedBeatIndex >= 0 ? failedBeatIndex + 1 : 0
     const characterMembers = activeMembers.filter(member => member.type === 'character')
     const memberById = new Map(characterMembers.map(member => [member.id, member]))
     const memberByName = new Map(characterMembers.map(member => [this.normalizeCharacterName(member.name), member]))
     const completed = new Set<string>()
     const failed = new Set<string>()
-    // 续跑时，失败节点之前的节点已经写入 transcript，不能再次算作未完成。
-    for (const beat of actionBeats.slice(0, firstBeatIndex)) completed.add(beat.beatId)
+    // 续跑完成度以 transcript 为准，不以 failedActionBeatId 的下标为准。
+    //
+    // failedActionBeatId 只是「中断时正在执行的节点」，它既可能自身失败（未产出
+    // 任何回合），也可能已经完成、错误发生在它触发的 mention 回应里。按下标
+    // 跳到它之后继续，前者会把没演过的节点静默算作已完成，后者会重复演一次。
+    // 每条角色消息都带 actorTurn.actionBeatId，据此还原真实完成集合最可靠。
+    const turnBeatIds = history
+      .filter(message => message.type === 'member' && message.sceneId === scene.sceneId)
+      .map(message => message.actorTurn?.actionBeatId)
+      .filter((beatId): beatId is string => Boolean(beatId))
+    for (const beatId of turnBeatIds) completed.add(beatId)
+    const resumeAfter = params.failedActionBeatId
+    if (resumeAfter && turnBeatIds.length === 0) {
+      // 早期快照的角色消息没有 actorTurn：退回下标口径，但只把「严格早于」
+      // 中断节点的节点算作已完成，保证中断节点本身会被重演而不是被跳过。
+      const failedBeatIndex = actionBeats.findIndex(beat => beat.beatId === resumeAfter)
+      if (failedBeatIndex > 0) {
+        for (const beat of actionBeats.slice(0, failedBeatIndex)) completed.add(beat.beatId)
+      }
+    }
     const edgeCounts = new Map<string, number>()
     let autonomousRounds = 0
     let pending: Array<{ targetId: string; sourceMessageId: string; depth: number }> = []
 
-    for (const actionBeat of actionBeats.slice(firstBeatIndex)) {
+    for (const actionBeat of actionBeats) {
       if (completed.has(actionBeat.beatId)) continue
       if (options.signal?.aborted) throw options.signal.reason ?? new Error('角色演出已取消')
+      // 预算判断必须在发「节点开始」之前：否则会为一个永远不会执行的节点
+      // 推一条开始事件，用户看到的节点数与实际演出不符。
+      if (autonomousRounds >= params.limits.maxRoundsPerScene) break
       track.phase = 'acting'
       this.currentActionBeatId = actionBeat.beatId
       this.currentActionBeatSceneId = scene.sceneId
       this.appendActionBeatSystemMessage(history, options, scene, actionBeat, 'start')
-      if (autonomousRounds >= params.limits.maxRoundsPerScene) break
       const actor = memberById.get(actionBeat.actor)
       if (!actor) {
         failed.add(actionBeat.beatId)
@@ -638,7 +666,7 @@ export class TeamDiscussionEngine {
         continue
       }
 
-      const turn = await this.invokeCharacterTurn(
+      let turn = await this.invokeCharacterTurn(
         actor,
         actionBeat,
         scene,
@@ -647,11 +675,35 @@ export class TeamDiscussionEngine {
         options,
         channelName,
         track,
-        memberByName,
+        memberById,
         undefined,
       )
       autonomousRounds++
       this.autonomousCharacterTurns++
+      if (!turn) {
+        // 单节点允许一次重试（方案 T5）：失败可能只是一次 provider 抖动或
+        // 工具未提交，直接判失败会让整场戏因一次偶发错误缺一个因果环节。
+        // 重试仅此一次，避免退化成无界重试放大调用预算。
+        if (options.signal?.aborted) throw options.signal.reason ?? new Error('角色演出已取消')
+        this.emitProgress(options, 'acting', {
+          type: 'phase_change',
+          data: { message: `${actor.name} 未提交有效回合，正在重试一次动作节点「${actionBeat.beatId}」` },
+        })
+        turn = await this.invokeCharacterTurn(
+          actor,
+          actionBeat,
+          scene,
+          history,
+          members,
+          options,
+          channelName,
+          track,
+          memberById,
+          undefined,
+        )
+        autonomousRounds++
+        this.autonomousCharacterTurns++
+      }
       if (!turn) {
         failed.add(actionBeat.beatId)
         this.appendActionBeatSystemMessage(history, options, scene, actionBeat, 'failed')
@@ -742,7 +794,7 @@ export class TeamDiscussionEngine {
           options,
           channelName,
           track,
-          memberByName,
+          memberById,
           source,
         )
         autonomousRounds++
@@ -774,6 +826,11 @@ export class TeamDiscussionEngine {
           continue
         }
         completed.add(targetBeat.beatId)
+        // 自主回应同样是动作节点的完成凭证：不计数会让 completedActionBeats
+        // 只统计外层 Director 顺序驱动的节点，mention 接戏完成的节点凭空消失，
+        // 5 场景验收基线（完成度 / incompleteActionBeats）随之失真。
+        this.completedActionBeats++
+        this.appendActionBeatSystemMessage(history, options, scene, targetBeat, 'complete')
         const responseMessageId = this.appendCharacterTurn(
           target,
           response,
@@ -803,7 +860,7 @@ export class TeamDiscussionEngine {
       }
     }
 
-    const incomplete = actionBeats.slice(firstBeatIndex).filter(beat => !completed.has(beat.beatId))
+    const incomplete = actionBeats.filter(beat => !completed.has(beat.beatId))
     if (incomplete.length > 0) {
       const decision = await this.interveneForActionBeat(
         `场景「${scene.title}」仍有 ${incomplete.length} 个动作节点未完成：${incomplete.map(beat => beat.beatId).join('、')}`,
@@ -851,7 +908,7 @@ export class TeamDiscussionEngine {
     options: DiscussionOptions,
     channelName: string,
     track: { phase: DiscussionPhase; sceneId?: number },
-    memberByName: Map<string, DiscussionMember>,
+    memberById: Map<string, DiscussionMember>,
     sourceMessage?: DiscussionMessage,
   ): Promise<CharacterTurn | null> {
     const toolset = options.buildCharacterTurnToolset?.({
@@ -895,6 +952,11 @@ export class TeamDiscussionEngine {
       }
       // provider 不支持工具时保留 legacy 文本兼容，但只允许当前角色的公开演出。
       if (raw.trim()) {
+        // nextActor 是 canonical member ID；mentionNames 走显示名口径，
+        // 这里必须按 ID 反查成员名，不能拿 ID 当名字去查 name→member 表。
+        const fallbackMention = actionBeat.nextActor
+          ? memberById.get(actionBeat.nextActor)?.name
+          : undefined
         return {
           publicText: raw.trim(),
           innerThought: '',
@@ -902,9 +964,7 @@ export class TeamDiscussionEngine {
           responsePlan: actionBeat.action,
           consequence: actionBeat.consequence,
           progress: 'advance',
-          mentionNames: actionBeat.nextActor
-            ? [memberByName.get(actionBeat.nextActor)?.name ?? '']
-            : [],
+          mentionNames: fallbackMention ? [fallbackMention] : [],
         }
       }
       return null
@@ -1060,6 +1120,8 @@ export class TeamDiscussionEngine {
       presentCharacters: [...scene.presentCharacters],
       presentCharacterNames: scene.presentCharacterNames ? [...scene.presentCharacterNames] : undefined,
       unresolvedCharacterNames: scene.unresolvedCharacterNames ? [...scene.unresolvedCharacterNames] : undefined,
+      actionBeatInputs: scene.actionBeatInputs ? scene.actionBeatInputs.map(beat => ({ ...beat })) : undefined,
+      actionBeats: scene.actionBeats ? scene.actionBeats.map(beat => ({ ...beat })) : undefined,
     }))
     const channelName = `discuss-resume-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     let finalContent = ''
@@ -1144,6 +1206,10 @@ export class TeamDiscussionEngine {
       presentCharacters: [...scene.presentCharacters],
       presentCharacterNames: scene.presentCharacterNames ? [...scene.presentCharacterNames] : undefined,
       unresolvedCharacterNames: scene.unresolvedCharacterNames ? [...scene.unresolvedCharacterNames] : undefined,
+      // 动作图必须与 resumeChapterWeaving 同口径深拷：浅拷贝会让续跑期间的
+      // 白名单重算/节点裁剪直接改写调用方持有的 resumeState.scenes。
+      actionBeatInputs: scene.actionBeatInputs ? scene.actionBeatInputs.map(beat => ({ ...beat })) : undefined,
+      actionBeats: scene.actionBeats ? scene.actionBeats.map(beat => ({ ...beat })) : undefined,
     }))
     const channelName = `discuss-resume-acting-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const limits = {
@@ -2762,6 +2828,7 @@ ${transcriptDigest}` : ''}`,
         presentCharacterNames: names,
         unresolvedCharacterNames: unmatchedNames,
         actionBeats: this.toActionBeats(input.actionBeats, names, nameToId),
+        actionBeatInputs: input.actionBeats,
         legacyPlan: !input.actionBeats || input.actionBeats.length === 0,
       }
     })
@@ -2900,9 +2967,29 @@ ${transcriptDigest}` : ''}`,
         scene.presentCharacterNames = keptNames
         scene.presentCharacters = keptIds
         scene.unresolvedCharacterNames = []
+        // 白名单是硬约束：动作图必须按裁剪后的在场名单重算。
+        // 否则被拦截角色的 actionBeat 仍带着 canonical ID 留在计划里
+        // （toSceneDefinitions 映射时用的是全量成员表），演出阶段 actor
+        // 查不到成员 → 每个这样的节点都白白触发一次 Moderator 异常仲裁。
+        if (scene.actionBeatInputs?.length) {
+          scene.actionBeats = this.toActionBeats(scene.actionBeatInputs, keptNames, nameToAllowedId)
+        } else if (scene.actionBeats?.length) {
+          scene.actionBeats = scene.actionBeats.filter(beat =>
+            allowedSet.has(beat.actor)
+            && (!beat.target || allowedSet.has(beat.target))
+            && (!beat.nextActor || allowedSet.has(beat.nextActor)),
+          )
+        }
       } else if (scene.presentCharacters.length > 0) {
         // 无名字口径（旧快照）时按 ID 直接过滤
         scene.presentCharacters = scene.presentCharacters.filter(id => allowedSet.has(id))
+        if (scene.actionBeats?.length) {
+          scene.actionBeats = scene.actionBeats.filter(beat =>
+            allowedSet.has(beat.actor)
+            && (!beat.target || allowedSet.has(beat.target))
+            && (!beat.nextActor || allowedSet.has(beat.nextActor)),
+          )
+        }
       }
     }
     if (droppedNames.length > 0) {
@@ -2944,7 +3031,10 @@ ${transcriptDigest}` : ''}`,
       characterTurnCancelled: this.characterTurnCancelled,
       completedActionBeats: this.completedActionBeats,
       totalMemberInvocations: this.totalMemberInvocations,
-      totalModeratorInvocations: this.totalModeratorInvocations,
+      // Moderator 的真实总调用取自 Moderator 自身计数：planning 循环和 legacy
+      // acting 轮询都直接调 decide()，只在引擎侧累加会漏掉这两条路径，
+      // 5 场景基线就无法核对「正常 acting 的 Moderator 调用为 0」。
+      totalModeratorInvocations: Math.max(this.moderator.invocations, this.totalModeratorInvocations),
       totalLlmRoundTrips: this.totalLlmRoundTrips,
       totalDurationMs: this.runStartedAt > 0 ? Date.now() - this.runStartedAt : undefined,
       legacyPlanScenes: scenes.filter(scene => scene.legacyPlan || !scene.actionBeats?.length).length,
@@ -3109,7 +3199,7 @@ ${transcriptDigest}` : ''}`,
       scene.unresolvedCharacterNames = names
         .filter(name => !nameToId.has(this.normalizeCharacterName(name)))
       scene.actionBeats = this.toActionBeats(
-        scene.actionBeats,
+        scene.actionBeatInputs,
         names,
         nameToId,
       )

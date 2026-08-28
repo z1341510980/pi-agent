@@ -746,4 +746,73 @@ describe('useNovelCreationFlow progress', () => {
       })
     ])
   })
+
+  it('角色工具回合覆盖启动占位气泡，公开正文与私有判断分层', async () => {
+    parseSseStreamMock.mockImplementationOnce(
+      async (_body: unknown, onEvent: (event: BaseEvent) => void) => {
+        onEvent({
+          type: 'CUSTOM',
+          name: 'novel:progress',
+          value: {
+            timestamp: 1,
+            type: 'agent_start',
+            phase: 'acting',
+            data: {
+              type: 'agent_start',
+              messageId: 'char-zhao-turn',
+              agentType: 'character',
+              agentName: '赵岩',
+              message: '赵岩 已启动，正在向 AI 发送请求...'
+            }
+          }
+        } as unknown as BaseEvent)
+        // 工具主路径：没有任何 TEXT_MESSAGE_*，终答为空 stop
+        onEvent({
+          type: 'CUSTOM',
+          name: 'novel:progress',
+          value: {
+            timestamp: 2,
+            type: 'agent_output',
+            phase: 'acting',
+            data: {
+              type: 'agent_output',
+              agentType: 'character',
+              agentName: '赵岩',
+              messageId: 'msg-turn-1',
+              content: '[赵岩抬手挡住门] “先别进来，外面有人。”',
+              actorTurn: {
+                innerThought: '他担心门外的人已经听见了。',
+                conflictReading: '门外的脚步声正在逼近。',
+                responsePlan: '先试探，再决定是否撤离。',
+                consequence: '门外的人停了一下。'
+              }
+            }
+          }
+        } as unknown as BaseEvent)
+      }
+    )
+    const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
+    const { result } = renderHook(() => useNovelCreationFlow())
+
+    await act(async () => {
+      await result.current.startCreation('project-1', 1)
+    })
+
+    // 占位被覆盖：只有一条角色气泡，且已结束 streaming
+    expect(result.current.agentOutputs).toHaveLength(1)
+    expect(result.current.agentOutputs[0]).toMatchObject({
+      agentType: 'character',
+      agentName: '赵岩',
+      streaming: false
+    })
+    // 公开正文进气泡内容；私有判断只在 actorTurn 里，不混入 content
+    expect(result.current.agentOutputs[0].content).toContain('先别进来')
+    expect(result.current.agentOutputs[0].content).not.toContain('担心门外的人')
+    expect(result.current.agentOutputs[0].actorTurn).toMatchObject({
+      innerThought: '他担心门外的人已经听见了。',
+      responsePlan: '先试探，再决定是否撤离。'
+    })
+    // 角色演出不得进入章节正文
+    expect(result.current.chapterContent).toBe('')
+  })
 })

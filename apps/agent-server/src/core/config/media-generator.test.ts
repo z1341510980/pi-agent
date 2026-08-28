@@ -90,6 +90,71 @@ describe('media generator', () => {
     }
   })
 
+  it('submits APIMart tasks with resolution and resolves nested task results', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.useFakeTimers()
+    const configuredDb = new Database(':memory:')
+    runMigrations(configuredDb)
+    const configuredStore = new ProviderConfigStore(configuredDb)
+    configuredStore.upsert({
+      id: 'apimart',
+      name: 'APIMart',
+      baseUrl: 'https://api.apimart.example',
+      apiKey: 'apimart-test-key',
+      api: 'openai-completions',
+      models: [{ id: 'chat-model', name: 'Chat model' }],
+      mediaProtocol: 'apimart',
+      mediaResolution: '2k',
+      mediaLanguage: 'zh'
+    })
+    configuredStore.setDefaultProviderId('apimart')
+    const response = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+    fetchMock
+      .mockResolvedValueOnce(response({ data: { task_id: 'task-1', status: 'processing' } }, 202))
+      .mockResolvedValueOnce(
+        response({
+          data: {
+            result: {
+              status: 'succeeded',
+              images: [{ url: 'https://cdn.apimart.example/image.png' }]
+            }
+          }
+        })
+      )
+
+    try {
+      const resultPromise = createMediaGenerator(configuredStore).generateImage({
+        prompt: 'a paper crane',
+        size: '1024x1024'
+      })
+      await vi.advanceTimersByTimeAsync(2_000)
+      await expect(resultPromise).resolves.toEqual({
+        images: ['https://cdn.apimart.example/image.png']
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(fetchMock.mock.calls[1][0]).toBe(
+        'https://api.apimart.example/v1/tasks/task-1?language=zh'
+      )
+      const request = fetchMock.mock.calls[0][1] as RequestInit
+      expect(JSON.parse(String(request.body))).toMatchObject({
+        model: 'gpt-image-2',
+        size: '1:1',
+        resolution: '2k',
+        n: 1
+      })
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+      configuredDb.close()
+    }
+  })
+
   it('uses image edits when generation receives reference images', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

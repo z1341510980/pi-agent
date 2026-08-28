@@ -1484,20 +1484,36 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           }
           // 角色结构化工具回合：publicText 作为正文气泡，私有判断放进同一气泡的
           // actorTurn 字段，由 ConversationMessage 的可展开区渲染；不混入章节正文。
+          //
+          // 与 Director 同一问题：角色走工具主路径时终答可能是空 stop，既没有
+          // TEXT_MESSAGE_* 也就没人关闭 agent_start 的「已启动」占位气泡。
+          // 必须覆盖该占位，否则每个角色回合都会留下一条永久 streaming 的空气泡，
+          // 再加一条真实气泡（重复且看似卡死）。
           if (data?.type === 'agent_output' && data.agentType === 'character' && typeof data.content === 'string') {
             const content = data.content
             const actorTurn = data.actorTurn
-            setAgentOutputs((prev) => [
-              ...prev,
-              {
-                agentType: 'character',
+            setAgentOutputs((prev) => {
+              const placeholderIndex = prev.findLastIndex(
+                (output) => output.agentType === 'character' && output.streaming && !output.hasStreamedText
+              )
+              const next = {
+                agentType: 'character' as const,
                 agentName: data.agentName ?? '角色',
                 content,
                 preview: content.slice(0, 200),
-                timestamp: nextTimelineTimestamp(evt.timestamp),
                 actorTurn,
+                streaming: false
               }
-            ])
+              if (placeholderIndex !== -1) {
+                const updated = [...prev]
+                updated[placeholderIndex] = { ...updated[placeholderIndex], ...next }
+                return updated
+              }
+              return [
+                ...prev,
+                { ...next, timestamp: nextTimelineTimestamp(evt.timestamp) }
+              ]
+            })
             return
           }
           // 群聊过程事件：scene_change（场景切换）→ 创建 director 系统气泡

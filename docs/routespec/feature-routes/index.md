@@ -16,12 +16,12 @@
 | agent-server 骨架与 Agent 运行时 | [agent-server-runtime.md](agent-server-runtime.md) | createApp 组装、Pi Agent 会话运行时 |
 | 插件系统 | [plugin-system.md](plugin-system.md) | 宿主插件机制、生命周期、capability 门禁 |
 | REST/SSE API 路由层 | [api-routes.md](api-routes.md) | `/api/*` 各业务路由文件 |
-| novel 业务插件 | [novel-plugin.md](novel-plugin.md) | 小说创作全链路（编排、章节、账本等） |
+| novel 业务插件 | [novel-plugin.md](novel-plugin.md) | 小说创作全链路（编排、章节、群聊演绎、账本等） |
 | 桌面宿主 | [desktop-app.md](desktop-app.md) | Electron 主进程、嵌入 server、renderer |
 | workspace 共享包 | [packages.md](packages.md) | shared / protocol / config |
 | infinite-canvas 插件 | [api-routes.md](api-routes.md) | 画布项目、媒体配置、图片生成与编辑 |
 
 ---
 
-last-updated: 2026-08-25（route-sync 首次创建）
+last-updated: 2026-08-28（novel-plugin 补入群聊共创演绎链路条目）
 覆盖状态：partial —— 仅记录首次扫描确认的定位信息，各条目待后续任务触碰时回填。

@@ -236,6 +236,48 @@ describe('buildConversationMessages：实时流', () => {
       role: 'user'
     })
   })
+
+  it('角色回合的私有判断进可展开区，公开正文不掺入私有字段', () => {
+    const actorTurn = {
+      innerThought: '他担心门外的人已经听见了。',
+      conflictReading: '门外的脚步声正在逼近。',
+      responsePlan: '先试探，再决定是否撤离。',
+      consequence: '门外的人停了一下。'
+    }
+    const messages = buildConversationMessages(baseInput({
+      agentOutputs: [makeAgentOutput({
+        messageId: 'turn-1',
+        agentType: 'character',
+        agentName: '赵岩',
+        streaming: false,
+        content: '[赵岩抬手挡住门] “先别进来。”',
+        actorTurn
+      })]
+    }))
+
+    const bubble = messages.find((m) => m.id === 'agent-turn-1')
+    expect(bubble).toBeDefined()
+    expect(bubble!.agentType).toBe('character')
+    // 私有字段以 details 折叠区呈现，四项齐全
+    expect(bubble!.content).toContain('<details><summary>角色判断与应对</summary>')
+    expect(bubble!.content).toContain('**内心判断**：他担心门外的人已经听见了。')
+    expect(bubble!.content).toContain('**冲突判断**：门外的脚步声正在逼近。')
+    expect(bubble!.content).toContain('**应对方案**：先试探，再决定是否撤离。')
+    expect(bubble!.content).toContain('**即时后果**：门外的人停了一下。')
+    // 公开演出仍在正文区（折叠区之前）
+    expect(bubble!.content.indexOf('先别进来')).toBeLessThan(bubble!.content.indexOf('<details>'))
+    // 结构化字段同时保留给组件层
+    expect(bubble!.actorTurn).toEqual(actorTurn)
+  })
+
+  it('无 actorTurn 的普通气泡不追加折叠区', () => {
+    const messages = buildConversationMessages(baseInput({
+      agentOutputs: [makeAgentOutput({ messageId: 'plain', streaming: false, content: '普通正文' })]
+    }))
+    const bubble = messages.find((m) => m.id === 'agent-plain')
+    expect(bubble!.content).toBe('普通正文')
+    expect(bubble!.actorTurn).toBeUndefined()
+  })
 })
 
 describe('buildConversationMessages：检查点与终态', () => {

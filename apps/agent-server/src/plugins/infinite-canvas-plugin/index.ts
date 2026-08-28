@@ -19,6 +19,10 @@ import {
   summarizeCanvasAgentOperations,
   type CanvasAgentOperation
 } from './agent-ops.js'
+import {
+  formatCanvasGenerationContext,
+  type CanvasGenerationContext
+} from './generation-context.js'
 
 const NODE_TYPE_LIST: Array<AnyCanvasNodeType> = [
   'image',
@@ -173,11 +177,13 @@ export function createInfiniteCanvasPlugin(): Plugin {
 
       for (const route of createInfiniteCanvasRoutes(
         store,
-        async ({ prompt, mode, context: graphContext }) => {
+        async ({ prompt, mode, context: graphContext, resourceContext }) => {
+          const structuredContext = formatCanvasGenerationContext(resourceContext)
+          const contextText = [graphContext, structuredContext].filter(Boolean).join('\n\n')
           const session = await context.createSession({
             systemPrompt:
               '你是无限画布里的创作助手。根据提示词和画布上下文输出可直接使用的结果，只输出正文，不要解释过程，不要使用 Markdown 代码围栏。',
-            userMessage: `${graphContext ? `画布上下文：\n${graphContext}\n\n` : ''}任务类型：${mode ?? 'text'}\n\n${prompt}`,
+            userMessage: `${contextText ? `画布上下文：\n${contextText}\n\n` : ''}任务类型：${mode ?? 'text'}\n\n${prompt}`,
             tools: [],
             timeoutMs: 120000
           })

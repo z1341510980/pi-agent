@@ -118,6 +118,56 @@ describe('provider route createOnly 冲突保护', () => {
     expect(openai.name).toBe('OpenAI 已更新')
   })
 
+  it('编辑时空 API Key 和省略媒体字段会保留已有配置', async () => {
+    const seed = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      body: {
+        ...baseConfig,
+        id: 'partial-update-provider',
+        mediaProtocol: 'apimart',
+        mediaModel: 'gpt-image-2',
+        mediaResolution: '2k',
+        mediaLanguage: 'zh'
+      }
+    })
+    expect(seed.statusCode).toBe(200)
+    expect(app.providerConfigStore.getApiKey('partial-update-provider')).toBe(baseConfig.apiKey)
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      body: {
+        ...baseConfig,
+        id: 'partial-update-provider',
+        name: '部分更新后',
+        apiKey: ''
+      }
+    })
+    expect(response.statusCode).toBe(200)
+
+    const saved = app.providerConfigStore.get('partial-update-provider')
+    expect(saved?.apiKey).toBe(baseConfig.apiKey)
+    expect(saved?.mediaProtocol).toBe('apimart')
+    expect(saved?.mediaModel).toBe('gpt-image-2')
+    expect(saved?.mediaResolution).toBe('2k')
+    expect(saved?.mediaLanguage).toBe('zh')
+  })
+
+  it('新增 Provider 仍拒绝空 API Key', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      body: {
+        ...baseConfig,
+        id: 'empty-key-provider',
+        apiKey: '',
+        createOnly: true
+      }
+    })
+    expect(response.statusCode).toBe(400)
+  })
+
   it('createOnly 标记不会持久化到 store（GET 列表不含该字段）', async () => {
     const listRes = await app.inject({ method: 'GET', url: '/api/providers' })
     const all = listRes.json().data as Array<Record<string, unknown>>

@@ -67,7 +67,8 @@ const providerConfigSchema = z.object({
   id: z.string().min(1).optional(),
   name: z.string().min(1),
   baseUrl: z.string().url(),
-  apiKey: z.string().min(1),
+  // 编辑已有 Provider 时允许前端留空，后端会保留数据库中的旧 Key；新增仍由下方显式校验。
+  apiKey: z.string(),
   api: z.string().min(1),
   authHeader: z.boolean().optional(),
   models: z.array(providerModelSchema).min(1),
@@ -102,11 +103,12 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
     if (!config) return
 
     const id = config.id ?? `provider-${randomUUID()}`
+    const existing = store.get(id)
 
     // 新增模式（createOnly）下，若 id 已存在则拒绝写入。
     // 这是后端兜底防线：即使前端 id 派生/去重逻辑有遗漏，
     // 也不会让"新增 Provider"意外覆盖已有 Provider（如默认 Provider）的数据。
-    if (config.createOnly && store.get(id)) {
+    if (config.createOnly && existing) {
       throw new AppError(
         ErrorCode.CONFLICT,
         `Provider "${id}" 已存在，新增被拒绝。请更换名称，或直接编辑该 Provider`,
@@ -114,8 +116,28 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
       )
     }
 
-    // createOnly 仅用于请求语义，不持久化到 store
-    const { createOnly: _createOnly, ...persistConfig } = { ...config, id }
+    // 编辑已有 Provider 时，前端不会回传脱敏后的 Key；空值表示沿用旧 Key。
+    // 新增 Provider 仍必须提供 Key，避免把不可用凭据写入运行时注册表。
+    const apiKey = config.apiKey.trim() || existing?.apiKey
+    if (!apiKey) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        'API Key 不能为空（编辑已有 Provider 时可留空以保留原 Key）',
+        400
+      )
+    }
+
+    // createOnly 仅用于请求语义，不持久化到 store。媒体字段同样采用部分更新语义，
+    // 省略字段时保留已有配置，避免编辑聊天模型时重置图片协议。
+    const { createOnly: _createOnly, ...persistConfig } = {
+      ...config,
+      id,
+      apiKey,
+      mediaProtocol: config.mediaProtocol ?? existing?.mediaProtocol,
+      mediaModel: config.mediaModel ?? existing?.mediaModel,
+      mediaResolution: config.mediaResolution ?? existing?.mediaResolution,
+      mediaLanguage: config.mediaLanguage ?? existing?.mediaLanguage
+    }
 
     // 1. 存入 ProviderConfigStore（供 fallback resolver 读取 API Key）
     store.upsert(persistConfig)
@@ -124,7 +146,7 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
     modelRegistry.registerProvider(id, {
       name: config.name,
       baseUrl: normalizeProviderBaseUrl(config.api, config.baseUrl),
-      apiKey: config.apiKey,
+      apiKey,
       api: config.api,
       authHeader: config.authHeader ?? true,
       models: config.models.map(mapToSdkModel),
@@ -132,7 +154,7 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
 
     // 3. 注入 API Key 到 ModelRuntime（runtime override，异步）
     //    使 getAvailable() 能返回此 Provider 的模型，且 LLM 调用能直接使用此 Key
-    await modelRuntime.setRuntimeApiKey(id, config.apiKey)
+    await modelRuntime.setRuntimeApiKey(id, apiKey)
 
     // 4. 使 Session 缓存失效：空闲会话立即重建，正在跑的 run 标记为 stale，
     //    等本轮结束后按新配置重建（不打断用户对话）。

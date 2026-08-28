@@ -3,6 +3,48 @@ import { deleteApi, getApi, patchApi, postApi, putApi } from './http-client'
 export type CanvasNodeType = 'image' | 'text' | 'config' | 'video' | 'audio' | 'group'
 export type CanvasBackgroundMode = 'dots' | 'lines' | 'blank'
 
+export type CanvasGenerationResourceKind = 'text' | 'image' | 'video' | 'audio'
+
+export interface CanvasGenerationReference {
+  nodeId: string
+  title: string
+  kind: CanvasGenerationResourceKind
+  label?: string
+  text?: string
+  dataUrl?: string
+  url?: string
+  storageKey?: string
+  mimeType?: string
+  bytes?: number
+  width?: number
+  height?: number
+  durationMs?: number
+}
+
+export interface CanvasGenerationContext {
+  text: CanvasGenerationReference[]
+  images: CanvasGenerationReference[]
+  videos: CanvasGenerationReference[]
+  audios: CanvasGenerationReference[]
+}
+
+export interface CanvasGeneratedImage {
+  id: string
+  content: string
+  status: 'idle' | 'success' | 'loading' | 'error'
+  errorDetails?: string
+  storageKey?: string
+  naturalWidth?: number
+  naturalHeight?: number
+  bytes?: number
+  mimeType?: string
+}
+
+/** 兼容旧版 images: string[] 与新版对象化批量图片元数据。 */
+export function canvasGeneratedImageContent(value: CanvasGeneratedImage | string): string {
+  return typeof value === 'string' ? value : value.content
+}
+
 /** 画布节点元数据（与参考项目 basketikun/infinite-canvas 对齐的字段子集）。 */
 export interface CanvasNodeMetadata {
   content?: string
@@ -13,12 +55,25 @@ export interface CanvasNodeMetadata {
   fontSize?: number
   generationMode?: 'text' | 'image' | 'video' | 'audio'
   model?: string
+  providerId?: string
   size?: string
+  quality?: string
+  background?: string
+  count?: number
+  seconds?: number
+  voice?: string
+  format?: string
+  speed?: number
+  generateAudio?: boolean
+  watermark?: boolean
   naturalWidth?: number
   naturalHeight?: number
   bytes?: number
   mimeType?: string
   durationMs?: number
+  storageKey?: string
+  images?: Array<CanvasGeneratedImage | string>
+  primaryImageId?: string
   groupId?: string
   freeResize?: boolean
   [key: string]: unknown
@@ -142,7 +197,13 @@ export async function saveCanvasGraph(
 
 export async function generateCanvasText(
   projectId: string,
-  payload: { nodeId?: string; prompt: string; mode?: string; context?: string },
+  payload: {
+    nodeId?: string
+    prompt: string
+    mode?: string
+    context?: string
+    resourceContext?: CanvasGenerationContext
+  },
   options?: { signal?: AbortSignal }
 ): Promise<{ text: string }> {
   return postApi<{ text: string }>(
@@ -158,9 +219,13 @@ export async function generateCanvasImage(
     nodeId?: string
     prompt: string
     context?: string
+    resourceContext?: CanvasGenerationContext
     references?: string[]
     model?: string
+    providerId?: string
     size?: string
+    quality?: string
+    background?: string
     count?: number
   },
   options?: { signal?: AbortSignal }
@@ -177,12 +242,17 @@ export async function generateCanvasMedia(
   payload: {
     mode: 'audio' | 'video'
     prompt: string
+    context?: string
+    resourceContext?: CanvasGenerationContext
     model?: string
+    providerId?: string
     voice?: string
     format?: string
     speed?: number
     size?: string
     seconds?: number
+    generateAudio?: boolean
+    watermark?: boolean
   },
   options?: { signal?: AbortSignal }
 ): Promise<{ outputs: Array<{ url: string; mimeType: string }> }> {

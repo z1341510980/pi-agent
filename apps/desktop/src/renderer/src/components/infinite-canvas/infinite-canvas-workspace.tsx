@@ -41,10 +41,12 @@ import {
   renameCanvasProject,
   reverseCanvasPrompt,
   saveCanvasGraph,
+  canvasGeneratedImageContent,
   type CanvasGraphPayload,
   type CanvasNodeRow,
   type CanvasProject,
   type CanvasProjectSettings,
+  type CanvasGeneratedImage,
   type CanvasNodeData as ApiCanvasNodeData,
   type ViewportTransform
 } from '@/api/infinite-canvas-client'
@@ -93,6 +95,10 @@ import {
 import { CanvasAssetLibrary, saveCanvasAsset, type CanvasAsset } from './asset-library'
 import { CanvasAgentPanel } from './canvas-agent-panel'
 import { MediaConfigDialog } from './media-config-dialog'
+import {
+  buildCanvasGenerationContext,
+  withHydratedImageReferences
+} from './generation-context'
 
 type LocalNode = ApiCanvasNodeData
 type LocalConnection = { id: string; fromNodeId: string; toNodeId: string }
@@ -1822,40 +1828,17 @@ export function InfiniteCanvasWorkspace({
       const generationMode =
         mode === 'image' || mode === 'video' || mode === 'audio' || mode === 'text' ? mode : 'text'
 
-      const upstream = connectionsRef.current
-        .filter((connection) => connection.toNodeId === nodeId)
-        .map((connection) => nodesRef.current.find((node) => node.id === connection.fromNodeId))
-        .filter((node): node is LocalNode => Boolean(node))
-        .map((node) => {
-          if (node.type === 'image') return `${node.title}: [图片参考]`
-          return `${node.title}: ${typeof node.metadata?.content === 'string' ? node.metadata.content.slice(0, 4000) : ''}`
-        })
-        .filter((line) => line.endsWith(': ') === false)
-        .join('\n')
-
-      // 对齐参考：config 节点无提示词但存在上游输入时，直接汇总上游交给 Agent。
-      // @[node:id] 引用标记在发送前解析为「标题: 内容」。
+      // 资源上下文统一按「直接上游 / 配置节点转发 / @[node:id] 精确引用」构建，
+      // 避免把视频、音频和图片混成一段不可消费的字符串。
       const storedPrompt = prompt.trim()
-      const effectivePrompt =
-        resolvePromptReferences(storedPrompt).trim() ||
-        (upstream.trim() ? '根据已连接的上游内容执行本次生成任务。' : '')
+      const builtContext = buildCanvasGenerationContext(
+        nodeId,
+        nodesRef.current,
+        connectionsRef.current,
+        storedPrompt
+      )
+      const effectivePrompt = builtContext.prompt
       if (!effectivePrompt) return
-
-      const upstreamImages =
-        generationMode === 'image'
-          ? await Promise.all(
-              connectionsRef.current
-                .filter((connection) => connection.toNodeId === nodeId)
-                .map((connection) => nodesRef.current.find((node) => node.id === connection.fromNodeId))
-                .filter(
-                  (node): node is LocalNode =>
-                    Boolean(node && node.type === 'image' && typeof node.metadata?.content === 'string' && node.metadata.content)
-                )
-                .map(async (node) =>
-                  imageContentAsDataUrl(typeof node.metadata?.content === 'string' ? node.metadata.content : '')
-                )
-            )
-          : []
 
       generationControllersRef.current.get(nodeId)?.abort()
       const controller = new AbortController()
@@ -1883,6 +1866,20 @@ export function InfiniteCanvasWorkspace({
         const meta = source.metadata ?? {}
         const sizeValue =
           typeof meta.size === 'string' && meta.size !== 'auto' ? meta.size : undefined
+        const requestContext =
+          generationMode === 'image'
+            ? withHydratedImageReferences(
+                builtContext.context,
+                await Promise.all(
+                  builtContext.context.images.map((reference) =>
+                    imageContentAsDataUrl(reference.dataUrl || reference.url || '')
+                  )
+                )
+              )
+            : builtContext.context
+        const imageReferences = requestContext.images
+          .map((reference) => reference.dataUrl)
+          .filter((value): value is string => Boolean(value?.startsWith('data:image/')))
         const result =
           generationMode === 'image'
             ? await generateCanvasImage(
@@ -1890,10 +1887,14 @@ export function InfiniteCanvasWorkspace({
                 {
                   nodeId,
                   prompt: effectivePrompt,
-                  context: upstream,
-                  references: upstreamImages.filter(Boolean),
+                  context: builtContext.contextText,
+                  resourceContext: requestContext,
+                  references: imageReferences,
                   model: typeof meta.model === 'string' ? meta.model : undefined,
+                  providerId: typeof meta.providerId === 'string' ? meta.providerId : undefined,
                   size: sizeValue,
+                  quality: typeof meta.quality === 'string' ? meta.quality : undefined,
+                  background: typeof meta.background === 'string' ? meta.background : undefined,
                   count:
                     Number(meta.count) > 0 ? Math.min(4, Math.floor(Number(meta.count))) : undefined
                 },
@@ -1905,7 +1906,10 @@ export function InfiniteCanvasWorkspace({
                   {
                     mode: generationMode,
                     prompt: effectivePrompt,
+                    context: builtContext.contextText,
+                    resourceContext: requestContext,
                     model: typeof meta.model === 'string' ? meta.model : undefined,
+                    providerId: typeof meta.providerId === 'string' ? meta.providerId : undefined,
                     voice: typeof meta.voice === 'string' ? meta.voice : undefined,
                     format: typeof meta.format === 'string' ? meta.format : undefined,
                     speed: Number(meta.speed) > 0 ? Number(meta.speed) : undefined,
@@ -1913,19 +1917,28 @@ export function InfiniteCanvasWorkspace({
                     seconds:
                       generationMode === 'video' && Number(meta.seconds) > 0
                         ? Number(meta.seconds)
-                        : undefined
+                        : undefined,
+                    generateAudio:
+                      typeof meta.generateAudio === 'boolean' ? meta.generateAudio : undefined,
+                    watermark: typeof meta.watermark === 'boolean' ? meta.watermark : undefined
                   },
                   { signal: controller.signal }
                 )
               : await generateCanvasText(
                   project.id,
-                  { nodeId, prompt: effectivePrompt, mode: generationMode, context: upstream },
+                  {
+                    nodeId,
+                    prompt: effectivePrompt,
+                    mode: generationMode,
+                    context: builtContext.contextText,
+                    resourceContext: requestContext
+                  },
                   { signal: controller.signal }
                 )
         if (controller.signal.aborted) return
         const images =
           generationMode === 'image' && 'images' in result && Array.isArray(result.images)
-            ? (result.images as string[])
+            ? result.images.filter((value): value is string => typeof value === 'string' && value.length > 0)
             : []
         if (images.length > 0) {
           // 对齐参考批量堆叠：多图结果落进单个节点的 images 批次，主图 + 可展开网格。

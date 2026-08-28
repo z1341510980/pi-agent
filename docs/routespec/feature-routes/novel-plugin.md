@@ -18,13 +18,32 @@
 
 ### 章节创作流程（SSE）
 
-- 描述：三条触发路径——`create-flow`（手动编排矩阵）、`ai-arrange`（AI 编排后确认再创作）、`create-team`（同步兼容入口）；Director → Writer → 质量门 → 盲审/Reviewer → 检查点 → Reviser/Memory。
+- 描述：三条触发路径——`create-flow`（手动编排矩阵）、`ai-arrange`（AI 编排后确认再创作）、`create-team`（同步兼容入口）；Director → Writer → 质量门 → 盲审/Reviewer → 检查点 → Reviser/Memory。群聊路径（`discuss-flow`）另见「群聊共创演绎链路」。
 - 入口：HTTP `POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/create-flow` 等
 - 核心：`routes/creation-flow-routes.ts`（SSE 与检查点决策）、`core/novel-orchestrator.ts`（createChapterWithFlow）
 - 测试：`apps/agent-server/src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts`
 - 备注：检查点决策经 `POST .../checkpoint/:type/decision` + EventEmitter 传递；群聊演绎链路诊断见 `docs/novel/2026-08-24-群聊演绎链路诊断与修复方案.md`。
 - 覆盖：partial
 - last-updated: 2026-08-25
+
+### 群聊共创演绎链路（动作图 + 自主 mention）
+
+- 描述：Director 通过 `novel_submit_scene_plan` 提交「场景 + 戏剧动作节点图（actionBeats）」，acting 阶段由动作节点驱动角色，角色用 `novel_submit_character_turn` 提交结构化回合（公开 `publicText` + 私有 `innerThought`/`conflictReading`/`responsePlan`）并可 `mentionNames` 主动请求同场角色接戏，引擎按 pending FIFO 唤醒。正常 acting 不逐回合调用 Moderator，Moderator 仅在 actor 不在场、回合无效、节点无进展、动作图耗尽等异常时介入一次仲裁。角色回合失败允许单次重试；AbortSignal 取消立即结束且不再调 Moderator；严格模式（`allowLegacyActing: false`）下节点未完成会显式报错阻断 Writer 盲写。旧快照无 actionBeats 时走有界 legacy `Moderator → actor` 轮询。
+- 入口：HTTP `POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/discuss-flow`（SSE）、`POST .../discuss-flow/resume`
+- 核心：
+  - `core/discussion/engine/team-discussion-engine.ts`（`runSceneLoop` / `runActionBeatScene` 动作节点状态机、`invokeCharacterTurn` 工具主路径 + 单次重试、`enqueueCharacterMentions` 去环与预算、`interveneForActionBeat` 异常仲裁、`applyCastWhitelist` 白名单重算动作图、`formatTranscriptForMember` 可见性裁剪、`buildDiagnosticsSnapshot` 调用统计）
+  - `core/discussion/engine/discussion-types.ts`（`SceneActionBeat` / `SubmittedActionBeatInput`（角色显示名口径）/ `CharacterTurn` / `DiscussionDiagnostics` / `DiscussionResumeState.failedActionBeatId`）
+  - `core/discussion/engine/moderator.ts`（`novel_submit_moderator_decision` 工具主路径 + 一次文本修复轮 + 规则 fallback 计数）
+  - `core/tools/submit.ts`（`createNovelSubmitScenePlanTool`（`requireActionBeats` 切换 schema）、`createNovelSubmitCharacterTurnTool`、`createNovelSubmitModeratorDecisionTool`）
+  - `core/discussion/novel-discussion-runner.ts`（成员构建、三个 toolset 工厂、`allowLegacyActing: false`）
+  - `core/discussion/discussion-run-store.ts`（`failed_action_beat_id` 断点持久化）
+  - 提示词：`core/prompts/role-director-discussion.md`（动作图契约）、`role-character-actor.md`（结构化回合）、`role-writer-discussion.md`（读取私有回合）
+- 前端：`apps/desktop/src/renderer/src/hooks/use-novel-creation-flow.ts`（`agent_output` 消费：Director/角色工具气泡覆盖 `agent_start` 启动占位）、`hooks/use-conversation-messages.ts`（`actorTurn` → `<details>` 可展开区，私有字段不进章节正文）
+- 测试：`__tests__/team-discussion-engine.test.ts`（动作图端到端、mention FIFO、可见性隔离、失败重试、取消、全失败阻断盲写、续跑按 transcript 还原完成度、legacy 有界路径）、`__tests__/moderator.test.ts`、`__tests__/novel-discussion-runner.test.ts`、`apps/desktop/.../hooks/__tests__/use-novel-creation-flow.test.ts`、`hooks/__tests__/use-conversation-messages.test.ts`
+- 备注：工具主路径已实证会在工具结果后返回空 stop（gpt-5.6-luna），引擎只认闭包 payload、前端靠 `agent_output` 覆盖占位，两侧都不能依赖 `prompt()` 文本。`diagnostics` 目前只在后端 `DiscussionResult` 上，尚未透出到 `CreationResult` 供 UI 展示。方案见 `docs/routespec/2026-08-27-discussion-rearchitecture/spec.md`。
+- 覆盖：sufficient
+- last-updated: 2026-08-28
+
 
 ### REST 子路由（按域拆分）
 

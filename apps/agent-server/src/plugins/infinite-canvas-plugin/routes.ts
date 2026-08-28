@@ -4,6 +4,12 @@ import type { InfiniteCanvasStore } from './store.js'
 import type { AnyCanvasNodeType } from './types.js'
 import type { PromptSourceService } from './prompt-source-service.js'
 import type { CanvasMediaSettingsService } from './media-settings.js'
+import {
+  canvasImageDataUrls,
+  formatCanvasGenerationContext,
+  normalizeCanvasGenerationContext,
+  type CanvasGenerationContext
+} from './generation-context.js'
 
 export type CanvasGenerateHandler = (input: {
   projectId: string
@@ -11,13 +17,19 @@ export type CanvasGenerateHandler = (input: {
   prompt: string
   mode?: string
   context?: string
+  resourceContext?: CanvasGenerationContext
 }) => Promise<string>
 
 export type CanvasImageGenerateHandler = (input: {
   prompt: string
+  context?: string
+  resourceContext?: CanvasGenerationContext
   references?: string[]
   model?: string
+  providerId?: string
   size?: string
+  quality?: string
+  background?: string
   count?: number
   traceId?: string
   signal?: AbortSignal
@@ -26,12 +38,17 @@ export type CanvasImageGenerateHandler = (input: {
 export type CanvasMediaGenerateHandler = (input: {
   mode: 'audio' | 'video'
   prompt: string
+  context?: string
+  resourceContext?: CanvasGenerationContext
   model?: string
+  providerId?: string
   voice?: string
   format?: string
   speed?: number
   size?: string
   seconds?: number
+  generateAudio?: boolean
+  watermark?: boolean
   signal?: AbortSignal
 }) => Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
 
@@ -71,6 +88,20 @@ function body(request: { body?: unknown }): Record<string, unknown> {
   return request.body && typeof request.body === 'object'
     ? (request.body as Record<string, unknown>)
     : {}
+}
+
+function generationContext(input: Record<string, unknown>): {
+  resourceContext?: CanvasGenerationContext
+  context?: string
+} {
+  const resourceContext = normalizeCanvasGenerationContext(input.resourceContext)
+  const structuredText = formatCanvasGenerationContext(resourceContext)
+  const legacyText = typeof input.context === 'string' ? input.context.trim() : ''
+  const context = [legacyText, structuredText].filter(Boolean).join('\n\n')
+  return {
+    ...(resourceContext ? { resourceContext } : {}),
+    ...(context ? { context } : {})
+  }
 }
 
 function requireNodeType(value: unknown): AnyCanvasNodeType {
@@ -336,12 +367,13 @@ export function createInfiniteCanvasRoutes(
           return reply.code(404).send({ ok: false, error: '画布项目不存在' })
         }
         try {
+          const generatedContext = generationContext(input)
           const text = await generate({
             projectId: request.params.projectId,
             nodeId: input.nodeId === undefined ? undefined : String(input.nodeId),
             prompt,
             mode: input.mode === undefined ? undefined : String(input.mode),
-            context: input.context === undefined ? undefined : String(input.context)
+            ...generatedContext
           })
           return success({ text }, request.traceId)
         } catch (error) {
@@ -365,16 +397,23 @@ export function createInfiniteCanvasRoutes(
         if (!store.getProject(request.params.projectId))
           return reply.code(404).send({ ok: false, error: '画布项目不存在' })
         try {
-          const explicitReferences = Array.isArray(input.references)
-            ? input.references.filter((item): item is string => typeof item === 'string' && item.startsWith('data:'))
-            : []
+          const generatedContext = generationContext(input)
           const result = await generateImage({
             prompt,
-            references: explicitReferences.length
-              ? explicitReferences
-              : extractDataUrls(typeof input.context === 'string' ? input.context : ''),
+            context: generatedContext.context,
+            resourceContext: generatedContext.resourceContext,
+            references: (() => {
+              const explicitReferences = Array.isArray(input.references)
+                ? input.references.filter((item): item is string => typeof item === 'string' && item.startsWith('data:image/'))
+                : []
+              const structuredReferences = canvasImageDataUrls(generatedContext.resourceContext)
+              return explicitReferences.length ? explicitReferences : structuredReferences.length ? structuredReferences : extractDataUrls(generatedContext.context || '')
+            })(),
             model: input.model === undefined ? undefined : String(input.model),
+            providerId: input.providerId === undefined ? undefined : String(input.providerId),
             size: input.size === undefined ? undefined : String(input.size),
+            quality: input.quality === undefined ? undefined : String(input.quality),
+            background: input.background === undefined ? undefined : String(input.background),
             count: input.count === undefined ? undefined : Number(input.count),
             traceId: request.traceId
           })
@@ -401,15 +440,21 @@ export function createInfiniteCanvasRoutes(
         if (!store.getProject(request.params.projectId))
           return reply.code(404).send({ ok: false, error: '画布项目不存在' })
         try {
+          const generatedContext = generationContext(input)
           const result = await generateMedia({
             mode,
             prompt,
+            context: generatedContext.context,
+            resourceContext: generatedContext.resourceContext,
             model: input.model === undefined ? undefined : String(input.model),
+            providerId: input.providerId === undefined ? undefined : String(input.providerId),
             voice: input.voice === undefined ? undefined : String(input.voice),
             format: input.format === undefined ? undefined : String(input.format),
             speed: input.speed === undefined ? undefined : Number(input.speed),
             size: input.size === undefined ? undefined : String(input.size),
-            seconds: input.seconds === undefined ? undefined : Number(input.seconds)
+            seconds: input.seconds === undefined ? undefined : Number(input.seconds),
+            generateAudio: input.generateAudio === undefined ? undefined : Boolean(input.generateAudio),
+            watermark: input.watermark === undefined ? undefined : Boolean(input.watermark)
           })
           return success(result, request.traceId)
         } catch (error) {

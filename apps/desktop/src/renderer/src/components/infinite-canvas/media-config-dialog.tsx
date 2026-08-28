@@ -23,6 +23,9 @@ export function MediaConfigDialog({
   const [apiKey, setApiKey] = useState('')
   const [model, setModel] = useState('')
   const [imageSize, setImageSize] = useState('1024x1024')
+  const [protocol, setProtocol] = useState<'openai-images' | 'apimart'>('openai-images')
+  const [resolution, setResolution] = useState('')
+  const [language, setLanguage] = useState('en')
   const [showKey, setShowKey] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -34,12 +37,17 @@ export function MediaConfigDialog({
         setBaseUrl(config.baseUrl)
         setModel(config.model)
         setImageSize(config.imageSize)
+        setProtocol(config.imageProtocol)
+        setResolution(config.imageResolution)
+        setLanguage(config.imageLanguage || 'en')
       })
       .catch(() => setError('无法加载当前配置'))
   }, [])
 
   const save = async (): Promise<void> => {
-    if (!baseUrl.trim() || !apiKey.trim()) {
+    const nextBaseUrl = baseUrl.trim()
+    const nextKey = apiKey.trim()
+    if (!nextBaseUrl || (!nextKey && !status?.configured)) {
       setError('Base URL 和 API Key 不能为空')
       return
     }
@@ -47,10 +55,14 @@ export function MediaConfigDialog({
     setError('')
     try {
       const updated = await updateMediaConfig({
-        imageBaseUrl: baseUrl.trim(),
-        imageApiKey: apiKey.trim(),
+        imageBaseUrl: nextBaseUrl,
+        // 已有配置时空值表示沿用服务端保存的 Key，不覆盖旧凭据。
+        ...(nextKey ? { imageApiKey: nextKey } : {}),
         imageModel: model.trim(),
-        imageSize: imageSize.trim()
+        imageSize: imageSize.trim(),
+        imageProtocol: protocol,
+        imageResolution: resolution.trim(),
+        imageLanguage: language.trim() || 'en'
       })
       setStatus(updated)
       onSaved?.()
@@ -159,6 +171,45 @@ export function MediaConfigDialog({
                 <option value="512x512">512 × 512</option>
               </select>
             </label>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block text-xs font-medium">
+              协议
+              <select
+                value={protocol}
+                onChange={(event) => setProtocol(event.target.value as 'openai-images' | 'apimart')}
+                className="mt-1 h-9 w-full rounded-lg border bg-transparent px-2 text-sm outline-none"
+                style={inputStyle}
+              >
+                <option value="openai-images">OpenAI Images 兼容</option>
+                <option value="apimart">APIMart 异步任务</option>
+              </select>
+            </label>
+            <label className="block text-xs font-medium">
+              分辨率
+              <input
+                value={resolution}
+                onChange={(event) => setResolution(event.target.value)}
+                placeholder={protocol === 'apimart' ? '1k / 2k / 4k' : '可选'}
+                className="mt-1 h-9 w-full rounded-lg border px-3 text-sm outline-none"
+                style={inputStyle}
+              />
+            </label>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block text-xs font-medium">
+              任务语言
+              <input
+                value={language}
+                onChange={(event) => setLanguage(event.target.value)}
+                placeholder="en"
+                className="mt-1 h-9 w-full rounded-lg border px-3 text-sm outline-none"
+                style={inputStyle}
+              />
+            </label>
+            <div className="self-end pb-2 text-[11px] opacity-60">
+              APIMart 图片请求会提交任务并自动轮询结果。
+            </div>
           </div>
         </div>
 

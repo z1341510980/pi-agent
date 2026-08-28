@@ -190,6 +190,8 @@ export interface SceneDefinition {
   emotion?: string
   /** 新版 Director 动作图；缺失时走有界 legacy acting。 */
   actionBeats?: SceneActionBeat[]
+  /** Director 工具提交的原始角色名动作图，仅供动态角色解析后重新映射。 */
+  actionBeatInputs?: SubmittedActionBeatInput[]
   /** 旧计划兼容标记，供诊断和性能统计使用。 */
   legacyPlan?: boolean
 }
@@ -433,6 +435,28 @@ export interface ModeratorDecisionToolset {
   extractResult: () => ModeratorDecision | null
 }
 
+/**
+ * 工具提交的原始动作节点：actor/target/nextActor 是**角色显示名**，
+ * 由引擎 toActionBeats() 解析为 canonical member ID 后才变成 SceneActionBeat。
+ *
+ * 不让模型手写 `char-*` ID：动态角色解析发生在 Director 提交之后，
+ * 因此原始名字必须原样保留（SceneDefinition.actionBeatInputs），供解析完成后重新映射。
+ */
+export interface SubmittedActionBeatInput {
+  beatId: string
+  /** 先行动角色的显示名 */
+  actor: string
+  /** 行动对象的显示名 */
+  target?: string
+  pressure: string
+  action: string
+  choice: string
+  consequence: string
+  /** 默认下一回应角色的显示名 */
+  nextActor?: string
+  exitCondition: string
+}
+
 /** 工具提交的原始场景：presentCharacters 是角色名，由引擎映射为成员 ID */
 export interface SubmittedSceneInput {
   title: string
@@ -442,8 +466,8 @@ export interface SubmittedSceneInput {
   goal: string
   emotion?: string
   presentCharacters: string[]
-  /** 新版动作图；旧计划缺失时引擎走 legacy bounded acting。 */
-  actionBeats?: SceneActionBeat[]
+  /** 新版动作图（角色名形态）；旧计划缺失时引擎走 legacy bounded acting。 */
+  actionBeats?: SubmittedActionBeatInput[]
 }
 
 /**
