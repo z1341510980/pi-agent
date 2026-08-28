@@ -108,7 +108,6 @@ describe('NovelDiscussionRunner', () => {
         subagentManager: { getAgent: vi.fn(() => ({ model: configuredModel })) },
         logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
       } as any,
-      { provider: 'moderator', modelId: 'moderator-only' },
     )
     const boundary = promptBuilder.getChapterBoundaryContext(project.id, 1)
 

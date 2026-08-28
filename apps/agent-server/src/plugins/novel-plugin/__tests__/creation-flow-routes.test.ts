@@ -361,7 +361,7 @@ describe('discussion model contract', () => {
         getNovelModelId: vi.fn(() => 'project:main-model'),
       },
       discussionRunner: { run },
-      discussionSettingsStore: { get: vi.fn(() => ({ moderatorModel: { provider: 'cheap', modelId: 'moderator' } })) },
+      discussionSettingsStore: { get: vi.fn(() => ({ maxRounds: 20 })) },
       discussionRunStore: { save },
       chapterChatStore: { addMany: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
@@ -384,7 +384,6 @@ describe('discussion model contract', () => {
       1,
       expect.objectContaining({
         projectModel,
-        moderatorModel: { provider: 'cheap', modelId: 'moderator' },
       }),
       undefined,
     )
@@ -414,7 +413,7 @@ describe('discussion model contract', () => {
         getNovelModelId: vi.fn(() => 'project:changed-model'),
       },
       discussionRunner: { run },
-      discussionSettingsStore: { get: vi.fn(() => ({ moderatorModel: { provider: 'cheap', modelId: 'moderator' } })) },
+      discussionSettingsStore: { get: vi.fn(() => ({ maxRounds: 20 })) },
       discussionRunStore: { get: vi.fn(() => snapshot), save },
       chapterChatStore: { addMany: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },

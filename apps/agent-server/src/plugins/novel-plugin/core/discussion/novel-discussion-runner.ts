@@ -6,14 +6,12 @@
  *
  * 职责边界：
  * - 不实现群聊循环逻辑（由 TeamDiscussionEngine 负责）
- * - 不实现 Moderator 决策逻辑（由 Moderator 负责）
  * - 不实现收尾细节（由 ChapterFinalizer 负责）
  * - 只负责"翻译"：novel 概念 ↔ 通用群聊类型
  */
 
 import type { PluginContext } from '../../../../core/plugin/plugin-types.js'
 import { AgentChannel } from '../../../../core/agent/agent-channel.js'
-import { Moderator } from './engine/moderator.js'
 import { TeamDiscussionEngine } from './engine/team-discussion-engine.js'
 import { ChapterFinalizer } from '../chapter-finalizer.js'
 import type {
@@ -39,9 +37,8 @@ import { buildScenePlanFromSceneDefinitions } from '../chapters/chapter-scene-pl
 import { sanitizeNovelProse } from '../agent-run-utils.js'
 import { createNovelApplyRevisionTool, type RevisionDraftHolder } from '../novel-tools.js'
 import { createNovelSubmitReviewTool, type ReviewDraftHolder } from '../novel-tools.js'
-import { createNovelSubmitScenePlanTool, createNovelSubmitCharacterTurnTool, createNovelSubmitModeratorDecisionTool, type ScenePlanDraftHolder } from '../novel-tools.js'
+import { createNovelSubmitScenePlanTool, createNovelSubmitCharacterTurnTool, type ScenePlanDraftHolder } from '../novel-tools.js'
 import type { CharacterTurnDraftHolder } from '../tools/submit.js'
-import type { ModeratorDecisionDraftHolder } from '../tools/submit.js'
 import {
   buildVoiceProfiles,
   type CharacterVoiceProfile,
@@ -68,7 +65,6 @@ export class NovelDiscussionRunner {
     private promptBuilder: NovelPromptBuilder,
     private engine: NovelEngine,
     private context: PluginContext,
-    private moderatorModel?: { provider: string; modelId: string },
     private memoryGenerator?: NovelMemoryGenerator,
     private discussionSettingsStore?: DiscussionSettingsStore,
   ) {}
@@ -173,36 +169,11 @@ export class NovelDiscussionRunner {
 
       // 5. 构建引擎并运行
       const channel = new AgentChannel()
-      // 从 discussionSettingsStore 读取运行时限制（maxRounds/maxRoundsPerScene/characterTemperature），
+      // 从 discussionSettingsStore 读取运行时限制（maxRoundsPerScene/characterTemperature），
       // 覆盖引擎默认 DISCUSSION_LIMITS，让设置页的修改即时生效。
-      // 需在 Moderator 构造前读取：降级协调的强制收敛轮数必须与引擎同源（2026-08-24）。
+      // 2026-08-28：Moderator 已删除，maxRounds/moderatorTimeoutMs 不再被引擎读取。
       const settings = this.discussionSettingsStore?.get() ?? {}
-      const moderator = new Moderator(
-        {
-          createSession: async (opts) => {
-            return this.context.createSession({
-              systemPrompt: opts.systemPrompt,
-              userMessage: opts.userMessage,
-              // Moderator 也走 submit 工具主路径。此前这里硬编码空数组，
-              // 导致 Moderator 虽然创建了工具，provider 实际拿不到工具，
-              // 只能回到自由文本 JSON + 降级解析。
-              tools: opts.tools as never[] ?? [],
-              onPayloadStats: opts.onPayloadStats,
-              timeoutMs: opts.timeoutMs,
-              modelId: opts.model,
-              signal: opts.signal,
-            })
-          },
-          logger: this.context.logger,
-        },
-        options.moderatorModel ?? this.moderatorModel,
-        {
-          maxRoundsPerScene: settings.maxRoundsPerScene,
-          // Moderator 超时可经讨论设置覆盖（思考型模型单次延迟普遍 70-150s）
-          timeoutMs: settings.moderatorTimeoutMs,
-        },
-      )
-      const discussionEngine = new TeamDiscussionEngine(moderator, channel, {
+      const discussionEngine = new TeamDiscussionEngine(channel, {
         createAgUiSession: async (opts) => {
           return this.context.createAgUiSession({
             systemPrompt: opts.systemPrompt,
@@ -347,13 +318,6 @@ export class NovelDiscussionRunner {
           return {
             tools: [createNovelSubmitCharacterTurnTool(draft, actionBeatId)],
             extractResult: () => draft.turn ?? null,
-          }
-        },
-        buildModeratorDecisionToolset: () => {
-          const draft: ModeratorDecisionDraftHolder = {}
-          return {
-            tools: [createNovelSubmitModeratorDecisionTool(draft)],
-            extractResult: () => draft.payload as any,
           }
         },
         onMemberInvocation: (invocation) => {

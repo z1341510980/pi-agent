@@ -16,18 +16,10 @@ const BASE = '/api/plugins/novel'
 
 // ── 类型 ──
 
-export interface ModeratorModel {
-  provider: string
-  modelId: string
-}
-
 export interface DiscussionSettings {
-  moderatorModel?: ModeratorModel
   maxRounds?: number
   maxRoundsPerScene?: number
   characterTemperature?: number
-  /** Moderator 单次调用超时毫秒（思考型模型单次延迟普遍 70-150s，建议 120000+） */
-  moderatorTimeoutMs?: number
 }
 
 // ── API 方法 ──

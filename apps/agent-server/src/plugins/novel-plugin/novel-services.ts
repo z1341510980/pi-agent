@@ -268,7 +268,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
   )
 
   // 7.6 创建群聊共创模式组件（依赖 store/memoryStore/promptBuilder/engine/context + memoryGenerator）
-  //     discussionSettingsStore 读取持久化的 moderatorModel 传入 runner 构造函数
+  //     discussionSettingsStore 供 runner 每次运行时读取运行时限制
   const discussionSettingsStore = new DiscussionSettingsStore(db)
   const discussionRunStore = new DiscussionRunStore(db)
   const workflowRunStore = new WorkflowRunStore(db)
@@ -285,7 +285,6 @@ export function createNovelServices(context: PluginContext): NovelServices {
     promptBuilder,
     engine,
     context,
-    discussionSettingsStore.get().moderatorModel,
     memoryGenerator,
     discussionSettingsStore
   )
@@ -297,8 +296,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
     promptBuilder,
     engine,
     context,
-    chapterChatStore,
-    discussionSettingsStore.get().moderatorModel
+    chapterChatStore
   )
 
   // 7.8 章纲生成只读取领域上下文并返回草稿，不直接写章节或派生状态。

@@ -1194,7 +1194,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
 
   // 群聊创作流程启动端点（SSE）
   // 与 /create-flow 结构一致，把 orchestrator.createChapterWithFlow 换成 discussionRunner.run。
-  // 每次运行时从 discussionSettingsStore 读取最新 moderatorModel，使 PUT /discussion-settings 的修改即时生效。
+  // 每次运行时从 discussionSettingsStore 读取运行时限制，使 PUT /discussion-settings 的修改即时生效。
   routes.push({
     method: 'POST',
     path: '/projects/:projectId/chapters/:chapterNumber/create-discussion',
@@ -1263,8 +1263,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
 
       try {
         chapterCreationLocks.add(creationLockKey)
-        // 运行时读取最新设置，让 moderatorModel / 其他参数的修改即时生效
-        const settings = services.discussionSettingsStore.get()
+        // 运行时限制（maxRounds 等）由 runner 内部经 discussionSettingsStore 读取
         const projectModel = parseNovelModelRef(
           typeof store.getNovelModelId === 'function' ? store.getNovelModelId(projectId) : undefined,
         ) ?? null
@@ -1294,7 +1293,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               return decisionPromise as Promise<'approve' | 'reject' | 'revise' | string>
             },
             onProgress: (event) => emitter.progress(event),
-            moderatorModel: settings.moderatorModel,
             flowKey: interjectFlowKey,
             styleExpertIds: input.styleExpertIds,
             projectModel,
@@ -1445,7 +1443,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
 
       try {
         chapterCreationLocks.add(creationLockKey)
-        const settings = services.discussionSettingsStore.get()
         const projectModel = snapshot.projectModel === undefined
           ? parseNovelModelRef(
               typeof store.getNovelModelId === 'function' ? store.getNovelModelId(projectId) : undefined,
@@ -1474,7 +1471,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               return decisionPromise as Promise<'approve' | 'reject' | 'revise' | string>
             },
             onProgress: event => emitter.progress(event),
-            moderatorModel: settings.moderatorModel,
             projectModel,
             flowKey: interjectFlowKey,
             styleExpertIds: snapshot.styleExpertIds,
@@ -1623,15 +1619,9 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
   })
 
   const updateDiscussionSettingsSchema = z.object({
-    moderatorModel: z.object({
-      provider: z.string().min(1),
-      modelId: z.string().min(1),
-    }).optional(),
     maxRounds: z.number().int().min(1).optional(),
     maxRoundsPerScene: z.number().int().min(1).optional(),
     characterTemperature: z.number().min(0).max(2).optional(),
-    // Moderator 单次调用超时毫秒（2026-08-24）：思考型模型延迟普遍 70-150s
-    moderatorTimeoutMs: z.number().int().min(10_000).max(600_000).optional(),
   })
 
   routes.push({
@@ -2331,7 +2321,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
 
       // 必须在 SSE 响应头写出前校验，否则 404/400 会被伪装成 200 事件流。
       const chapterNum = requireChapter(projectId, chapterNumber)
-      const settings = services.discussionSettingsStore.get()
 
       // SSE 设置（与 create-flow / create-discussion 一致）
       reply.raw.writeHead(200, {
@@ -2363,7 +2352,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           { message: input.message, mentionedAgents: input.mentionedAgents },
           {
             emit: emitter.emit,
-            moderatorModel: settings.moderatorModel,
             modelId: input.modelId,
             styleExpertIds: input.styleExpertIds,
           },

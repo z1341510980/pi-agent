@@ -3,7 +3,7 @@
  *
  * 在结构化创作流程（工作流/群聊）之外，提供章节级自由聊天能力：
  * - 用户可随时就当前章节与 Agent 对话，不影响创作流程
- * - 支持 Moderator 调度（自动选 Agent 回复）和 @ 指定 Agent 两种模式
+ * - 支持自动选人（挑一个 Agent 回复）和 @ 指定 Agent 两种模式
  * - 聊天记录按章节持久化到 ChapterChatStore
  *
  * 与 NovelDiscussionRunner 的区别：
@@ -15,11 +15,8 @@
 import type { PluginContext } from '../../../../core/plugin/plugin-types.js'
 import type { AgUiEventSink } from '@repo/protocol/events'
 import { EventType } from '@ag-ui/core'
-import { Moderator } from '../discussion/engine/moderator.js'
-import type {
-  DiscussionMember,
-  ModeratorState,
-} from '../discussion/engine/discussion-types.js'
+import type { DiscussionMember } from '../discussion/engine/discussion-types.js'
+import { pickChatRespondent } from './chat-respondent-picker.js'
 import { ChapterChatStore, type ChapterChatMessage } from './chapter-chat-store.js'
 import { NovelStore } from '../novel-store.js'
 import { NovelPromptBuilder } from '../prompting/prompt-builder.js'
@@ -46,9 +43,7 @@ export interface ChapterChatOptions {
   emit: AgUiEventSink
   /** 取消信号 */
   signal?: AbortSignal
-  /** Moderator 模型配置 */
-  moderatorModel?: { provider: string; modelId: string }
-  /** per-call 模型覆盖（输入框旁选择器传入）：本次回复统一使用，包括 Moderator 调度 */
+  /** per-call 模型覆盖（输入框旁选择器传入）：本次回复统一使用，包括自动选人 */
   modelId?: NovelModelSelection
   styleExpertIds?: string[]
 }
@@ -57,7 +52,7 @@ export interface ChapterChatOptions {
 export interface ChapterChatInput {
   /** 用户消息内容 */
   message: string
-  /** 用户 @ 指定的 Agent ID 列表（如 ['novel-director', 'char-xxx']），为空时由 Moderator 调度 */
+  /** 用户 @ 指定的 Agent ID 列表（如 ['novel-director', 'char-xxx']），为空时自动选人 */
   mentionedAgents?: string[]
 }
 
@@ -76,7 +71,6 @@ export class ChapterChatRunner {
     private engine: NovelEngine,
     private context: PluginContext,
     private chatStore: ChapterChatStore,
-    private moderatorModel?: { provider: string; modelId: string },
   ) {}
 
   /**
@@ -86,7 +80,7 @@ export class ChapterChatRunner {
    * 2. 构建 members（4 工种 + 活跃角色）
    * 3. 决策回复 Agent：
    *    - mentionedAgents 非空 → 依次让被 @ 的 Agent 回复
-   *    - 否则 → Moderator 单轮决策选一个 Agent 回复
+   *    - 否则 → 一次轻量选人调用挑一个 Agent 回复
    * 4. 调用 Agent 发言（SSE 流式）
    * 5. 持久化 Agent 回复
    */
@@ -183,7 +177,7 @@ export class ChapterChatRunner {
    * 选择回复 Agent
    *
    * - mentionedAgents 非空 → 过滤出存在的成员，依次回复
-   * - 否则 → Moderator 单轮决策选一个 Agent
+   * - 否则 → 一次轻量选人调用（工具提交 agentId），失败按规则兜底
    */
   private async selectRespondents(
     members: DiscussionMember[],
@@ -195,75 +189,36 @@ export class ChapterChatRunner {
     if (mentionedAgents && mentionedAgents.length > 0) {
       const selected = members.filter((m) => mentionedAgents.includes(m.id))
       if (selected.length > 0) return selected
-      // @ 的 Agent 都不存在，降级为 Moderator 调度
-      this.context.logger.warn({ mentionedAgents }, '@ 指定的 Agent 均不存在，降级为 Moderator 调度')
+      // @ 的 Agent 都不存在，降级为自动选人
+      this.context.logger.warn({ mentionedAgents }, '@ 指定的 Agent 均不存在，降级为自动选人')
     }
 
-    // Moderator 调度模式：单轮决策选一个 Agent
-    const member = await this.selectRespondentViaModerator(members, userMessage, options)
-    return member ? [member] : []
-  }
-
-  /**
-   * 异步选择回复 Agent（Moderator 调度模式）
-   *
-   * Moderator 看到用户消息 + 成员列表，输出一个 invite 决策，
-   * 引擎执行该决策让被点名的 Agent 回复。
-   */
-  private async selectRespondentViaModerator(
-    members: DiscussionMember[],
-    userMessage: string,
-    options: ChapterChatOptions,
-  ): Promise<DiscussionMember | null> {
-    const moderator = new Moderator(
+    // 自动选人：一次工具调用挑一位回复者。
+    //
+    // 2026-08-28：此前复用群聊 Moderator.decide()，为"从几个成员里挑一个"
+    // 付出完整的决策 prompt + JSON 解析 + 双次重试 + 规则 fallback。
+    // 群聊侧已删除 Moderator，这里改用只做选人的轻量实现。
+    const member = await pickChatRespondent(
       {
-        createSession: async (opts) => {
-          return this.context.createSession({
-            systemPrompt: opts.systemPrompt,
-            userMessage: opts.userMessage,
-            tools: [],
-            timeoutMs: opts.timeoutMs,
-            modelId: opts.model,
-            signal: opts.signal,
-          })
-        },
+        createSession: async (opts) => this.context.createSession({
+          systemPrompt: opts.systemPrompt,
+          userMessage: opts.userMessage,
+          tools: opts.tools as never[],
+          timeoutMs: opts.timeoutMs,
+          modelId: opts.modelId,
+          signal: opts.signal,
+        }),
         logger: this.context.logger,
       },
-      options.modelId ?? options.moderatorModel ?? this.moderatorModel,
-    )
-
-    const state: ModeratorState = {
-      phase: 'free_chat',
-      round: 0,
-      scenesDefined: true, // 自由聊天不拆场
-    }
-
-    // 构造简化的目标 + 历史（只含用户消息）
-    const goal = {
-      task: '回应用户关于本章的提问或讨论',
-      context: userMessage,
-    }
-    const history = [
+      members,
+      userMessage,
       {
-        id: `user-${Date.now()}`,
-        fromId: 'user',
-        fromName: '用户',
-        content: userMessage,
-        timestamp: Date.now(),
-        type: 'user' as const,
+        modelId: options.modelId,
+        signal: options.signal,
+        directorId: NOVEL_AGENT_CONFIGS.director.id,
       },
-    ]
-
-    const decision = await moderator.decide(goal, history, members, state, options.signal)
-    if (decision.type === 'invite') {
-      return members.find((m) => m.id === decision.agentId) ?? null
-    }
-    // Moderator 返回 converge/observe/next_scene 时，降级为选第一个工种 Agent
-    if (decision.type === 'converge') {
-      return members.find((m) => m.id === decision.agentId) ?? null
-    }
-    // 其他情况：选 director 作为默认回复者
-    return members.find((m) => m.id === NOVEL_AGENT_CONFIGS.director.id) ?? members[0]
+    )
+    return member ? [member] : []
   }
 
   /** 调用 Agent 发言 */

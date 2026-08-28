@@ -211,37 +211,6 @@ export interface DiscussionMessage {
   actorTurn?: CharacterTurn
 }
 
-/** Moderator 决策类型 */
-export type ModeratorDecision =
-  /**
-   * 点名发言。
-   *
-   * `agentIds` 是可选的**多角色点名**：演出阶段主持人可以一次点名同场的多个角色，
-   * 引擎会把其中信息对称的合并为一次 LLM 调用（见 discussion-actor-batching）。
-   * 逐角色轮询的固定开销远大于产出 —— ch10 实测 20 次调用 × 15.9s 只换回 3.7k token。
-   *
-   * 兼容旧协议：`agentId` 始终存在（多角色时为首个），未提供 `agentIds` 的决策
-   * 按单角色处理，行为与合并前完全一致。
-   */
-  | { type: 'invite'; agentId: string; prompt: string; reason: string; agentIds?: string[] }
-  | { type: 'pause'; question: string; options?: string[]; reason: string }
-  | { type: 'converge'; agentId: string; scope: 'scene' | 'chapter'; reason: string }
-  | { type: 'next_scene'; reason: string }
-  | { type: 'observe'; reason: string }
-
-/** Moderator 看到的引擎状态 */
-export interface ModeratorState {
-  phase: DiscussionPhase
-  round: number
-  currentScene?: SceneDefinition
-  scenesRemaining?: number
-  scenesDefined: boolean
-  /** 当前 actionBeat，供异常仲裁使用；正常 acting 不必每回合调用 Moderator。 */
-  currentActionBeat?: SceneActionBeat
-  /** 当前场景已完成的动作节点数。 */
-  actionBeatsCompleted?: number
-}
-
 /** 群聊阶段 */
 export type DiscussionPhase =
   | 'free_chat'
@@ -285,11 +254,8 @@ export interface DiscussionOptions {
   onCheckpoint: (checkpoint: DiscussionCheckpoint) => Promise<'approve' | 'reject' | 'revise' | string>
   onProgress: (event: DiscussionFlowEvent) => void
   signal?: AbortSignal
-  /** Moderator 使用的模型配置（未配置时用最便宜模型） */
-  moderatorModel?: { provider: string; modelId: string }
   /**
    * 本次运行的成员模型覆盖。优先级高于工种 Agent 配置；角色成员也使用该模型。
-   * Moderator 保持使用 moderatorModel，避免协调模型被正文创作模型意外替换。
    */
   memberModel?: PluginSessionOptions['modelId']
   /** 本次群聊运行唯一插话隔离键。 */
@@ -349,8 +315,6 @@ export interface DiscussionOptions {
    * Reviewer 返回后引擎调用 extractResult() 得到结构化验收对象。
    */
   buildReviewerToolset?: () => ReviewerToolset
-  /** Moderator 结构化决策工具；未提供时保留文本解析兼容。 */
-  buildModeratorDecisionToolset?: () => ModeratorDecisionToolset
   /**
    * 业务层为 Director 提供"工具化场景计划"能力（2026-08-24 演绎链路修复）。
    *
@@ -428,11 +392,6 @@ export interface ScenePlanToolset {
 export interface CharacterTurnToolset {
   tools: unknown[]
   extractResult: () => CharacterTurn | null
-}
-
-export interface ModeratorDecisionToolset {
-  tools: unknown[]
-  extractResult: () => ModeratorDecision | null
 }
 
 /**
@@ -582,6 +541,14 @@ export interface DiscussionDiagnostics {
   /** 规划阶段因场景计划缺失触发的纠正性重试次数 */
   planningRetries: number
   /**
+   * 规划阶段 Director 的逻辑调用次数（2026-08-28 控制平面重排）。
+   *
+   * planning 已改为引擎直呼 Director，不再经 Moderator 点名。该值等于
+   * "首次调用 + 纠正性重试 + 检查点 approve 后的重试"之和，
+   * 与 totalModeratorInvocations 一起用于核对"planning 的 Moderator 调用为 0"。
+   */
+  plannerInvocations?: number
+  /**
    * 台词复用率（P1-2）：正文对角色推演引号台词的命中率（0~1）。
    * 编织完成后写入；无推演台词（盲写降级）时不填。
    */
@@ -592,6 +559,24 @@ export interface DiscussionDiagnostics {
   autonomousCharacterTurns?: number
   /** 角色主动 mention 触发的回合数。 */
   autonomousMentions?: number
+  /**
+   * mention 触发的独立回应回合数（2026-08-28）。
+   *
+   * 与 autonomousMentions 的区别：后者统计"发出了多少次 mention 请求"，
+   * 这里统计"实际执行了多少次回应回合"。被预算/去环拦截的 mention 只计前者。
+   */
+  mentionResponseTurns?: number
+  /**
+   * 策略表降级继续的节点数（thin + skipped + unreached）。
+   *
+   * >0 表示本章有戏没演成、Writer 收到了绕开约束。用于判断"正文偏短"是
+   * 演出缺口导致还是 Writer 自身问题。
+   */
+  degradedContinues?: number
+  /** 完全没有有效演出的场景 ID。 */
+  barrenSceneIds?: number[]
+  /** 未完成节点的 beatId 明细，供复盘定位具体缺口。 */
+  incompleteActionBeatIds?: string[]
   /** Moderator 因异常介入的次数。 */
   moderatorExceptionInvocations?: number
   /** 旧场景计划数量；用于观察兼容路径是否仍被大量使用。 */

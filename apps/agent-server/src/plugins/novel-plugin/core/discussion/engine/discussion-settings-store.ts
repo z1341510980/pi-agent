@@ -2,21 +2,20 @@
  * 群聊模式设置存储
  *
  * 单行 key-value 表，存储：
- * - moderatorModel：Moderator 使用的模型（JSON: {provider, modelId}）
  * - maxRounds：总轮数上限（默认 20）
  * - maxRoundsPerScene：单场景轮数上限（默认 10）
  * - characterTemperature：角色 Agent 温度（默认 0.8）
+ *
+ * 2026-08-28 控制平面重排：Moderator 已删除，moderatorModel/moderatorTimeoutMs
+ * 设置项随之下线（历史 key 残留在表中但不再被读取）。
  */
 
 import type Database from 'better-sqlite3'
 
 export interface DiscussionSettings {
-  moderatorModel?: { provider: string; modelId: string }
   maxRounds?: number
   maxRoundsPerScene?: number
   characterTemperature?: number
-  /** Moderator 单次调用超时毫秒（2026-08-24）：思考型模型延迟普遍 70-150s，默认 90s 可按需调大 */
-  moderatorTimeoutMs?: number
 }
 
 export class DiscussionSettingsStore {
@@ -34,28 +33,16 @@ export class DiscussionSettingsStore {
 
   get(): DiscussionSettings {
     const settings: DiscussionSettings = {}
-    const moderatorModel = this.getValue('moderatorModel')
-    if (moderatorModel) {
-      try { settings.moderatorModel = JSON.parse(moderatorModel) } catch { /* ignore */ }
-    }
     const maxRounds = this.getValue('maxRounds')
     if (maxRounds) settings.maxRounds = parseInt(maxRounds, 10)
     const maxRoundsPerScene = this.getValue('maxRoundsPerScene')
     if (maxRoundsPerScene) settings.maxRoundsPerScene = parseInt(maxRoundsPerScene, 10)
     const characterTemperature = this.getValue('characterTemperature')
     if (characterTemperature) settings.characterTemperature = parseFloat(characterTemperature)
-    const moderatorTimeoutMs = this.getValue('moderatorTimeoutMs')
-    if (moderatorTimeoutMs) {
-      const parsed = parseInt(moderatorTimeoutMs, 10)
-      if (Number.isFinite(parsed) && parsed > 0) settings.moderatorTimeoutMs = parsed
-    }
     return settings
   }
 
   update(settings: Partial<DiscussionSettings>): void {
-    if (settings.moderatorModel !== undefined) {
-      this.setValue('moderatorModel', JSON.stringify(settings.moderatorModel))
-    }
     if (settings.maxRounds !== undefined) {
       this.setValue('maxRounds', String(settings.maxRounds))
     }
@@ -64,9 +51,6 @@ export class DiscussionSettingsStore {
     }
     if (settings.characterTemperature !== undefined) {
       this.setValue('characterTemperature', String(settings.characterTemperature))
-    }
-    if (settings.moderatorTimeoutMs !== undefined) {
-      this.setValue('moderatorTimeoutMs', String(settings.moderatorTimeoutMs))
     }
   }
 

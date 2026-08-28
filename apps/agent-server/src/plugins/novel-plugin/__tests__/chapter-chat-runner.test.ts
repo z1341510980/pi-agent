@@ -94,7 +94,7 @@ describe('ChapterChatRunner', () => {
     expect(createAgUiSession).not.toHaveBeenCalled()
   })
 
-  it('选择本次模型且未点名时仍由 Moderator 选择回复方', async () => {
+  it('选择本次模型且未点名时经轻量选人工具挑回复方', async () => {
     const project = store.createProject({
       id: 'moderated-model-chat', title: '调度测试', genre: '悬疑', synopsis: '', outline: '',
       targetWords: 3000, currentVolume: 1, currentChapter: 1, currentStage: 'setup', status: 'active',
@@ -104,12 +104,17 @@ describe('ChapterChatRunner', () => {
       title: '第一章', content: '正文', wordCount: 2, status: 'review', narrativeTask: '', outline: '',
       volumeId: null, acceptanceResult: null,
     } as any)
-    const createSession = vi.fn().mockResolvedValue({
-      prompt: vi.fn().mockResolvedValue(JSON.stringify({
-        type: 'invite', agentId: 'novel-writer', prompt: '回答问题', reason: '写作问题',
-      })),
+    // 选人走工具主路径：闭包捕获 agentId，终答为空也照样生效。
+    const createSession = vi.fn().mockImplementation(async (opts: {
+      tools?: Array<{ name?: string; execute?: (id: string, args: unknown) => Promise<unknown> }>
+    }) => ({
+      prompt: vi.fn().mockImplementation(async () => {
+        const pickTool = opts.tools?.find(tool => tool.name === 'novel_pick_chat_respondent')
+        await pickTool?.execute?.('pick-1', { agentId: 'novel-writer', reason: '写作问题' })
+        return ''
+      }),
       dispose: vi.fn(),
-    })
+    }))
     const createAgUiSession = vi.fn().mockResolvedValue({
       session: { prompt: vi.fn().mockResolvedValue('写作回复') },
       streamEmitter: { finishTextMessage: vi.fn() }, messageId: 'reply', dispose: vi.fn(),
@@ -121,7 +126,6 @@ describe('ChapterChatRunner', () => {
       store, promptBuilder, new NovelEngine(store),
       { createAgUiSession, createSession, logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } } as any,
       chatStore,
-      { provider: 'cheap', modelId: 'moderator' },
     )
     const selectedModel = { provider: 'selected', modelId: 'reply-model' }
 
@@ -130,9 +134,10 @@ describe('ChapterChatRunner', () => {
     )
 
     expect(result.replies[0]?.agentId).toBe('novel-writer')
+    // 选人调用挂载选人工具，并沿用本次选择的模型
     expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
       modelId: selectedModel,
-      tools: [],
+      tools: [expect.objectContaining({ name: 'novel_pick_chat_respondent' })],
     }))
     expect(createAgUiSession).toHaveBeenCalledWith(expect.objectContaining({
       modelId: selectedModel,
@@ -145,6 +150,43 @@ describe('ChapterChatRunner', () => {
         path: expect.stringMatching(/novel-creation\.md$/),
       }],
     }))
+  })
+
+  it('选人工具未提交（provider 不支持工具）时按规则回退 Director', async () => {
+    const project = store.createProject({
+      id: 'pick-fallback-chat', title: '兜底测试', genre: '悬疑', synopsis: '', outline: '',
+      targetWords: 3000, currentVolume: 1, currentChapter: 1, currentStage: 'setup', status: 'active',
+    } as any)
+    store.createChapter({
+      id: 'pick-fallback-chapter', projectId: project.id, volume: 1, chapterNumber: 1,
+      title: '第一章', content: '正文', wordCount: 2, status: 'review', narrativeTask: '', outline: '',
+      volumeId: null, acceptanceResult: null,
+    } as any)
+    // 模型只回自由文本、不调工具
+    const createSession = vi.fn().mockResolvedValue({
+      prompt: vi.fn().mockResolvedValue('我觉得应该让写作 Agent 来回答'),
+      dispose: vi.fn(),
+    })
+    const createAgUiSession = vi.fn().mockResolvedValue({
+      session: { prompt: vi.fn().mockResolvedValue('导演回复') },
+      streamEmitter: { finishTextMessage: vi.fn() }, messageId: 'reply', dispose: vi.fn(),
+    })
+    const promptBuilder = new NovelPromptBuilder(
+      new PromptManager(db, process.cwd()), store, new NovelMemoryStore(db),
+    )
+    const runner = new ChapterChatRunner(
+      store, promptBuilder, new NovelEngine(store),
+      { createAgUiSession, createSession, logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } } as any,
+      chatStore,
+    )
+
+    const result = await runner.run(
+      project.id, 1, { message: '这一段怎么改？' }, { emit: vi.fn() },
+    )
+
+    // 不重试、不报错：确定性回退到 Director
+    expect(createSession).toHaveBeenCalledTimes(1)
+    expect(result.replies[0]?.agentId).toBe('novel-director')
   })
 
   it('未选择本次模型时工种回复使用 AgentPage 模型配置', async () => {
