@@ -30,6 +30,7 @@ import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { CheckpointDecision, CheckpointType } from '@repo/shared/novel'
 import { getAllNovelAgentTemperatures, updateNovelAgentTemperatures, getAllNovelAgentModels, updateNovelAgentModel, type NovelAgentType } from '../core/domain/novel-agents.js'
 import { persistDiscussionHistory } from '../core/discussion/discussion-history.js'
+import { deriveResumeInfo } from '../core/discussion/discussion-event-store.js'
 import type { DiscussionResult } from '../core/discussion/engine/discussion-types.js'
 import {
   aiArrangeLocks,
@@ -1113,6 +1114,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           messageId: discussionMessageId,
           content: input.content,
         })
+        // queued 状态经 flow 注册的 publisher → emitter → mirror sink 落事件流，
+        // 与旧 SSE 同一条 novel:user-message 事件契约。
         try {
           services.chapterChatStore.add({
             projectId,
@@ -1223,7 +1226,193 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         return
       }
 
-      // 设置 SSE（与 create-flow 一致，绕过 Fastify CORS 中间件需手动附加 CORS 头）
+      // T6：run 脱离 HTTP 生命周期。POST 只受理并返回 202 + runId，执行转入
+      // 后台任务；断开连接/关闭面板不再 abort，只有显式 cancel 才停。
+      // 进度与结果经事件流消费（GET .../discussion-runs/:runId/events）。
+      const discussionRunId = randomUUID()
+      const startedAt = Date.now()
+      const task = registerNovelChapterTask(creationLockKey, 'discussion', discussionRunId)
+      chapterCreationLocks.add(creationLockKey)
+      // 插话回显通道：状态事件（queued/injected/dropped）经 emitter 进 mirror sink，
+      // 与旧 SSE 同一条 novel:user-message 事件契约（T7）。
+      const interjectFlowKey = `${projectId}|${chapterNumberValue}|${discussionRunId}`
+      // T7：emit 通道整体镜像进事件流（type='agui'，payload 即原 AG-UI 事件）。
+      // TEXT_MESSAGE_* 流式正文、novel:progress、novel:checkpoint、novel:user-message
+      // 都经此通道——不镜像的话流式体验退化为"输出完成后一次性出现"。
+      const emitter = createNovelAgUiEmitter(
+        (event) => {
+          services.discussionEventStore.append(discussionRunId, 'agui', event as unknown as Record<string, unknown>)
+        },
+        `novel:discussion:${projectId}:${chapterNumber}`,
+        discussionRunId,
+      )
+      registerInterjectFlow(interjectFlowKey, (event) => {
+        emitter.userMessage(event)
+      })
+
+      // run_started 同步入流：保证 202 返回时 events 端点已能定位该 run。
+      // 事件流是 fold 状态与续跑重放的唯一事实源（T4）。
+      services.discussionEventStore.append(discussionRunId, 'run_started', {
+        projectId,
+        chapterNumber: chapterNumberValue,
+        startedAt,
+      })
+
+      const executeRun = async (): Promise<void> => {
+        try {
+          // 运行时限制（maxRounds 等）由 runner 内部经 discussionSettingsStore 读取
+          const projectModel = parseNovelModelRef(
+            typeof store.getNovelModelId === 'function' ? store.getNovelModelId(projectId) : undefined,
+          ) ?? null
+          const result = await discussionRunner.run(
+            projectId,
+            chapterNumberValue,
+            {
+              emit: emitter.emit,
+              onEvent: event => services.discussionEventStore.append(discussionRunId, event.type, event.payload),
+              onCheckpoint: async (checkpoint) => {
+                // 后台 run 的检查点经 ConfirmationManager 挂起；用户重连后用
+                // discussion-checkpoint/:checkpointId/decision 端点决策。
+                // checkpoint_pending 事件携带 checkpointId，事件 tail 是决策入口的路由依据。
+                const toolCallId = randomUUID()
+                const checkpointWithOptions = {
+                  ...checkpoint,
+                  options: checkpoint.options ?? ['approve', 'revise', 'reject'],
+                }
+                const decisionPromise = services.confirmationManager.requestDecision({
+                  threadId: `novel-discussion-${projectId}-${chapterNumber}`,
+                  toolCallId,
+                  toolName: `discussion_${checkpoint.type}`,
+                  args: { checkpoint: checkpointWithOptions } as Record<string, unknown>,
+                  reason: `等待用户确认群聊检查点：${checkpoint.question}`,
+                }, 0)
+                // requestDecision 内部已同步把 pending 加入 Map，listPending 立即可见。
+                // 检查点经 emitter.checkpoint 进 mirror sink（携带 checkpointId），
+                // 前端从事件 tail 收到 novel:checkpoint 后走 decision 端点决策。
+                const pending = services.confirmationManager.listPending().find((r) => r.toolCallId === toolCallId)
+                emitter.checkpoint({ ...checkpointWithOptions, checkpointId: pending?.id })
+                return decisionPromise as Promise<'approve' | 'reject' | 'revise' | string>
+              },
+              onProgress: (event) => emitter.progress(event),
+              flowKey: interjectFlowKey,
+              styleExpertIds: input.styleExpertIds,
+              projectModel,
+              // 插话生命周期：engine drain/收尾时回调，经注册表路由状态事件
+              // （状态经 emitter 进 mirror sink，无需单独落库）。
+              onInterjectInjected: ids => dispatchInterjectStatus('injected', ids),
+              onInterjectDropped: ids => dispatchInterjectStatus('dropped', ids),
+              signal: task.controller.signal,
+            },
+            arrangedEntities,
+          )
+          // T5：run 行停写三元组；failedPhase 只透传 canResume 判定，不落库。
+          // run_finished 携带最终正文与演出诊断：前端经事件 tail 拿结果，无需独立状态端点。
+          services.discussionEventStore.append(discussionRunId, 'run_finished', {
+            status: result.status,
+            error: result.error,
+            content: result.content,
+            discussionRunId,
+            canResume: result.status === 'error' && result.failedPhase != null
+              && DISCUSSION_RESUMABLE_PHASES.has(result.failedPhase),
+            diagnostics: result.diagnostics,
+          })
+          services.discussionRunStore.save({
+            id: discussionRunId,
+            projectId,
+            chapterNumber: chapterNumberValue,
+            status: result.status,
+            transcript: result.transcript,
+            scenes: result.scenes,
+            arrangedEntities,
+            projectModel,
+            styleExpertIds: input.styleExpertIds,
+            content: result.content,
+            error: result.error,
+          })
+          try {
+            persistDiscussionHistory(
+              services.chapterChatStore,
+              projectId,
+              chapterNumberValue,
+              result,
+              discussionRunId,
+            )
+          } catch (historyError) {
+            request.log.error(
+              { err: historyError, projectId, chapterNumber, discussionRunId },
+              '群聊历史持久化失败',
+            )
+          }
+          if (result.status === 'error') {
+            persistRouteFailureAudit({
+              request,
+              projectId,
+              chapterNumber: chapterNumberValue,
+              operation: 'create-discussion',
+              sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-discussion',
+              input,
+              errorCode: 'create_discussion_failed',
+              error: new Error(result.error ?? '群聊创作失败'),
+              durationMs: Date.now() - startedAt,
+              result,
+              phase: result.failedPhase ?? 'discussion',
+            })
+          }
+        } catch (err) {
+          // 引擎外层异常：补终态事件，避免事件流永远停在 running 让 fold 无法收口。
+          services.discussionEventStore.append(discussionRunId, 'run_finished', {
+            status: 'error',
+            error: err instanceof Error ? err.message : String(err),
+          })
+          if (!task.controller.signal.aborted) {
+            persistRouteFailureAudit({
+              request,
+              projectId,
+              chapterNumber: chapterNumberValue,
+              operation: 'create-discussion',
+              sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-discussion',
+              input,
+              errorCode: 'create_discussion_request_failed',
+              error: err,
+              durationMs: Date.now() - startedAt,
+              phase: 'discussion',
+            })
+          }
+        } finally {
+          finishNovelChapterTask(creationLockKey, task)
+          chapterCreationLocks.delete(creationLockKey)
+          // 注销插话注册表（含 runner 登记的 enqueue 闭包兜底）。
+          unregisterInterjectFlow(interjectFlowKey)
+        }
+      }
+      void executeRun()
+
+      reply.code(202).send({
+        ok: true,
+        runId: discussionRunId,
+        eventsPath: `/projects/${projectId}/discussion-runs/${discussionRunId}/events`,
+        message: '群聊创作已受理，正在后台执行；通过 events 端点消费进度与结果',
+      })
+    },
+  })
+
+  // 群聊事件 tail（T6）：`?from=seq` 支持重放 + 实时续传。面板重开先全量补齐
+  // （from=0）再接实时；断线重连传上次游标即可补增量。轮询事件库实现 tail，
+  // 与后台执行完全解耦；run_finished 写出后结束流。
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/discussion-runs/:runId/events',
+    handler: async (request: any, reply: any) => {
+      const { runId } = request.params as { runId: string }
+      const eventStore = services.discussionEventStore
+      const fromParam = Number((request.query as { from?: string }).from ?? '0')
+      const fromSeq = Number.isFinite(fromParam) && fromParam >= 0 ? Math.floor(fromParam) : 0
+
+      if (eventStore.lastSeq(runId) === 0) {
+        reply.code(404).send({ ok: false, error: '未找到该群聊运行的事件流' })
+        return
+      }
+
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -1232,155 +1421,86 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         'Access-Control-Allow-Origin': request.headers.origin || '*',
         'Access-Control-Allow-Credentials': 'true',
       })
-      // 禁用 Nagle 算法，确保 SSE 事件立即 flush 到客户端
       request.raw.socket?.setNoDelay?.(true)
 
-      const heartbeat = setInterval(() => {
-        reply.raw.write(': keepalive\n\n')
-      }, 15000)
-
-      const discussionRunId = randomUUID()
-      const emitter = createNovelAgUiEmitter(
-        createSseEmitterSink((data) => reply.raw.write(data)),
-        `novel:discussion:${projectId}:${chapterNumber}`,
-        discussionRunId,
-      )
-      // 插话回显通道（批次 1 任务 3）：与 create-flow 同构，把本 flow 的 emitter
-      // 登记到插话注册表。群聊侧 runner 另行登记 engine 的 enqueue 闭包，
-      // engine 的 injected/dropped 回调经 dispatchInterjectStatus 路由回本 SSE。
-      const interjectFlowKey = `${projectId}|${chapterNumberValue}|${discussionRunId}`
-      registerInterjectFlow(interjectFlowKey, (event) => {
-        if (!reply.raw.writableEnded) emitter.userMessage(event)
-      })
-      const task = registerNovelChapterTask(creationLockKey, 'discussion', discussionRunId)
-      const abortOnDisconnect = () => {
-        if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
-          task.controller.abort(new Error('客户端已断开群聊创作流'))
-        }
+      const write = (data: unknown) => {
+        if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(data)}\n\n`)
       }
-      reply.raw.once('close', abortOnDisconnect)
-      const startedAt = Date.now()
-
-      try {
-        chapterCreationLocks.add(creationLockKey)
-        // 运行时限制（maxRounds 等）由 runner 内部经 discussionSettingsStore 读取
-        const projectModel = parseNovelModelRef(
-          typeof store.getNovelModelId === 'function' ? store.getNovelModelId(projectId) : undefined,
-        ) ?? null
-        const result = await discussionRunner.run(
-          projectId,
-          chapterNumberValue,
-          {
-            emit: emitter.emit,
-            onCheckpoint: async (checkpoint) => {
-              // 通过 ConfirmationManager 发起决策请求（与 create-flow 的 onCheckpoint 一致）
-              // timeoutMs=0 表示无超时：用户可能需要长时间阅读检查点内容并思考
-              const toolCallId = randomUUID()
-              const checkpointWithOptions = {
-                ...checkpoint,
-                options: checkpoint.options ?? ['approve', 'revise', 'reject'],
-              }
-              const decisionPromise = services.confirmationManager.requestDecision({
-                threadId: `novel-discussion-${projectId}-${chapterNumber}`,
-                toolCallId,
-                toolName: `discussion_${checkpoint.type}`,
-                args: { checkpoint: checkpointWithOptions } as Record<string, unknown>,
-                reason: `等待用户确认群聊检查点：${checkpoint.question}`,
-              }, 0)
-              // requestDecision 内部已同步把 pending 加入 Map，listPending 立即可见
-              const pending = services.confirmationManager.listPending().find((r) => r.toolCallId === toolCallId)
-              emitter.checkpoint({ ...checkpointWithOptions, checkpointId: pending?.id })
-              return decisionPromise as Promise<'approve' | 'reject' | 'revise' | string>
-            },
-            onProgress: (event) => emitter.progress(event),
-            flowKey: interjectFlowKey,
-            styleExpertIds: input.styleExpertIds,
-            projectModel,
-            // 插话生命周期（批次 1 任务 3）：engine drain/收尾时回调，
-            // 经注册表按 messageId 反查本 flow 的 SSE 通道推 injected/dropped 事件。
-            onInterjectInjected: ids => dispatchInterjectStatus('injected', ids),
-            onInterjectDropped: ids => dispatchInterjectStatus('dropped', ids),
-            signal: task.controller.signal,
-          },
-          arrangedEntities,
-        )
-        services.discussionRunStore.save({
-          id: discussionRunId,
-          projectId,
-          chapterNumber: chapterNumberValue,
-          status: result.status,
-          failedPhase: result.failedPhase,
-           failedSceneId: result.failedSceneId,
-           failedActionBeatId: result.failedActionBeatId,
-          transcript: result.transcript,
-          scenes: result.scenes,
-          arrangedEntities,
-          projectModel,
-          styleExpertIds: input.styleExpertIds,
-          content: result.content,
-          error: result.error,
-        })
-        try {
-          persistDiscussionHistory(
-            services.chapterChatStore,
-            projectId,
-            chapterNumberValue,
-            result,
-            discussionRunId,
-          )
-        } catch (historyError) {
-          request.log.error(
-            { err: historyError, projectId, chapterNumber, discussionRunId },
-            '群聊历史持久化失败',
-          )
-        }
-        emitter.result({
-          ...result,
-          discussionRunId,
-          canResume: result.status === 'error' && result.failedPhase != null
-            && DISCUSSION_RESUMABLE_PHASES.has(result.failedPhase),
-        })
-        if (result.status === 'error') {
-          persistRouteFailureAudit({
-            request,
-            projectId,
-            chapterNumber: chapterNumberValue,
-            operation: 'create-discussion',
-            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-discussion',
-            input,
-            errorCode: 'create_discussion_failed',
-            error: new Error(result.error ?? '群聊创作失败'),
-            durationMs: Date.now() - startedAt,
-            result,
-            phase: result.failedPhase ?? 'discussion',
-          })
-        }
-      } catch (err) {
-        if (!task.controller.signal.aborted) {
-          persistRouteFailureAudit({
-            request,
-            projectId,
-            chapterNumber: chapterNumberValue,
-            operation: 'create-discussion',
-            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-discussion',
-            input,
-            errorCode: 'create_discussion_request_failed',
-            error: err,
-            durationMs: Date.now() - startedAt,
-            phase: 'discussion',
-          })
-        }
-        emitter.error(String(err))
-      } finally {
+      let cursor = fromSeq
+      let closed = false
+      const cleanup = () => {
+        if (closed) return
+        closed = true
         clearInterval(heartbeat)
-        reply.raw.off('close', abortOnDisconnect)
-        finishNovelChapterTask(creationLockKey, task)
-        chapterCreationLocks.delete(creationLockKey)
-        // 注销插话回显通道：engine 终态 dropped 事件已在 runner.run 内推出，
-        // 此处清理注册表（含 runner 登记的 enqueue 闭包兜底），防止向已结束连接推送。
-        unregisterInterjectFlow(interjectFlowKey)
-        reply.raw.end()
+        clearInterval(poll)
+        if (!reply.raw.writableEnded) reply.raw.end()
       }
+      // 返回 true 表示已追到终态（run_finished 已写出）
+      const pump = (): boolean => {
+        if (closed) return true
+        for (const event of eventStore.list(runId, cursor + 1)) {
+          write({ type: event.type, seq: event.seq, payload: event.payload, createdAt: event.createdAt })
+          cursor = event.seq
+          if (event.type === 'run_finished') return true
+        }
+        return false
+      }
+      const heartbeat = setInterval(() => {
+        if (!reply.raw.writableEnded) reply.raw.write(': keepalive\n\n')
+      }, 15000)
+      const poll = setInterval(() => {
+        if (pump()) cleanup()
+      }, 1000)
+      reply.raw.once('close', cleanup)
+      // 先补历史再接实时：重连面板靠 from=游标 补齐缺口后继续轮询
+      if (pump()) cleanup()
+    },
+  })
+
+  // 查找该章节仍在后台执行的群聊 run（T7）：面板重开后用户再点"开始群聊"
+  // 会收到 409，前端据此取回 runId 转入事件 tail 观看，而不是报错阻断。
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/chapters/:chapterNumber/active-discussion-run',
+    handler: async (request: any, reply: any) => {
+      const { projectId } = request.params as { projectId: string }
+      const chapterNumber = Number((request.params as { chapterNumber: string }).chapterNumber)
+      const active = services.discussionEventStore.findActiveRun(projectId, chapterNumber)
+      if (!active) {
+        reply.code(404).send({ ok: false, error: '该章节没有正在执行的群聊运行' })
+        return
+      }
+      reply.send({
+        ok: true,
+        runId: active.runId,
+        cursorSeq: active.cursorSeq,
+        eventsPath: `/projects/${projectId}/discussion-runs/${active.runId}/events`,
+      })
+    },
+  })
+
+  // 群聊运行显式取消（T6）：run 不再随 HTTP 断开而停，取消是唯一停止途径。
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/discussion-runs/:runId/cancel',
+    handler: async (request: any, reply: any) => {
+      const { runId } = request.params as { runId: string }
+      const task = [...activeNovelChapterTasks.values()].find(t =>
+        t.flowId === runId && (t.kind === 'discussion' || t.kind === 'discussion-resume'))
+      if (!task) {
+        const events = services.discussionEventStore.list(runId)
+        const finished = events.at(-1)?.type === 'run_finished'
+        reply.code(finished ? 409 : 404).send({
+          ok: false,
+          error: finished ? '该群聊运行已结束' : '未找到运行中的群聊任务',
+        })
+        return
+      }
+      task.controller.abort(new Error('用户显式取消群聊运行'))
+      // 等待引擎冻结并落终态（与 cancel-active-flow 同语义），避免前端
+      // 拿到 200 后立刻重开面板却看到 running。
+      await task.donePromise
+      reply.send({ ok: true, runId, cancelled: true })
     },
   })
 
@@ -1400,8 +1520,15 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         reply.code(404).send({ ok: false, error: '未找到该章节的群聊中断记录' })
         return
       }
-      if (snapshot.status !== 'error' || snapshot.failedPhase == null
-          || !DISCUSSION_RESUMABLE_PHASES.has(snapshot.failedPhase)) {
+      // T5：断点位置双来源。新 run 的 run 行已停写三元组，从事件流推导；
+      // 旧快照（无事件）回落到 run 行列值（transcript 反推在引擎内兜底）。
+      const resumeEvents = services.discussionEventStore.list(runId)
+      const resumeInfo = resumeEvents.length > 0 ? deriveResumeInfo(resumeEvents) : undefined
+      const resumePhase = resumeInfo?.phase ?? snapshot.failedPhase
+      const resumeFailedSceneId = resumeInfo ? resumeInfo.failedSceneId : snapshot.failedSceneId
+      const resumeFailedActionBeatId = resumeInfo ? resumeInfo.failedActionBeatId : snapshot.failedActionBeatId
+      if (snapshot.status !== 'error' || resumePhase == null
+          || !DISCUSSION_RESUMABLE_PHASES.has(resumePhase)) {
         reply.code(409).send({ ok: false, error: '该群聊记录不支持断点续跑' })
         return
       }
@@ -1443,6 +1570,12 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
 
       try {
         chapterCreationLocks.add(creationLockKey)
+        services.discussionEventStore.append(resumeRunId, 'run_started', {
+          projectId,
+          chapterNumber: chapter,
+          resumedFromRunId: runId,
+          resumePhase,
+        })
         const projectModel = snapshot.projectModel === undefined
           ? parseNovelModelRef(
               typeof store.getNovelModelId === 'function' ? store.getNovelModelId(projectId) : undefined,
@@ -1453,6 +1586,9 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           chapter,
           {
             emit: emitter.emit,
+            // 续跑 run 拥有独立事件流（runId=resumeRunId）；plan 之前的已完成节点
+            // 经 completedActionBeatIds 显式传入引擎，不再靠 transcript 反推。
+            onEvent: event => services.discussionEventStore.append(resumeRunId, event.type, event.payload),
             onCheckpoint: async (checkpoint) => {
               const toolCallId = randomUUID()
               const checkpointWithOptions = {
@@ -1470,7 +1606,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               emitter.checkpoint({ ...checkpointWithOptions, checkpointId: pending?.id })
               return decisionPromise as Promise<'approve' | 'reject' | 'revise' | string>
             },
-            onProgress: event => emitter.progress(event),
+            onProgress: (event) => emitter.progress(event),
             projectModel,
             flowKey: interjectFlowKey,
             styleExpertIds: snapshot.styleExpertIds,
@@ -1481,23 +1617,29 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           snapshot.arrangedEntities,
           {
             // 上面 409 守卫已用 DISCUSSION_RESUMABLE_PHASES 收窄到可续跑阶段
-            phase: snapshot.failedPhase as 'chapter_weaving' | 'reviewing' | 'acting' | 'scene_setup',
+            phase: resumePhase as 'chapter_weaving' | 'reviewing' | 'acting' | 'scene_setup',
             transcript: snapshot.transcript,
             scenes: snapshot.scenes,
             content: snapshot.content,
-             failedSceneId: snapshot.failedSceneId,
-             failedActionBeatId: snapshot.failedActionBeatId,
+             failedSceneId: resumeFailedSceneId,
+             failedActionBeatId: resumeFailedActionBeatId,
+            // 事件重放得出的完成集：跳过 transcript 反推（T5）
+            ...(resumePhase === 'acting' && resumeFailedSceneId != null
+              && resumeInfo?.completedByScene.get(resumeFailedSceneId)
+              ? { completedActionBeatIds: resumeInfo.completedByScene.get(resumeFailedSceneId) }
+              : {}),
           },
         )
 
+        services.discussionEventStore.append(resumeRunId, 'run_finished', {
+          status: result.status,
+          error: result.error,
+        })
         services.discussionRunStore.save({
           id: resumeRunId,
           projectId,
           chapterNumber: chapter,
           status: result.status,
-          failedPhase: result.failedPhase,
-          failedSceneId: result.failedSceneId,
-          failedActionBeatId: result.failedActionBeatId,
           transcript: result.transcript,
           scenes: result.scenes,
           arrangedEntities: snapshot.arrangedEntities,

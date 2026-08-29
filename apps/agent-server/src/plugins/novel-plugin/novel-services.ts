@@ -40,6 +40,7 @@ import { ChapterChatStore } from './core/chapters/chapter-chat-store.js'
 import { ChapterOutlineGenerator } from './core/chapters/chapter-outline-generator.js'
 import { VolumeBeatPlanner } from './core/chapters/beat-plan-generator.js'
 import { DiscussionRunStore } from './core/discussion/discussion-run-store.js'
+import { DiscussionEventStore } from './core/discussion/discussion-event-store.js'
 import { WorkflowRunStore } from './core/workflow-run-store.js'
 import { DiscussionSettingsStore } from './core/discussion/engine/discussion-settings-store.js'
 import { ConsistencyAuditor } from './core/analysis/consistency-auditor.js'
@@ -114,6 +115,8 @@ export interface NovelServices {
   discussionSettingsStore: DiscussionSettingsStore
   /** 群聊运行快照存储（断点续跑） */
   discussionRunStore: DiscussionRunStore
+  /** 群聊事件溯源存储（append-only 事件日志 + fold；T4） */
+  discussionEventStore: DiscussionEventStore
   workflowRunStore: WorkflowRunStore
   /** 章节聊天消息存储（按章节持久化用户输入与 Agent 回复） */
   chapterChatStore: ChapterChatStore
@@ -271,6 +274,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //     discussionSettingsStore 供 runner 每次运行时读取运行时限制
   const discussionSettingsStore = new DiscussionSettingsStore(db)
   const discussionRunStore = new DiscussionRunStore(db)
+  const discussionEventStore = new DiscussionEventStore(db)
   const workflowRunStore = new WorkflowRunStore(db)
   // 启动即回收：此刻不可能有在跑流程，残留 running 必为上次进程退出的孤儿。
   // 标记为 error（phase 保留为续跑入口），防止前端把死 run 当进行中永远转圈。
@@ -278,6 +282,12 @@ export function createNovelServices(context: PluginContext): NovelServices {
     workflowRunStore.reconcileOrphanRunning('服务重启导致创作流程中断；可从断点继续')
   if (orphanRuns > 0) {
     context.logger.warn({ count: orphanRuns }, '已回收上次进程残留的创作流程运行记录')
+  }
+  // 群聊事件流孤儿回收（T6）：后台 run 不再随 HTTP 结束，进程退出可能留下
+  // 没有 run_finished 终态的事件流；启动时补终态，续跑定位仍由事件推导。
+  const orphanDiscussions = discussionEventStore.reconcileOrphanRuns('服务重启导致群聊创作中断；可从断点继续')
+  if (orphanDiscussions > 0) {
+    context.logger.warn({ count: orphanDiscussions }, '已回收上次进程残留的群聊事件流')
   }
   const discussionRunner = new NovelDiscussionRunner(
     store,
@@ -376,6 +386,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
     discussionRunner,
     discussionSettingsStore,
     discussionRunStore,
+    discussionEventStore,
     workflowRunStore,
     chapterChatStore,
     chapterChatRunner,

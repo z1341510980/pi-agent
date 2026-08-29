@@ -17,7 +17,7 @@ import { ReasoningPipeline } from './reasoning-pipeline.js'
 import { installRunPayloadBridge, type RunPayloadBridge } from './run-payload-bridge.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { Tracer } from '../tracer/tracer.js'
-import type { TraceEvent } from '../tracer/types.js'
+import type { TraceEvent, TraceEventType, EventStatus, EventSeq } from '../tracer/types.js'
 
 /** streamRun 输入（宽松类型，兼容 @repo/protocol schema 输出） */
 export interface StreamRunInput {
@@ -92,6 +92,32 @@ export class PiAgUiAgent {
 
     // ===== 追踪：开始 =====
     let traceId: string | undefined
+    // 追踪写入必须与 run 隔离：addEvent 超过 maxEvents 等情况会抛错，不能带崩 run 本身
+    const recordTraceEvent = (
+      type: TraceEventType,
+      data: Record<string, unknown>,
+      extra: { status?: EventStatus; sourceEventSeqs?: EventSeq[] } = {},
+    ): TraceEvent | undefined => {
+      if (!traceId || !this.tracer) return undefined
+      try {
+        return this.tracer.addEvent(traceId, { type, data, ...extra })
+      } catch (err) {
+        console.warn('[pi-agui-agent] 追踪事件写入失败', { traceId, type, err })
+        return undefined
+      }
+    }
+
+    let traceFinished = false
+    const finishTraceOnce = (status: 'completed' | 'failed' | 'aborted'): void => {
+      if (!traceId || !this.tracer || traceFinished) return
+      traceFinished = true
+      try {
+        this.tracer.finishTrace(traceId, status)
+      } catch (err) {
+        console.warn('[pi-agui-agent] 追踪收尾写入失败', { traceId, status, err })
+      }
+    }
+
     if (this.tracer) {
       const trace = this.tracer.startTrace({
         sessionId: threadId,
@@ -99,12 +125,8 @@ export class PiAgUiAgent {
         metadata: { agentId: this.agentId },
       })
       traceId = trace.id
-      this.tracer.addEvent(traceId, {
-        type: 'user_message',
-        data: {
-          messages: input.messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })),
-        },
-        status: 'completed',
+      recordTraceEvent('user_message', {
+        messages: input.messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })),
       })
     }
 
@@ -140,10 +162,9 @@ export class PiAgUiAgent {
           role: 'tool'
         } as ToolCallResultEvent)
         if (traceId) {
-          this.tracer?.addEvent(traceId, {
-            type: 'tool_result',
-            data: { toolCallId, content: typeof lastMessage.content === 'string' ? lastMessage.content : JSON.stringify(lastMessage.content) },
-            status: 'completed',
+          recordTraceEvent('tool_result', {
+            toolCallId,
+            content: typeof lastMessage.content === 'string' ? lastMessage.content : JSON.stringify(lastMessage.content),
           })
         }
       }
@@ -158,12 +179,10 @@ export class PiAgUiAgent {
         source: 'agent',
       })
       if (traceId) {
-        this.tracer?.addEvent(traceId, {
-          type: 'run_error',
-          data: { message: `线程 ${threadId} 已有活跃 run` },
-          status: 'failed',
-        })
-        this.tracer?.finishTrace(traceId, 'failed')
+        recordTraceEvent('run_error', {
+          message: `线程 ${threadId} 已有活跃 run`,
+        }, { status: 'failed' })
+        finishTraceOnce('failed')
       }
       emitTermination({
         type: EventType.RUN_ERROR,
@@ -186,6 +205,10 @@ export class PiAgUiAgent {
         if (targetModel) {
           await threadSession.session.setModel(targetModel)
         } else {
+          recordTraceEvent('run_error', {
+            message: `模型不可用：${input.model.provider}/${input.model.modelId}`,
+          }, { status: 'failed' })
+          finishTraceOnce('failed')
           emitTermination({
             type: EventType.RUN_ERROR,
             message: `模型不可用：${input.model.provider}/${input.model.modelId}`
@@ -233,8 +256,41 @@ export class PiAgUiAgent {
       const streamEmitter = new StreamEmitter(emit, assistantResponseMessageId, reasoningPipeline)
       let lastAssistantError = ''
 
+      // 进行中的工具调用 seq：收尾时用 sourceEventSeqs 把 tool_result 关联到 tool_call
+      const pendingToolCallSeqs = new Map<string, number>()
+
       unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
         streamEmitter.handleSessionEvent(event)
+
+        // 工具执行打点：Pi 的 tool_execution_* 事件之前从未进 trace，
+        // 导致时间线上看不到任何 tool_call / tool_result。
+        if (event.type === 'tool_execution_start') {
+          const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : ''
+          const started = recordTraceEvent('tool_call', {
+            toolCallId,
+            toolName: (event.toolName as string) ?? 'unknown',
+            args: summarizeForTrace(event.args),
+          }, { status: 'pending' })
+          if (started && toolCallId) {
+            pendingToolCallSeqs.set(toolCallId, started.seq)
+          }
+          return
+        }
+
+        if (event.type === 'tool_execution_end') {
+          const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : ''
+          const callSeq = toolCallId ? pendingToolCallSeqs.get(toolCallId) : undefined
+          if (toolCallId) pendingToolCallSeqs.delete(toolCallId)
+          recordTraceEvent('tool_result', {
+            toolCallId,
+            toolName: (event.toolName as string) ?? 'unknown',
+            isError: event.isError === true,
+          }, {
+            status: event.isError === true ? 'failed' : 'completed',
+            sourceEventSeqs: callSeq === undefined ? undefined : [callSeq],
+          })
+          return
+        }
 
         // Pi SDK 会把部分 LLM 故障表示为 message_end(stopReason="error")，
         // session.prompt() 在自动重试耗尽后仍可能正常 resolve。记录最后一次
@@ -258,14 +314,10 @@ export class PiAgUiAgent {
       const userText = typeof lastUserMessage?.content === 'string' ? lastUserMessage.content : ''
 
       if (!userText) {
-        if (traceId) {
-          this.tracer?.addEvent(traceId, {
-            type: 'run_error',
-            data: { message: '无用户消息' },
-            status: 'failed',
-          })
-          this.tracer?.finishTrace(traceId, 'failed')
-        }
+        recordTraceEvent('run_error', {
+          message: '无用户消息',
+        }, { status: 'failed' })
+        finishTraceOnce('failed')
         emitSingleAssistantMessage(emit, '我需要一条用户消息才能继续。')
         emitTermination({
           type: EventType.RUN_FINISHED,
@@ -276,29 +328,22 @@ export class PiAgUiAgent {
       }
 
       // ===== 追踪：LLM 请求开始 =====
-      if (traceId) {
-        this.tracer?.addEvent(traceId, {
-          type: 'llm_request',
-          data: {
-            userText,
-            model: input.model,
-            temperature: input.temperature,
-          },
-          status: 'pending',
-        })
-      }
+      const llmRequestEvent = recordTraceEvent('llm_request', {
+        userText,
+        model: input.model,
+        temperature: input.temperature,
+      }, { status: 'pending' })
 
       await threadSession.session.prompt(userText)
 
       if (lastAssistantError) {
-        if (traceId) {
-          this.tracer?.addEvent(traceId, {
-            type: 'llm_response',
-            data: { error: lastAssistantError },
-            status: 'failed',
-          })
-          this.tracer?.finishTrace(traceId, 'failed')
-        }
+        recordTraceEvent('llm_response', {
+          error: lastAssistantError,
+        }, {
+          status: 'failed',
+          sourceEventSeqs: llmRequestEvent ? [llmRequestEvent.seq] : undefined,
+        })
+        // 终态 run_error / finishTrace 由下方 catch 统一收尾，避免双重终止
         throw new Error(`LLM 调用失败: ${lastAssistantError}`)
       }
 
@@ -312,14 +357,16 @@ export class PiAgUiAgent {
         source: 'agent',
       })
 
-      if (traceId) {
-        this.tracer?.addEvent(traceId, {
-          type: 'assistant_message',
-          data: { content: completeText },
-          status: 'completed',
-        })
-        this.tracer?.finishTrace(traceId, 'completed')
-      }
+      recordTraceEvent('llm_response', {
+        content: completeText,
+        length: completeText.length,
+      }, {
+        sourceEventSeqs: llmRequestEvent ? [llmRequestEvent.seq] : undefined,
+      })
+      recordTraceEvent('assistant_message', {
+        content: completeText,
+      })
+      finishTraceOnce('completed')
 
       emitTermination({
         type: EventType.RUN_FINISHED,
@@ -335,6 +382,8 @@ export class PiAgUiAgent {
           message: `Run 已中断: threadId=${threadId}, runId=${runId}`,
           source: 'agent',
         })
+        // 中断也要收尾 trace，否则 trace 永远停留在 running 状态
+        finishTraceOnce('aborted')
         emitTermination({
           type: EventType.RUN_FINISHED,
           threadId,
@@ -350,6 +399,8 @@ export class PiAgUiAgent {
         message: `Run 错误: threadId=${threadId}, runId=${runId}, error=${message}`,
         source: 'agent',
       })
+      recordTraceEvent('run_error', { message }, { status: 'failed' })
+      finishTraceOnce('failed')
       this.eventBus?.emit('notification:push', {
         level: 'error',
         title: 'Agent 运行错误',
@@ -637,6 +688,19 @@ export class PiAgUiAgent {
     const threadSession = await this.sessionStore.getOrCreate(threadId)
     await threadSession.session.reload()
     threadSession.lastAccessedAt = Date.now()
+  }
+}
+
+/** trace 事件里字符串字段的截断上限：trace 是排查用的，不需要完整 payload */
+const TRACE_STRING_LIMIT = 2000
+
+function summarizeForTrace(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value.slice(0, TRACE_STRING_LIMIT)
+  try {
+    return JSON.stringify(value)?.slice(0, TRACE_STRING_LIMIT) ?? ''
+  } catch {
+    return String(value).slice(0, TRACE_STRING_LIMIT)
   }
 }
 

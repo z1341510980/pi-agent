@@ -98,6 +98,19 @@ export function buildPluginSessionPrompt(
   return `${composeSkillBlocks([skill, ...extraSkills])}\n\n${userMessage}`
 }
 
+/** trace 事件里字符串字段的截断上限：trace 是排查用的，不需要完整 payload */
+const TRACE_STRING_LIMIT = 2000
+
+function summarizeToolArgsForTrace(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value.slice(0, TRACE_STRING_LIMIT)
+  try {
+    return JSON.stringify(value)?.slice(0, TRACE_STRING_LIMIT) ?? ''
+  } catch {
+    return String(value).slice(0, TRACE_STRING_LIMIT)
+  }
+}
+
 export class PluginManager {
   private readonly entries = new Map<string, PluginEntry>()
   private readonly logger: FastifyBaseLogger
@@ -2021,6 +2034,8 @@ export class PluginManager {
 
         // 收集 assistant 文本（事件格式参考 core/agent/stream-emitter.ts）
         let completeText = ''
+        // 进行中的工具调用 seq：收尾时用 sourceEventSeqs 把 tool_result 关联到 tool_call
+        const pendingToolCallSeqs = new Map<string, number>()
         // Pi SDK 在 LLM 调用失败时不抛异常，而是产生 stopReason="error" 的 message_end 事件。
         // 这里捕获错误信息，供 prompt/promptStream 在调用后检查并抛出，避免"空响应+success"的假象。
         let lastErrorMessage = ''
@@ -2031,6 +2046,33 @@ export class PluginManager {
         let diagTextChars = 0
         let diagReasoningChars = 0
         const unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
+          // 工具执行打点：Pi 的 tool_execution_* 事件之前从未进 trace，
+          // 导致插件 Session 时间线上看不到任何 tool_call / tool_result。
+          if (event.type === 'tool_execution_start') {
+            const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : ''
+            const callSeq = recordTraceEvent('tool_call', {
+              source: 'plugin-session',
+              toolCallId,
+              toolName: (event.toolName as string) ?? 'unknown',
+              args: summarizeToolArgsForTrace(event.args)
+            }, undefined, 'pending')
+            if (callSeq !== undefined && toolCallId) {
+              pendingToolCallSeqs.set(toolCallId, callSeq)
+            }
+            return
+          }
+          if (event.type === 'tool_execution_end') {
+            const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : ''
+            const callSeq = toolCallId ? pendingToolCallSeqs.get(toolCallId) : undefined
+            if (toolCallId) pendingToolCallSeqs.delete(toolCallId)
+            recordTraceEvent('tool_result', {
+              source: 'plugin-session',
+              toolCallId,
+              toolName: (event.toolName as string) ?? 'unknown',
+              isError: event.isError === true
+            }, callSeq === undefined ? undefined : [callSeq], event.isError === true ? 'failed' : 'completed')
+            return
+          }
           if (event.type === 'message_end') {
             const message = event.message as Record<string, unknown> | undefined
             const terminalError = getAssistantTerminalError(message, {

@@ -54,6 +54,7 @@ import {
   getChapterArrangedEntities,
   createChapter,
   completeChapter,
+  getChapter,
   type NovelChapter,
 } from '@/api/novel-client'
 import { useNovelSession } from '@/hooks/use-novel-session'
@@ -817,6 +818,30 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
         .catch((err) => console.error('[NovelWorkspace] 刷新 characterHistory 失败:', err))
     }
   }, [creationFlow.agentOutputs, currentProjectId, queryClient, setCharacterHistory])
+
+  // 群聊链路的正文由后端 ChapterFinalizer 在 run 内直接落库（chapter.content + content revision），
+  // 与工作流"完成后由用户手动保存"不同。完成后把后端已保存的章节同步进本地 store，
+  // 否则编辑器仍显示运行前的旧正文，用户会误以为"没有保存"。
+  // ref 防重：同一 runId 只同步一次，chapters 变化引发的 effect 重跑不会重新拉取。
+  const syncedDiscussionRunRef = useRef<string | null>(null)
+  const completedDiscussionRunId = creationFlow.result?.status === 'completed'
+    ? creationFlow.result.discussionRunId
+    : undefined
+  useEffect(() => {
+    if (!completedDiscussionRunId || completedDiscussionRunId === syncedDiscussionRunRef.current) return
+    if (!currentProjectId || creationChapterNumber == null) return
+    const targetChapter = chapters.find((c) => c.chapterNumber === creationChapterNumber)
+    if (!targetChapter) return
+    syncedDiscussionRunRef.current = completedDiscussionRunId
+    let cancelled = false
+    void getChapter(targetChapter.id)
+      .then((saved) => {
+        if (!cancelled) upsertChapter(saved)
+      })
+      .catch((err) => console.error('[NovelWorkspace] 同步群聊已完成章节失败:', err))
+    void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+    return () => { cancelled = true }
+  }, [completedDiscussionRunId, currentProjectId, creationChapterNumber, chapters, upsertChapter, queryClient])
 
   // 创作完成后不自动保存——由用户通过"保存到章节"按钮手动触发，
   // 避免 useEffect 依赖 chapters 导致 completeChapter → upsertChapter → chapters 变化 → 无限循环

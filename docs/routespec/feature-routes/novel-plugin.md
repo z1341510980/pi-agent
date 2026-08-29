@@ -18,29 +18,31 @@
 
 ### 章节创作流程（SSE）
 
-- 描述：三条触发路径——`create-flow`（手动编排矩阵）、`ai-arrange`（AI 编排后确认再创作）、`create-team`（同步兼容入口）；Director → Writer → 质量门 → 盲审/Reviewer → 检查点 → Reviser/Memory。群聊路径（`discuss-flow`）另见「群聊共创演绎链路」。
+- 描述：三条触发路径——`create-flow`（手动编排矩阵）、`ai-arrange`（AI 编排后确认再创作）、`create-team`（同步兼容入口）；Director → Writer → 质量门 → 盲审/Reviewer → 检查点 → Reviser/Memory。群聊路径（`create-discussion`，后台运行 + 事件 tail）另见「群聊共创演绎链路」。
 - 入口：HTTP `POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/create-flow` 等
 - 核心：`routes/creation-flow-routes.ts`（SSE 与检查点决策）、`core/novel-orchestrator.ts`（createChapterWithFlow）
 - 测试：`apps/agent-server/src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts`
-- 备注：检查点决策经 `POST .../checkpoint/:type/decision` + EventEmitter 传递；群聊演绎链路诊断见 `docs/novel/2026-08-24-群聊演绎链路诊断与修复方案.md`。
+- 备注：检查点决策经 `POST .../checkpoint/:type/decision` + EventEmitter 传递；群聊（create-discussion）自 2026-08-28 起为后台运行 + 事件 tail，与其余路径的一次性 SSE 不同。诊断见 `docs/novel/2026-08-24-群聊演绎链路诊断与修复方案.md`。
 - 覆盖：partial
-- last-updated: 2026-08-25
+- last-updated: 2026-08-28
 
-### 群聊共创演绎链路（动作图 + 自主 mention）
+### 群聊共创演绎链路（确定性调度器 + 事件溯源 + 自主 mention）
 
-- 描述：Director 通过 `novel_submit_scene_plan` 提交「场景 + 戏剧动作节点图（actionBeats）」，acting 阶段由动作节点驱动角色，角色用 `novel_submit_character_turn` 提交结构化回合（公开 `publicText` + 私有 `innerThought`/`conflictReading`/`responsePlan`）并可 `mentionNames` 主动请求同场角色接戏，引擎按 pending FIFO 唤醒。正常 acting 不逐回合调用 Moderator，Moderator 仅在 actor 不在场、回合无效、节点无进展、动作图耗尽等异常时介入一次仲裁。角色回合失败允许单次重试；AbortSignal 取消立即结束且不再调 Moderator；严格模式（`allowLegacyActing: false`）下节点未完成会显式报错阻断 Writer 盲写。旧快照无 actionBeats 时走有界 legacy `Moderator → actor` 轮询。
-- 入口：HTTP `POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/discuss-flow`（SSE）、`POST .../discuss-flow/resume`
+- 描述：2026-08-28 控制平面重排——Moderator 整体删除，planning 由引擎直呼 Director（`novel_submit_scene_plan` 工具 payload 即完成信号，空终答也采用；不可解析文本纠正重试一次，连续无产出抛检查点），acting 由确定性策略表处置（`acting-policy.ts`：completed / thin / skipped / unreached，编 cheng SceneActingReport；只有"全部场景零演出"才停检查点问用户，缺口经 Writer 质量契约绕开而非盲写/阻断）。角色 mention 合成为 `kind:'reaction'` 节点（`parentBeatId` 继承压力上下文，不占 Director 节点名额、不误标完成），受去环/深度/边重复/每场预算约束；无预置节点也能接戏。全章 run 落 append-only 事件流 `novel_discussion_events`（迁移 121）：状态 = fold(events)，续跑位置由 `deriveResumeInfo(events)` 推导（run 行已停写 failedPhase 三元组；旧快照按 transcript 反推兼容）。自由聊天的选人用轻量 `chat-respondent-picker.ts`（Moderator 唯一群聊外用途的替代）。
+- 入口：HTTP `POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/create-discussion`（**202 + runId，后台执行**）、`GET .../discussion-runs/:runId/events?from=seq`（SSE tail：重放 + 实时，run_finished 收流）、`POST .../discussion-runs/:runId/cancel`（显式取消，等待收尾）、`POST .../create-discussion/:runId/resume`（断点续跑，仍为 SSE）、`POST /projects/:projectId/discussion-checkpoint/:checkpointId/decision`（检查点决策；后台 run 经事件流 `checkpoint_pending` 事件携带 checkpointId）。断开连接不再 abort run，只有显式 cancel 停止。
 - 核心：
-  - `core/discussion/engine/team-discussion-engine.ts`（`runSceneLoop` / `runActionBeatScene` 动作节点状态机、`invokeCharacterTurn` 工具主路径 + 单次重试、`enqueueCharacterMentions` 去环与预算、`interveneForActionBeat` 异常仲裁、`applyCastWhitelist` 白名单重算动作图、`formatTranscriptForMember` 可见性裁剪、`buildDiagnosticsSnapshot` 调用统计）
-  - `core/discussion/engine/discussion-types.ts`（`SceneActionBeat` / `SubmittedActionBeatInput`（角色显示名口径）/ `CharacterTurn` / `DiscussionDiagnostics` / `DiscussionResumeState.failedActionBeatId`）
-  - `core/discussion/engine/moderator.ts`（`novel_submit_moderator_decision` 工具主路径 + 一次文本修复轮 + 规则 fallback 计数）
-  - `core/tools/submit.ts`（`createNovelSubmitScenePlanTool`（`requireActionBeats` 切换 schema）、`createNovelSubmitCharacterTurnTool`、`createNovelSubmitModeratorDecisionTool`）
-  - `core/discussion/novel-discussion-runner.ts`（成员构建、三个 toolset 工厂、`allowLegacyActing: false`）
-  - `core/discussion/discussion-run-store.ts`（`failed_action_beat_id` 断点持久化）
-  - 提示词：`core/prompts/role-director-discussion.md`（动作图契约）、`role-character-actor.md`（结构化回合）、`role-writer-discussion.md`（读取私有回合）
-- 前端：`apps/desktop/src/renderer/src/hooks/use-novel-creation-flow.ts`（`agent_output` 消费：Director/角色工具气泡覆盖 `agent_start` 启动占位）、`hooks/use-conversation-messages.ts`（`actorTurn` → `<details>` 可展开区，私有字段不进章节正文）
-- 测试：`__tests__/team-discussion-engine.test.ts`（动作图端到端、mention FIFO、可见性隔离、失败重试、取消、全失败阻断盲写、续跑按 transcript 还原完成度、legacy 有界路径）、`__tests__/moderator.test.ts`、`__tests__/novel-discussion-runner.test.ts`、`apps/desktop/.../hooks/__tests__/use-novel-creation-flow.test.ts`、`hooks/__tests__/use-conversation-messages.test.ts`
-- 备注：工具主路径已实证会在工具结果后返回空 stop（gpt-5.6-luna），引擎只认闭包 payload、前端靠 `agent_output` 覆盖占位，两侧都不能依赖 `prompt()` 文本。`diagnostics` 目前只在后端 `DiscussionResult` 上，尚未透出到 `CreationResult` 供 UI 展示。方案见 `docs/routespec/2026-08-27-discussion-rearchitecture/spec.md`。
+  - `core/discussion/engine/team-discussion-engine.ts`（`runPlanning` 直呼 Director、`runActionBeatScene` 节点状态机 + 策略表处置、`synthesizeReactionNode`/`drainPendingReactions` reaction 队列、`raiseCheckpoint` 事件成对、`emitEvent` 事件溯源钩子、`applyCastWhitelist` 白名单、`buildDiagnosticsSnapshot` 调用统计）
+  - `core/discussion/engine/acting-policy.ts`（策略表 + `decideWeaveGate` 编织闸门 + `buildWriterQualityContract` 质量契约）
+  - `core/discussion/engine/step-executor.ts`（Step 执行器：工具闭包 / 空终答 / 重试 / 取消收口）
+  - `core/discussion/engine/discussion-types.ts`（`SceneActionBeat.kind/parentBeatId`、`DiscussionEventType`、`DiscussionOptions.onEvent`、`DiscussionResumeState.completedActionBeatIds`）
+  - `core/discussion/discussion-event-store.ts`（append/list/`foldDiscussionEvents`/`deriveResumeInfo`/`reconcileOrphanRuns` 启动孤儿回收）
+  - `core/tools/submit.ts`（`createNovelSubmitScenePlanTool`（`requireActionBeats`）、`createNovelSubmitCharacterTurnTool`；Moderator 决策工具已删除）
+  - `core/discussion/novel-discussion-runner.ts`（成员构建、toolset 工厂、`allowLegacyActing: false`）
+  - `core/chapters/chat-respondent-picker.ts`（自由聊天轻量选人）
+  - 提示词：`core/prompts/role-director-discussion.md`（动作图契约）、`role-character-actor.md`（结构化回合 + mention 主动接戏）
+- 前端：`apps/desktop/src/renderer/src/hooks/use-novel-creation-flow.ts`（`startDiscussion` 走 202 → events tail：`progress` 镜像事件复用既有 `novel:progress` 处理、`checkpoint_pending`/`run_finished` 映射检查点与结果；`upsertAgentOutput` 统一 director/character/moderator 三类 `agent_output` 占位覆盖）、`hooks/use-conversation-messages.ts`（`actorTurn` 可展开区）
+- 测试：`__tests__/team-discussion-engine.test.ts`（51 用例：planning 直呼/空终答/检查点、策略表逐情形、reaction 无预置节点可回应不误标完成、可见性隔离、取消、事件重放续跑、旧快照缺口记账）、`__tests__/discussion-event-store.test.ts`（seq 单调 / fold / from 重放 / deriveResumeInfo）、`__tests__/creation-flow-routes.test.ts`（202 契约、events tail、cancel、断点续跑）、`__tests__/creation-flow-interject-route.test.ts`、`__tests__/novel-discussion-runner.test.ts`、`apps/desktop/.../hooks/__tests__/use-novel-creation-flow.test.ts`
+- 备注：事件类型含 `progress`（展示事件镜像，事件 tail 可完整重放旧 SSE 的 UI 内容）与 `interject_status`（插话三态）。`diagnostics` 仍只在后端 `DiscussionResult`，尚未透出到 `CreationResult`。方案与进度见 `docs/routespec/2026-08-28-discussion-flow-repair/spec.md`。
 - 覆盖：sufficient
 - last-updated: 2026-08-28
 

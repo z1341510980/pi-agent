@@ -44,6 +44,7 @@ import type {
   DiscussionOptions,
   DiscussionResult,
   DiscussionFlowEvent,
+  DiscussionEventType,
   SceneDefinition,
   SceneActionBeat,
   CharacterTurn,
@@ -85,6 +86,15 @@ export interface EngineContext {
   logger: FastifyBaseLogger
 }
 
+/** mention 回应队列条目：node 已在入队时合成（kind:'reaction'，继承父节点上下文）。 */
+interface ReactionQueueEntry {
+  node: SceneActionBeat
+  /** 触发该回应的 transcript 消息 ID。 */
+  sourceMessageId: string
+  /** mention 链深度（1 = 直接回应某节点的演出）。 */
+  depth: number
+}
+
 export class TeamDiscussionEngine {
   /** 当前讨论目标，用于给每个成员注入共享上下文 */
   private currentGoal?: DiscussionGoal
@@ -121,11 +131,14 @@ export class TeamDiscussionEngine {
   /** 当前角色回合工具集；仅在一次 actor 调用期间有效。 */
   private currentCharacterTurn?: CharacterTurnToolset
 
-  /** 当前自主演出产生的待回应角色，按因果顺序 FIFO 执行。 */
-  private pendingCharacterMentions: Array<{ targetId: string; sourceMessageId: string; depth: number }> = []
+  /** 当前自主演出产生的待回应节点队列：entry.node 是合成好的 reaction 节点，按因果顺序 FIFO 执行。 */
+  private pendingCharacterMentions: ReactionQueueEntry[] = []
 
   /** 正常自主角色逻辑回合计数。 */
   private autonomousCharacterTurns = 0
+
+  /** mention 合成 reaction 节点的自增序号（保证合成 beatId 全 run 唯一）。 */
+  private reactionNodeSeq = 0
 
   /** 角色主动 mention 计数。 */
   private autonomousMentions = 0
@@ -201,6 +214,7 @@ export class TeamDiscussionEngine {
     this.pendingCharacterMentions = []
     this.autonomousCharacterTurns = 0
     this.autonomousMentions = 0
+    this.reactionNodeSeq = 0
     this.completedActionBeats = 0
     this.characterTurnFailures = 0
     this.characterTurnCancelled = 0
@@ -368,6 +382,39 @@ export class TeamDiscussionEngine {
   }
 
   /**
+   * 事件溯源发射（T4）：引擎在每个确定性调度事实处回调 options.onEvent。
+   * 引擎不知道 runId——调用方绑定事件 store。回调异常只告警：
+   * 事件是账目，不能反过来阻断创作主链路。
+   */
+  private emitEvent(
+    options: DiscussionOptions,
+    type: DiscussionEventType,
+    payload: Record<string, unknown> = {},
+  ): void {
+    if (!options.onEvent) return
+    try {
+      options.onEvent({ type, payload })
+    } catch (err) {
+      this.context.logger.warn({ err, type }, '群聊事件回调失败，不阻断创作')
+    }
+  }
+
+  /** 检查点包装：raised/resolved 成对入事件流，fold 据此还原 awaiting_user。 */
+  private async raiseCheckpoint(
+    options: DiscussionOptions,
+    checkpoint: Parameters<DiscussionOptions['onCheckpoint']>[0],
+  ): Promise<'approve' | 'reject' | 'revise' | string> {
+    this.emitEvent(options, 'checkpoint_raised', {
+      phase: checkpoint.phase,
+      type: checkpoint.type,
+      question: checkpoint.question,
+    })
+    const reply = await options.onCheckpoint(checkpoint)
+    this.emitEvent(options, 'checkpoint_resolved', { phase: checkpoint.phase, reply })
+    return reply
+  }
+
+  /**
    * Phase 1 规划：引擎直呼 Director（2026-08-28 控制平面重排 T1）。
    *
    * ⚠️ 为什么删掉 Moderator 循环：
@@ -412,6 +459,9 @@ export class TeamDiscussionEngine {
     let consecutiveBarren = 0
     // 不可解析文本只给一次纠正机会：模型在输出但格式不对，多轮重试的边际收益很低。
     let textRetryUsed = false
+    // 最近一次 Director 调用的真实失败原因；检查点必须带给用户，
+    // 不能只说"模型可能异常"（常见真因：模型名不在 provider 分组、配额、网络）。
+    let lastDirectorError = ''
 
     for (let attempt = 1; attempt <= maxInvocations; attempt++) {
       // 插话 drain（§3.1）：Director 看到本轮 history 前把用户中途反馈以 user 角色追加。
@@ -448,6 +498,7 @@ export class TeamDiscussionEngine {
         // Director 调用失败（provider 报错/超时）：记入 transcript，按"无产出"继续判定，
         // 不直接终止 run —— 一次抖动不该让整章创作作废。
         const errMsg = err instanceof Error ? err.message : String(err)
+        lastDirectorError = errMsg
         history.push(this.errorMessage(`${director.name} 规划失败：${errMsg}`))
         this.emitProgress(options, 'planning', {
           type: 'phase_change',
@@ -467,6 +518,7 @@ export class TeamDiscussionEngine {
         })
         this.applyCastWhitelist(scenes, history, options, members)
         await this.resolveSceneCharacters(scenes, members, options, channelName)
+        this.emitEvent(options, 'plan_submitted', { source: 'tool', sceneCount: scenes.length, retries })
         return { scenes, source: 'tool', retries }
       }
 
@@ -484,6 +536,7 @@ export class TeamDiscussionEngine {
           })
           this.applyCastWhitelist(markdownScenes, history, options, members)
           await this.resolveSceneCharacters(markdownScenes, members, options, channelName)
+          this.emitEvent(options, 'plan_submitted', { source: 'markdown', sceneCount: markdownScenes.length, retries })
           return { scenes: markdownScenes, source: 'markdown', retries }
         }
       } else {
@@ -495,13 +548,17 @@ export class TeamDiscussionEngine {
       // 连续两轮完全没有产出：更像模型异常而非格式问题，交用户决策。
       if (consecutiveBarren >= 2 && canRetry) {
         history.push(this.systemMessage('导演连续两轮未产出内容（模型可能异常），等待用户决策。'))
-        const reply = await options.onCheckpoint({
+        // 有真实 provider 错误时必须原文带给用户——"模型可能异常"没有行动指引，
+        // "Model X is not supported by any configured account" 才能让用户去改配置。
+        const causeHint = lastDirectorError
+          ? `最近一次失败原因：${lastDirectorError}。可修正模型配置后重试导演规划，或中止本次群聊。`
+          : '导演连续两轮未产出任何内容（模型可能异常或输出预算耗尽）。可重试导演规划，或中止本次群聊（中止后可对同章改用标准工作流创作）。'
+        const reply = await this.raiseCheckpoint(options, {
           type: 'discussion_pause',
           phase: 'planning',
-          question:
-            '导演连续两轮未产出任何内容（模型可能异常或输出预算耗尽）。可重试导演规划，或中止本次群聊（中止后可对同章改用标准工作流创作）。',
+          question: causeHint,
           data: {
-            message: '导演连续两轮未产出任何内容（模型可能异常或输出预算耗尽）。',
+            message: causeHint,
             choices: ['重试导演规划', '中止群聊'],
           },
           options: ['approve', 'reject'],
@@ -541,6 +598,7 @@ export class TeamDiscussionEngine {
 
     // 预算用尽仍无可用计划：返回空计划。是否允许盲写由 Phase 2.5 闸门按
     // allowLegacyActing 决定，规划阶段不在这里替下游做判断。
+    this.emitEvent(options, 'plan_submitted', { source: 'none', sceneCount: 0, retries })
     return { scenes: [], source: 'none', retries }
   }
 
@@ -614,7 +672,7 @@ export class TeamDiscussionEngine {
       type: 'phase_change',
       data: { message: `⚠️ 盲写降级确认：${question}` },
     })
-    const reply = await options.onCheckpoint({
+    const reply = await this.raiseCheckpoint(options, {
       type: 'discussion_pause',
       phase: 'chapter_weaving',
       question,
@@ -655,6 +713,8 @@ export class TeamDiscussionEngine {
     enforceCastCoverage?: boolean
     /** acting 中断时从该场景的指定动作节点之后继续。 */
     failedActionBeatId?: string
+    /** 事件重放得出的该场景已完成节点集；提供时跳过 transcript 反推。 */
+    completedActionBeatIds?: string[]
   }): Promise<SceneActingReport[]> {
     const { goal, members, history, scenes, options, limits, channelName, startIndex, track } = params
     const reports: SceneActingReport[] = []
@@ -680,6 +740,7 @@ export class TeamDiscussionEngine {
           activeMembers,
           startIndex: i,
           failedActionBeatId: i === startIndex ? params.failedActionBeatId : undefined,
+          completedActionBeatIds: i === startIndex ? params.completedActionBeatIds : undefined,
         }))
         continue
       }
@@ -740,6 +801,8 @@ export class TeamDiscussionEngine {
     scene: SceneDefinition
     activeMembers: DiscussionMember[]
     failedActionBeatId?: string
+    /** 事件重放得出的该场景已完成节点集；提供时跳过 transcript 反推。 */
+    completedActionBeatIds?: string[]
   }): Promise<SceneActingReport> {
     const { history, members, options, channelName, track, scene, activeMembers } = params
     const actionBeats = scene.actionBeats ?? []
@@ -748,35 +811,45 @@ export class TeamDiscussionEngine {
     const memberByName = new Map(characterMembers.map(member => [this.normalizeCharacterName(member.name), member]))
     const report = createSceneActingReport(scene)
     const completed = new Set<string>()
-    // 续跑完成度以 transcript 为准，不以 failedActionBeatId 的下标为准。
-    //
-    // failedActionBeatId 只是「中断时正在执行的节点」，它既可能自身失败（未产出
-    // 任何回合），也可能已经完成、错误发生在它触发的 mention 回应里。按下标
-    // 跳到它之后继续，前者会把没演过的节点静默算作已完成，后者会重复演一次。
-    // 每条角色消息都带 actorTurn.actionBeatId，据此还原真实完成集合最可靠。
-    const turnBeatIds = history
-      .filter(message => message.type === 'member' && message.sceneId === scene.sceneId)
-      .map(message => message.actorTurn?.actionBeatId)
-      .filter((beatId): beatId is string => Boolean(beatId))
-    for (const beatId of turnBeatIds) {
-      completed.add(beatId)
-      report.completed.push(beatId)
-    }
-    const resumeAfter = params.failedActionBeatId
-    if (resumeAfter && turnBeatIds.length === 0) {
-      // 早期快照的角色消息没有 actorTurn：退回下标口径，但只把「严格早于」
-      // 中断节点的节点算作已完成，保证中断节点本身会被重演而不是被跳过。
-      const failedBeatIndex = actionBeats.findIndex(beat => beat.beatId === resumeAfter)
-      if (failedBeatIndex > 0) {
-        for (const beat of actionBeats.slice(0, failedBeatIndex)) {
-          completed.add(beat.beatId)
-          report.completed.push(beat.beatId)
+    // 完成集来源二选一：
+    // - 显式集合（T5 事件重放）：run 行不再写三元组，续跑位置由事件流推导；
+    // - transcript 反推（旧快照兼容）：每条角色消息带 actorTurn.actionBeatId。
+    if (params.completedActionBeatIds) {
+      for (const beatId of params.completedActionBeatIds) {
+        completed.add(beatId)
+        report.completed.push(beatId)
+      }
+    } else {
+      // 续跑完成度以 transcript 为准，不以 failedActionBeatId 的下标为准。
+      //
+      // failedActionBeatId 只是「中断时正在执行的节点」，它既可能自身失败（未产出
+      // 任何回合），也可能已经完成、错误发生在它触发的 mention 回应里。按下标
+      // 跳到它之后继续，前者会把没演过的节点静默算作已完成，后者会重复演一次。
+      // 每条角色消息都带 actorTurn.actionBeatId，据此还原真实完成集合最可靠。
+      const turnBeatIds = history
+        .filter(message => message.type === 'member' && message.sceneId === scene.sceneId)
+        .map(message => message.actorTurn?.actionBeatId)
+        .filter((beatId): beatId is string => Boolean(beatId))
+      for (const beatId of turnBeatIds) {
+        completed.add(beatId)
+        report.completed.push(beatId)
+      }
+      const resumeAfter = params.failedActionBeatId
+      if (resumeAfter && turnBeatIds.length === 0) {
+        // 早期快照的角色消息没有 actorTurn：退回下标口径，但只把「严格早于」
+        // 中断节点的节点算作已完成，保证中断节点本身会被重演而不是被跳过。
+        const failedBeatIndex = actionBeats.findIndex(beat => beat.beatId === resumeAfter)
+        if (failedBeatIndex > 0) {
+          for (const beat of actionBeats.slice(0, failedBeatIndex)) {
+            completed.add(beat.beatId)
+            report.completed.push(beat.beatId)
+          }
         }
       }
     }
     const edgeCounts = new Map<string, number>()
     let beatRounds = 0
-    let pending: Array<{ targetId: string; sourceMessageId: string; depth: number }> = []
+    let pending: ReactionQueueEntry[] = []
 
     for (const actionBeat of actionBeats) {
       if (completed.has(actionBeat.beatId)) continue
@@ -785,12 +858,19 @@ export class TeamDiscussionEngine {
       // 推一条开始事件，用户看到的节点数与实际演出不符。
       if (beatRounds >= params.limits.maxRoundsPerScene) {
         report.unreached.push(actionBeat.beatId)
+        this.emitEvent(options, 'degraded', {
+          kind: 'unreached', sceneId: scene.sceneId, beatId: actionBeat.beatId,
+          reason: '场景回合预算耗尽',
+        })
         continue
       }
       track.phase = 'acting'
       this.currentActionBeatId = actionBeat.beatId
       this.currentActionBeatSceneId = scene.sceneId
       this.appendActionBeatSystemMessage(history, options, scene, actionBeat, 'start')
+      this.emitEvent(options, 'beat_started', {
+        sceneId: scene.sceneId, beatId: actionBeat.beatId, actor: actionBeat.actor,
+      })
 
       const actor = memberById.get(actionBeat.actor)
       if (!actor) {
@@ -837,17 +917,18 @@ export class TeamDiscussionEngine {
       report.completed.push(actionBeat.beatId)
       this.completedActionBeats++
       this.appendActionBeatSystemMessage(history, options, scene, actionBeat, 'complete')
+      this.emitEvent(options, 'beat_completed', { sceneId: scene.sceneId, beatId: actionBeat.beatId, via: 'beat' })
 
       const sourceMessageId = this.appendCharacterTurn(
         actor, turn, scene.sceneId, history, options, channelName,
       )
       pending = this.enqueueCharacterMentions(
-        pending, actor, turn, sourceMessageId, scene, memberByName, edgeCounts, history, options,
+        pending, actor, turn, sourceMessageId, scene, actionBeat, memberByName, edgeCounts, history, options,
       )
       if (actionBeat.nextActor && pending.length === 0) {
         const defaultTarget = memberById.get(actionBeat.nextActor)
         if (defaultTarget && defaultTarget.id !== actor.id) {
-          pending.push({ targetId: defaultTarget.id, sourceMessageId, depth: 1 })
+          pending.push({ node: this.synthesizeReactionNode(defaultTarget, actionBeat, scene.sceneId), sourceMessageId, depth: 1 })
         }
       }
 
@@ -864,7 +945,13 @@ export class TeamDiscussionEngine {
       && !report.skipped.includes(beat.beatId)
       && !report.unreached.includes(beat.beatId),
     )
-    for (const beat of remaining) report.unreached.push(beat.beatId)
+    for (const beat of remaining) {
+      report.unreached.push(beat.beatId)
+      this.emitEvent(options, 'degraded', {
+        kind: 'unreached', sceneId: scene.sceneId, beatId: beat.beatId,
+        reason: '节点未能执行',
+      })
+    }
 
     const gaps = report.thin.length + report.skipped.length + report.unreached.length
     if (gaps > 0) {
@@ -876,18 +963,28 @@ export class TeamDiscussionEngine {
         data: { message, sceneId: scene.sceneId },
       })
     }
+    this.emitEvent(options, 'scene_completed', {
+      sceneId: scene.sceneId,
+      title: scene.title,
+      completed: report.completed.length,
+      thin: report.thin.length,
+      skipped: report.skipped.length,
+      unreached: report.unreached.length,
+      reactionTurns: report.reactionTurns,
+    })
     return report
   }
 
   /**
    * 执行 pending mention 队列。
    *
-   * 被 mention 角色若恰好有未完成节点，该回合兼作节点完成凭证；否则作为
-   * 独立 reaction 回合（不占 beat 名额，单独扣 reaction 预算）。
-   * 这是 T3 的"追加 reaction 节点"语义的前半步：先不再因"找不到节点"丢弃 mention。
+   * 队列条目是入队时合成好的 `kind:'reaction'` 节点（T3）：不占 Director 节点
+   * 名额，压力上下文继承自 parentBeatId 指向的父节点。被 mention 角色若恰好
+   * 有未完成节点，该回合兼作节点完成凭证（保留现有 completedActionBeats 口径）；
+   * 否则是纯 reaction 回合，不标记任何 actionBeat 完成。
    */
   private async drainPendingReactions(params: {
-    pending: Array<{ targetId: string; sourceMessageId: string; depth: number }>
+    pending: ReactionQueueEntry[]
     report: SceneActingReport
     actionBeats: SceneActionBeat[]
     completed: Set<string>
@@ -900,7 +997,7 @@ export class TeamDiscussionEngine {
     memberById: Map<string, DiscussionMember>
     memberByName: Map<string, DiscussionMember>
     edgeCounts: Map<string, number>
-  }): Promise<Array<{ targetId: string; sourceMessageId: string; depth: number }>> {
+  }): Promise<ReactionQueueEntry[]> {
     const {
       report, actionBeats, completed, scene, history, members, options,
       channelName, track, memberById, memberByName, edgeCounts,
@@ -910,15 +1007,14 @@ export class TeamDiscussionEngine {
     while (pending.length > 0 && report.reactionTurns < ACTING_POLICY.MAX_REACTION_TURNS_PER_SCENE) {
       throwIfAborted(options.signal)
       const next = pending.shift()!
-      const target = memberById.get(next.targetId)
+      const target = memberById.get(next.node.actor)
       if (!target) continue
       const source = history.find(message => message.id === next.sourceMessageId)
-      // 优先认领该角色尚未完成的节点；没有则以触发它的节点作为压力上下文，
-      // 走独立 reaction 回合（旧路径在这里直接丢弃 mention，导致自主接戏基本失效）。
+      // 优先认领该角色尚未完成的节点；没有则以合成的 reaction 节点为上下文
+      // （压力等字段已在入队时从触发节点继承）。旧路径在这里直接丢弃 mention，
+      // 导致自主接戏基本失效。
       const claimedBeat = actionBeats.find(beat => beat.actor === target.id && !completed.has(beat.beatId))
-      const contextBeat = claimedBeat
-        ?? actionBeats.find(beat => beat.beatId === this.currentActionBeatId)
-        ?? actionBeats[0]
+      const contextBeat = claimedBeat ?? next.node
       if (!contextBeat) continue
 
       const response = await this.invokeCharacterTurn(
@@ -949,24 +1045,54 @@ export class TeamDiscussionEngine {
         // 只统计外层 Director 顺序驱动的节点，mention 接戏完成的节点凭空消失。
         this.completedActionBeats++
         this.appendActionBeatSystemMessage(history, options, scene, claimedBeat, 'complete')
+        this.emitEvent(options, 'beat_completed', {
+          sceneId: scene.sceneId, beatId: claimedBeat.beatId, via: 'reaction',
+        })
       }
 
       const responseMessageId = this.appendCharacterTurn(
-        target, response, scene.sceneId, history, options, channelName,
+        target, response, scene.sceneId, history, options, channelName, true,
       )
       pending = this.enqueueCharacterMentions(
-        pending, target, response, responseMessageId, scene,
+        pending, target, response, responseMessageId, scene, contextBeat,
         memberByName, edgeCounts, history, options, next.depth,
       )
       if (claimedBeat?.nextActor && pending.length === 0) {
         const defaultTarget = memberById.get(claimedBeat.nextActor)
         if (defaultTarget && defaultTarget.id !== target.id) {
-          pending.push({ targetId: defaultTarget.id, sourceMessageId: responseMessageId, depth: next.depth + 1 })
+          pending.push({ node: this.synthesizeReactionNode(defaultTarget, claimedBeat, scene.sceneId), sourceMessageId: responseMessageId, depth: next.depth + 1 })
         }
       }
     }
     // 预算耗尽时清空剩余队列：留着也不会执行，只会让下一节点的 drain 误以为有待办。
     return []
+  }
+
+  /**
+   * 为被 mention 角色合成一个 `kind:'reaction'` 回应节点（T3）。
+   *
+   * 节点不进入 Director 计划、不参与完成度判定，仅作为该回合的调度上下文：
+   * pressure/action/choice/consequence/exitCondition 逐字继承父节点，配合
+   * invokeCharacterTurn 的"请回应 XX 刚才的动作"提示构成压力上下文继承。
+   */
+  private synthesizeReactionNode(
+    target: DiscussionMember,
+    parent: SceneActionBeat,
+    sceneId: number,
+  ): SceneActionBeat {
+    this.reactionNodeSeq += 1
+    return {
+      kind: 'reaction',
+      parentBeatId: parent.beatId,
+      beatId: `reaction-s${sceneId}-${parent.beatId}-${this.reactionNodeSeq}`,
+      actor: target.id,
+      target: parent.actor,
+      pressure: parent.pressure,
+      action: parent.action,
+      choice: parent.choice,
+      consequence: parent.consequence,
+      exitCondition: parent.exitCondition,
+    }
   }
 
   /** 策略表处置：节点未能执行（actor 缺失或稳定失败）。 */
@@ -981,6 +1107,9 @@ export class TeamDiscussionEngine {
     report.skipped.push(beat.beatId)
     this.characterTurnFailures++
     this.appendActionBeatSystemMessage(history, options, scene, beat, 'failed')
+    this.emitEvent(options, 'beat_skipped', {
+      sceneId: scene.sceneId, beatId: beat.beatId, reason,
+    })
     this.emitProgress(options, 'acting', {
       type: 'phase_change',
       data: { message: `⚠️ 动作节点「${beat.beatId}」跳过：${reason}`, sceneId: scene.sceneId },
@@ -998,6 +1127,9 @@ export class TeamDiscussionEngine {
   ): void {
     report.thin.push(beat.beatId)
     this.appendActionBeatSystemMessage(history, options, scene, beat, 'failed')
+    this.emitEvent(options, 'degraded', {
+      kind: 'thin', sceneId: scene.sceneId, beatId: beat.beatId, reason,
+    })
     this.emitProgress(options, 'acting', {
       type: 'phase_change',
       data: { message: `⚠️ 动作节点「${beat.beatId}」无有效进展：${reason}`, sceneId: scene.sceneId },
@@ -1123,6 +1255,7 @@ export class TeamDiscussionEngine {
     history: DiscussionMessage[],
     options: DiscussionOptions,
     channelName: string,
+    isReaction = false,
   ): string {
     const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const message: DiscussionMessage = {
@@ -1137,6 +1270,13 @@ export class TeamDiscussionEngine {
     }
     history.push(message)
     this.channel.broadcast(channelName, member.id, message)
+    this.emitEvent(options, 'turn_submitted', {
+      messageId: id,
+      actorId: member.id,
+      sceneId,
+      actionBeatId: turn.actionBeatId,
+      reaction: isReaction,
+    })
     this.emitProgress(options, 'acting', {
       type: 'agent_output',
       data: {
@@ -1151,19 +1291,20 @@ export class TeamDiscussionEngine {
   }
 
   private enqueueCharacterMentions(
-    pending: Array<{ targetId: string; sourceMessageId: string; depth: number }>,
+    pending: ReactionQueueEntry[],
     sourceMember: DiscussionMember,
     turn: CharacterTurn,
     sourceMessageId: string,
     scene: SceneDefinition,
+    parentNode: SceneActionBeat,
     memberByName: Map<string, DiscussionMember>,
     edgeCounts: Map<string, number>,
     history: DiscussionMessage[],
     options: DiscussionOptions,
     parentDepth = 0,
-  ): Array<{ targetId: string; sourceMessageId: string; depth: number }> {
+  ): ReactionQueueEntry[] {
     const result = [...pending]
-    const seen = new Set(result.map(item => `${item.sourceMessageId}:${item.targetId}`))
+    const seen = new Set(result.map(item => `${item.sourceMessageId}:${item.node.actor}`))
     for (const name of turn.mentionNames) {
       const target = memberByName.get(this.normalizeCharacterName(name))
       if (!target || target.id === sourceMember.id) continue
@@ -1177,8 +1318,18 @@ export class TeamDiscussionEngine {
       if (seen.has(key)) continue
       seen.add(key)
       edgeCounts.set(edge, count + 1)
-      result.push({ targetId: target.id, sourceMessageId, depth: parentDepth + 1 })
+      result.push({
+        node: this.synthesizeReactionNode(target, parentNode, scene.sceneId),
+        sourceMessageId,
+        depth: parentDepth + 1,
+      })
       this.autonomousMentions++
+      this.emitEvent(options, 'reaction_enqueued', {
+        sceneId: scene.sceneId,
+        parentBeatId: parentNode.beatId,
+        targetId: target.id,
+        depth: parentDepth + 1,
+      })
       this.emitProgress(options, 'acting', {
         type: 'phase_change',
         data: { message: `${sourceMember.name} 主动邀请 ${target.name} 接戏` },
@@ -1332,6 +1483,7 @@ export class TeamDiscussionEngine {
         track,
         enforceCastCoverage: false,
         failedActionBeatId: resumeState.failedActionBeatId,
+        completedActionBeatIds: resumeState.completedActionBeatIds,
       })
 
       track.phase = 'chapter_weaving'
@@ -1520,6 +1672,11 @@ export class TeamDiscussionEngine {
     })
     const { session, streamEmitter, messageId } = handle
     let capturedUsage: DiscussionUsage | undefined
+    // PI SDK 不向上抛 provider 错误（见 plugin-session-outcome.ts）：assistant 终态
+    // stopReason='error' 是模型不存在/配额/网络等故障的唯一信号，prompt() 仍正常
+    // resolve。不捕获的话错误被吞成空串——planning 误判"无产出"、日志 error 为空、
+    // 用户只见"模型可能异常"而看不到真实原因。
+    let capturedLlmError = ''
     const usageSession = session as unknown as {
       subscribe?: (listener: (event: Record<string, unknown>) => void) => () => void
     }
@@ -1527,6 +1684,9 @@ export class TeamDiscussionEngine {
       if (event.type !== 'message_end') return
       const message = event.message as Record<string, unknown> | undefined
       if (!message || message.role !== 'assistant') return
+      if (message.stopReason === 'error') {
+        capturedLlmError = (message.errorMessage as string) || '未知 LLM 错误'
+      }
       const usage = extractDiscussionUsage(message)
       if (usage) capturedUsage = addDiscussionUsage(capturedUsage, usage)
     })
@@ -1550,7 +1710,13 @@ export class TeamDiscussionEngine {
 
     try {
       result = await session.prompt()
-      if (member.type === 'character' && characterTurnToolset?.extractResult()) {
+      // 工具已提交 payload 时以 payload 为准（错误可能发生在工具结果之后的往返）；
+      // 既无 payload 又有 provider 错误 → 转真异常，让重试/降级/日志都拿到原因。
+      const extractedPayload = member.type === 'character' ? characterTurnToolset?.extractResult() : undefined
+      if (capturedLlmError && !extractedPayload) {
+        throw new Error(`LLM 调用失败: ${capturedLlmError}`)
+      }
+      if (member.type === 'character' && extractedPayload) {
         // 工具主路径的终答可能为空；调用方读取闭包 payload，不能再触发一次 legacy 解析。
         streamEmitter.finishTextMessage()
         return result
@@ -1559,8 +1725,14 @@ export class TeamDiscussionEngine {
       return result
     } catch (err) {
       status = options.signal?.aborted ? 'cancelled' : 'error'
-      error = err instanceof Error ? err.message : String(err)
-      throw err
+      const raw = err instanceof Error ? err.message : String(err)
+      // prompt() 抛出的错误可能不带 provider 细节（真实原因只在事件流的
+      // stopReason='error' 终态里，实测出现过空 message 的 Error）。
+      // 用捕获到的原因补全——审计日志与 planning 检查点绝不能看到空错误。
+      error = capturedLlmError
+        ? (raw ? `${raw}（provider: ${capturedLlmError}）` : capturedLlmError)
+        : raw
+      throw err instanceof Error && raw ? err : new Error(error || 'LLM 调用失败（未知错误）')
     } finally {
       unsubscribeUsage?.()
       try {
@@ -1674,7 +1846,8 @@ export class TeamDiscussionEngine {
       }
     }
 
-    // 4. 只有明显失控才自动重写；75%-85% 交给 Reviewer 判断完整性。
+    // 4. 只有明显失控才自动重写；下限与 Writer 允许区间（80%-135%）留出缓冲，
+    //    75% 以下才拦，75%-80% 交给 Reviewer 判断完整性。
     if (targetWords != null && targetWords > 0) {
       if (wordCount < targetWords * 0.75) {
         return {
@@ -1683,7 +1856,7 @@ export class TeamDiscussionEngine {
           details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）`,
         }
       }
-      if (wordCount > targetWords * 1.30) {
+      if (wordCount > targetWords * 1.35) {
         return {
           shouldRewrite: true,
           reason: '字数严重超标',
@@ -1805,13 +1978,17 @@ export class TeamDiscussionEngine {
 
 ---
 
-## ⚠️ 上一次编织丢弃了过多角色推演台词（当前复用率 ${percent}%）
+## ⚠️ 上一次编织丢失了较多角色推演台词（当前复用率 ${percent}%）
 
-以下推演台词在正文中找不到踪迹。请重写完整章节正文，把它们之中至少一半自然织入对应场景（可直接引用、可拆成被打断的半句、可嵌入叙述转述），其余确实与场景目标冲突的才允许舍弃：
+以下推演台词在正文中找不到踪迹。请重写完整章节正文，处理原则：
+
+1. 先检查每条台词承载的**意图与信息差**是否已经以别的形式落地——已落地的算通过，不必再塞原句。
+2. 确实缺失的，挑其中最有戏的部分自然织入对应场景：改写措辞、拆成被打断的半句、嵌入叙述转述都可以，逐字引用反而是下策。
+3. 与场景节奏确实冲突的允许舍弃，不要为了命中率硬塞——自然优先，宁舍不塞。
 
 ${listed}
 
-再次强调：推演中每个角色说过的关键台词，其语义都必须在正文中有着落；字数硬约束不变。`
+字数硬约束不变。`
     try {
       const rewritten = await this.invokeMember(writer, rewritePrompt, [], options, { phase: 'chapter_weaving' })
       const guarded = await this.guardAndMaybeRewrite(
@@ -1924,6 +2101,7 @@ ${listed}
       ?? (chapterConvergerId ? members.find(m => m.id === chapterConvergerId) : undefined)
       ?? members[0]
     if (!writer) throw new Error('无可收敛成员')
+    this.emitEvent(options, 'weave_started', { sceneCount: scenes.length })
 
     // 从 history 提取每个场景的角色推演剧本（type='member' 且 sceneId 匹配）
       const sceneScripts = scenes.map(scene => {
@@ -1954,14 +2132,16 @@ ${listed}
         data: { message: '⚠️ 未获取到角色推演剧本，Writer 进入盲写降级路径（本章没有角色演出素材）。' },
       })
       const targetHint = goal.targetWords
-        ? `正文必须控制在 ${Math.round(goal.targetWords * 0.85)}-${Math.round(goal.targetWords * 1.30)} 字，目标约 ${goal.targetWords} 字。生成后自行计数并删减或补足。`
+        ? `正文必须控制在 ${Math.round(goal.targetWords * 0.80)}-${Math.round(goal.targetWords * 1.35)} 字，目标约 ${goal.targetWords} 字。生成后自行计数并删减或补足。`
         : ''
       const fallbackPrompt = `请基于群聊记录产出完整章节正文。${targetHint}`
       const result = await this.invokeMember(writer, fallbackPrompt, [], options, { phase: 'chapter_weaving' })
       // PostWriteGuard：模型退化/字数失控检测，命中则让 Writer 重写一次
-      return this.guardAndMaybeRewrite(
+      const guardedFallback = await this.guardAndMaybeRewrite(
         result, writer, fallbackPrompt, options, goal.targetWords, goal.requiredMentions,
       )
+      this.emitEvent(options, 'weave_completed', { chars: guardedFallback.length, degraded: true })
+      return guardedFallback
     }
 
     // 构建全章剧本上下文：每个场景的信息 + 角色推演记录
@@ -1985,7 +2165,7 @@ ${scriptBlock}`
     }).join('\n\n---\n\n')
 
     const targetHint = goal.targetWords
-      ? `本章目标字数为 ${goal.targetWords} 字，允许范围 ${Math.round(goal.targetWords * 0.85)}-${Math.round(goal.targetWords * 1.30)} 字。输出前自行估算正文长度，必须在此范围内。`
+      ? `本章目标字数为 ${goal.targetWords} 字，允许范围 ${Math.round(goal.targetWords * 0.80)}-${Math.round(goal.targetWords * 1.35)} 字。输出前自行估算正文长度，必须在此范围内。`
       : '控制正文长度，不要无目的扩写。'
     const prompt = `请将以下各场景的角色推演一次性编织为完整章节正文。
 
@@ -1999,7 +2179,7 @@ ${writerContract ? `\n${writerContract}\n` : ''}
 1. 把角色的“意图 / 心理 / 应对”推演转化为小说叙事，不要把推演标签原样写入正文
 2. 统一叙事视角；只在场景切换或建立新空间时补必要的环境描写，不得为凑字数堆砌景物、心理或动作描写
 3. 场景之间自然过渡，不要生硬拼接，确保整体节奏流畅
-4. 根据角色推演补全必要的动作和台词，但不得擅自改变角色意图、心理状态和应对策略
+4. 根据角色推演补全必要的动作和台词；允许补写推演未覆盖的过渡反应与动机衔接以保持因果连贯，但不得改变角色已演出的意图、心理状态和应对策略，不得新增独立于推演的重大事实
 5. 各场景的情绪应衔接成完整的全章情绪曲线，与 Director 规划的情绪走向呼应
 6. 多名同性角色同场时，段首、动作主体切换和对话归属必须写角色姓名；“他/她”只能在唯一先行词明确时使用
 7. 绝不使用长横线破折号
@@ -2011,9 +2191,11 @@ ${writerContract ? `\n${writerContract}\n` : ''}
       result, writer, prompt, options, goal.targetWords, goal.requiredMentions,
     )
     // P1-2：台词复用率闸门——低于阈值时携带未落地台词清单定向补织一次
-    return this.ensureTranscriptFidelity(
+    const finalDraft = await this.ensureTranscriptFidelity(
       guarded, writer, history, members, goal, options, prompt,
     )
+    this.emitEvent(options, 'weave_completed', { chars: finalDraft.length })
+    return finalDraft
   }
 
   /** 对 Writer 编织后的完整正文执行 Reviewer + 可选 Reviser 闭环。 */
@@ -2042,7 +2224,7 @@ ${writerContract ? `\n${writerContract}\n` : ''}
         }
       : reviewer
     const targetHint = targetWords
-      ? `\n\n## 字数验收\n目标 ${targetWords} 字，建议范围 ${Math.round(targetWords * 0.85)}-${Math.round(targetWords * 1.15)} 字。轻微偏离需结合章节完整性判断；只有低于 ${Math.round(targetWords * 0.75)} 或高于 ${Math.round(targetWords * 1.30)} 字才必须给出 revise。`
+      ? `\n\n## 字数验收\n目标 ${targetWords} 字，建议范围 ${Math.round(targetWords * 0.80)}-${Math.round(targetWords * 1.30)} 字。轻微偏离需结合章节完整性判断；只有低于 ${Math.round(targetWords * 0.75)} 或高于 ${Math.round(targetWords * 1.35)} 字才必须给出 revise。`
       : ''
     const proseQualityReport = options.buildProseQualityReport?.(content) ?? ''
     const proseEditor: DiscussionMember = {
@@ -2098,18 +2280,21 @@ ${content}${proseQualityReport ? `\n\n---\n\n${proseQualityReport}` : ''}\n\n---
       type: 'member',
     })
 
-    const decision = await options.onCheckpoint({
+    const decision = await this.raiseCheckpoint(options, {
       type: 'review',
       phase: 'reviewing',
       question: '完整章节审稿已完成，请确认是否采用或修订。',
       options: ['approve', 'revise', 'reject'],
       context: report,
     })
+    // review_completed = 审稿阶段定账（决策已知）。reject 的终态由 run_finished 承载。
+    this.emitEvent(options, 'review_completed', { decision })
     if (decision === 'reject') return { status: 'cancelled', content, review: reviewOutcome ?? undefined }
     const wordCount = content.replace(/\s/g, '').length
     // 仅严重偏离触发自动 Reviser；轻微偏离由 Reviewer/用户决定。
+    // 硬边界与 Writer 允许区间（80%-135%）及 PostWriteGuard 对齐。
     const lengthOutOfRange = targetWords != null && (
-      wordCount < targetWords * 0.75 || wordCount > targetWords * 1.30
+      wordCount < targetWords * 0.75 || wordCount > targetWords * 1.35
     )
     if (decision !== 'revise' && decision !== 'rewrite' && !lengthOutOfRange) {
       return { status: 'completed', content, review: reviewOutcome ?? undefined }

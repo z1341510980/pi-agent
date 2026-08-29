@@ -130,6 +130,15 @@ export interface DiscussionGoal {
 
 /** Director 为场景安排的一个可执行戏剧动作节点。 */
 export interface SceneActionBeat {
+  /**
+   * 节点种类（2026-08-28 T3）：'action' 是 Director 计划里的原始节点；
+   * 'reaction' 是引擎在 mention 出队时合成的回应节点——不占 Director 节点名额、
+   * 不参与完成度判定，压力上下文在合成时继承 parentBeatId 指向的父节点。
+   * 缺省视为 'action'（Director 工具提交与 Markdown 回退都不携带该字段）。
+   */
+  kind?: 'action' | 'reaction'
+  /** kind='reaction' 时触发该回应的节点 ID；'action' 节点不携带。 */
+  parentBeatId?: string
   /** 稳定的节点 ID；旧计划没有此字段时由引擎按顺序补齐。 */
   beatId: string
   /** 当前节点由哪个角色先行动（canonical member ID）。 */
@@ -335,7 +344,43 @@ export interface DiscussionOptions {
   onInterjectInjected?: (ids: string[]) => void
   /** flow 收尾时仍未被消费的插话回调（供端点推 status='dropped' 事件）。 */
   onInterjectDropped?: (ids: string[]) => void
+  /**
+   * 事件溯源钩子（2026-08-28 控制平面重排 T4）：引擎在每个确定性调度事实处
+   * 发出事件（计划提交 / 节点定账 / 回合提交 / 检查点 / 降级）。引擎不知道
+   * runId，由调用方（runner/路由层）绑定事件 store 落库；状态 = fold(events)。
+   * 回调抛错只告警，不阻断创作。
+   */
+  onEvent?: (event: { type: DiscussionEventType; payload: Record<string, unknown> }) => void
 }
+
+/**
+ * 引擎事件类型（T4 事件溯源）。与 discussion-event-store 的
+ * DiscussionEventType 保持同词汇；定义在本文件以维持 engine → 外层的单向依赖。
+ */
+export type DiscussionEventType =
+  | 'run_started'
+  | 'plan_submitted'
+  | 'beat_started'
+  | 'beat_completed'
+  | 'beat_skipped'
+  | 'turn_submitted'
+  | 'reaction_enqueued'
+  | 'scene_completed'
+  | 'weave_started'
+  | 'weave_completed'
+  | 'review_completed'
+  | 'checkpoint_raised'
+  | 'checkpoint_resolved'
+  | 'degraded'
+  /**
+   * AG-UI 事件镜像（T7）：后台 run 的 emit 通道（TEXT_MESSAGE_* 流式正文、
+   * CUSTOM novel:progress / novel:checkpoint / novel:user-message、RUN_*）整体
+   * 落事件流，payload 即原 AG-UI 事件。前端 tail 直接喂 handleEvent，
+   * 流式体验与旧 SSE 一致。事务性调度事实仍走上面的专用类型。
+   */
+  | 'agui'
+  | 'degraded'
+  | 'run_finished'
 
 /** 群聊运行中用户插话（对话化交互形态 §3.1）：由端点入队，Moderator 每轮 decide 前 drain。 */
 export interface DiscussionInterjectMessage {
@@ -612,6 +657,12 @@ export interface DiscussionResumeState {
   failedSceneId?: number
   /** phase='acting' 时中断的 actionBeat ID。 */
   failedActionBeatId?: string
+  /**
+   * 事件重放得出的已完成节点集（T5，按中断场景分组传入仅该场景的集合）。
+   * 提供时引擎直接采用，跳过 transcript 反推；旧快照（无事件流）不携带，
+   * 引擎回落到按 actorTurn.actionBeatId 反推的兼容路径。
+   */
+  completedActionBeatIds?: string[]
 }
 
 /** 群聊引擎常量 */
@@ -623,8 +674,8 @@ export const DISCUSSION_LIMITS = {
   MAX_SCENE_REPLAYS: 2,
   /** 台词复用率闸门（P1-2）：推演引号台词少于该数时不启用（样本太小无统计意义） */
   FIDELITY_MIN_QUOTED_LINES: 4,
-  /** 台词复用率低于该阈值时触发一次定向补织重写 */
-  FIDELITY_RATE_THRESHOLD: 0.4,
+  /** 台词复用率低于该阈值时触发一次定向补织重写（0.25：防"完全丢弃演出素材"，不逼逐字复刻）。 */
+  FIDELITY_RATE_THRESHOLD: 0.25,
   /** 定向补织 prompt 中最多列出的未落地台词条数 */
   FIDELITY_MAX_LISTED: 12,
 } as const

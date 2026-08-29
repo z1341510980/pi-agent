@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 import { TeamDiscussionEngine } from '../core/discussion/engine/team-discussion-engine.js'
-import { Moderator, type ModeratorContext } from '../core/discussion/engine/moderator.js'
 import { AgentChannel } from '../../../core/agent/agent-channel.js'
 import { createNovelSubmitScenePlanTool, createNovelSubmitCharacterTurnTool, type ScenePlanDraftHolder } from '../core/novel-tools.js'
 import type { CharacterTurnDraftHolder } from '../core/tools/submit.js'
@@ -9,7 +8,6 @@ import type {
   DiscussionMember,
   DiscussionMessage,
   DiscussionOptions,
-  ModeratorDecision,
   ScenePlanToolset,
 } from '../core/discussion/engine/discussion-types.js'
 
@@ -34,21 +32,14 @@ function makeOptions(overrides: Partial<DiscussionOptions> = {}): DiscussionOpti
   }
 }
 
-/** mock Moderator：按预设序列返回决策 */
-function makeMockModerator(decisions: ModeratorDecision[]): Moderator {
-  let index = 0
-  const ctx: ModeratorContext = {
-    createSession: vi.fn().mockResolvedValue({
-      prompt: vi.fn().mockImplementation(async () => {
-        const d = decisions[index] ?? decisions[decisions.length - 1]
-        index++
-        return JSON.stringify(d)
-      }),
-      dispose: vi.fn(),
-    }),
-    logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
-  }
-  return new Moderator(ctx)
+/**
+ * Moderator 已随 2026-08-28 控制平面重排删除：引擎不再有任何 LLM 仲裁路径，
+ * planning 直呼 Director、acting 由策略表处置。这里保留一个带 decide 哨兵的
+ * 空壳，供旧用例断言"全程零仲裁调用"；传入的决策序列被忽略。
+ */
+type ModeratorSentinel = { decide: ReturnType<typeof vi.fn>; degradedRounds: number }
+function makeMockModerator(_decisions?: unknown[]): ModeratorSentinel {
+  return { decide: vi.fn(), degradedRounds: 0 }
 }
 
 /**
@@ -274,6 +265,46 @@ new AgentChannel(),
     expect(writerCall).toBeDefined()
     expect(writerCall!.userMessage).toContain('担心门外的人')
     expect(writerCall!.userMessage).toContain('仅 Writer 可见')
+  })
+
+  it('mention 角色没有预置节点时仍能以 reaction 节点回应，且不误标任何 actionBeat 完成', async () => {
+    // 场景只有赵岩一个节点；赵岩 mention 林晚，但林晚在计划里没有节点。
+    // 旧路径在此直接丢弃 mention；现在引擎合成 kind:'reaction' 节点让林晚接戏。
+    const { engine, members, options, callsByMember } = makeActionBeatRun({
+      scenePlan: {
+        title: '门前对峙',
+        location: '旧宅门口',
+        time: '夜里',
+        conflict: '是否开门',
+        goal: '让赵岩失去隐瞒空间',
+        presentCharacters: ['赵岩', '林晚'],
+        actionBeats: [{
+          beatId: 'a1', actor: '赵岩', target: '林晚',
+          pressure: '门外脚步逼近', action: '赵岩挡住门',
+          choice: '隐瞒或承认', consequence: '门外的人停下',
+          exitCondition: '林晚接住破绽',
+        }],
+      },
+      turnFor: memberId => memberId === 'char-zhao'
+        ? validTurn('[赵岩挡住门] “先别进来。”', ['林晚'])
+        : validTurn('[林晚压低声音] “你承认了。”'),
+    })
+
+    const result = await engine.run(goal, members, options)
+
+    expect(result.status).toBe('completed')
+    // 林晚被合成 reaction 节点调度，回应真的发生了
+    expect(callsByMember.get('char-lin')).toBe(1)
+    // reaction 不误标完成：唯一的 Director 节点 a1 凭赵岩自己的回合完成
+    expect(result.diagnostics?.completedActionBeats).toBe(1)
+    expect(result.diagnostics?.incompleteActionBeatIds).toEqual([])
+    expect(result.diagnostics?.autonomousMentions).toBe(1)
+    expect(result.diagnostics?.mentionResponseTurns).toBe(1)
+    // 压力上下文继承父节点：林晚的 prompt 里带 a1 的阻力与行动边界
+    const linTurn = result.transcript.find(message =>
+      message.type === 'member' && message.fromId === 'char-lin')
+    expect(linTurn).toBeDefined()
+    expect(linTurn!.content).toContain('你承认了')
   })
 
   it('群聊 Reviser 通过业务层工具化修订（buildReviserToolset）应用修改', async () => {
@@ -544,7 +575,7 @@ new AgentChannel(),
       makeMember({ id: 'director', name: '导演' }),
       makeMember({ id: 'writer', name: '写作', canConverge: true }),
     ]
-    const decisions: ModeratorDecision[] = [
+    const decisions = [
       { type: 'invite', agentId: 'director', prompt: '规划', reason: '开始' },
       { type: 'converge', agentId: 'writer', scope: 'chapter', reason: '完成' },
     ]
@@ -624,7 +655,7 @@ new AgentChannel(),
       logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
     }
     // Moderator 决策序列：invite director → converge(chapter) → (场景1) invite char-1 → converge(scene) → converge(chapter)
-    const moderatorDecisions: ModeratorDecision[] = [
+    const moderatorDecisions = [
       { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
       { type: 'converge', agentId: 'novel-writer', scope: 'chapter', reason: '规划完成' },
       // Phase 2 场景 1
@@ -1026,8 +1057,51 @@ new AgentChannel(),
     ]))
   })
 
-  it('planning 阶段 Director 连续空响应：检查点 reject 时以 failed_phase=planning 终止', async () => {
+  it('planning 阶段 provider 报错：检查点携带真实原因，不再吞成"模型可能异常"', async () => {
     const members = [
+      makeMember({ id: 'novel-director', name: '导演' }),
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+    ]
+    // 复现真实事故：PI session 的 prompt() 在 provider 404 时不抛错，
+    // 只在事件流里带 message_end(stopReason='error')；引擎必须捕获并透传。
+    const ctx = {
+      createAgUiSession: vi.fn().mockImplementation(async () => ({
+        session: {
+          subscribe: (listener: (event: Record<string, unknown>) => void) => {
+            listener({
+              type: 'message_end',
+              message: {
+                role: 'assistant',
+                stopReason: 'error',
+                errorMessage: '404: Model "gpt-5.6-terra" is not supported by any configured account in this group',
+              },
+            })
+            return vi.fn()
+          },
+          prompt: vi.fn().mockResolvedValue(''),
+        },
+        streamEmitter: { finishTextMessage: vi.fn() },
+        messageId: 'msg-provider-error',
+        dispose: vi.fn(),
+      })),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    }
+    const engine = new TeamDiscussionEngine(new AgentChannel(), ctx as any)
+    const onCheckpoint = vi.fn().mockResolvedValue('reject')
+    const options = makeOptions({ onCheckpoint })
+
+    const result = await engine.run(goal, members, options)
+
+    expect(result.status).toBe('error')
+    const checkpoint = onCheckpoint.mock.calls[0][0] as { question: string }
+    // 检查点问题里必须出现真实 provider 错误，用户才知道去改模型配置
+    expect(checkpoint.question).toContain('not supported by any configured account')
+    expect(checkpoint.question).toContain('最近一次失败原因')
+    // agent 审计日志拿到真实错误文本（此前 error 列为空）
+    expect(result.transcript.some(m => m.type === 'error' && m.content.includes('not supported'))).toBe(true)
+  })
+
+  it('planning 阶段 Director 连续空响应：检查点 reject 时以 failed_phase=planning 终止', async () => {    const members = [
       makeMember({ id: 'novel-director', name: '导演' }),
       makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
     ]
@@ -1795,14 +1869,13 @@ new AgentChannel(),
     scenePlan?: Record<string, unknown>
     signal?: AbortSignal
     onSessionCreate?: (memberIdHint: string) => void
-    moderatorDecisions?: ModeratorDecision[]
     allowLegacyActing?: boolean
     onCheckpoint?: ReturnType<typeof vi.fn>
   }): {
     engine: TeamDiscussionEngine
     members: DiscussionMember[]
     options: DiscussionOptions
-    moderator: Moderator
+    moderator: ModeratorSentinel
     createAgUiSession: ReturnType<typeof vi.fn>
     callsByMember: Map<string, number>
   } {
@@ -1878,10 +1951,7 @@ new AgentChannel(),
       makeMember({ id: 'char-zhao', type: 'character', name: '赵岩' }),
       makeMember({ id: 'char-lin', type: 'character', name: '林晚' }),
     ]
-    const moderator = makeMockModerator(input.moderatorDecisions ?? [
-      { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
-      { type: 'next_scene', reason: '继续' },
-    ])
+    const moderator = makeMockModerator()
     const engine = new TeamDiscussionEngine(new AgentChannel(), {
       createAgUiSession,
       logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
@@ -2129,6 +2199,87 @@ new AgentChannel(),
     expect(invoked).toEqual(['a2'])
     // 续跑不得改写调用方持有的快照对象
     expect(scene.actionBeats).toHaveLength(2)
+  })
+
+  it('acting 续跑按事件重放的完成集定位：transcript 为空也不重演已完成节点', async () => {
+    const invoked: string[] = []
+    const createAgUiSession = vi.fn().mockImplementation(async (opts: {
+      userMessage?: string
+      tools?: Array<{ name?: string; execute?: (id: string, args: unknown) => Promise<unknown> }>
+    }) => {
+      const tools = opts.tools ?? []
+      const turnTool = tools.find(tool => tool.name === 'novel_submit_character_turn')
+      const userMessage = String(opts.userMessage ?? '')
+      const beatId = /当前动作节点：(\S+)/.exec(userMessage)?.[1]
+      return {
+        session: {
+          prompt: vi.fn().mockImplementation(async () => {
+            if (turnTool?.execute && beatId) {
+              invoked.push(beatId)
+              await turnTool.execute('turn', validTurn(`[${beatId}] “继续。”`))
+              return ''
+            }
+            return '章节正文'.repeat(60)
+          }),
+        },
+        streamEmitter: { finishTextMessage: vi.fn() },
+        messageId: `event-resume-${invoked.length}`,
+        dispose: vi.fn(),
+      }
+    })
+    const members = [
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'char-zhao', type: 'character', name: '赵岩' }),
+      makeMember({ id: 'char-lin', type: 'character', name: '林晚' }),
+    ]
+    const engine = new TeamDiscussionEngine(new AgentChannel(), {
+      createAgUiSession,
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    } as any)
+
+    const result = await engine.resumeSceneActing(
+      goal,
+      members,
+      makeOptions({
+        allowLegacyActing: false,
+        buildCharacterTurnToolset: ({ actionBeatId }) => {
+          const draft: CharacterTurnDraftHolder = {}
+          return {
+            tools: [createNovelSubmitCharacterTurnTool(draft, actionBeatId)],
+            extractResult: () => draft.turn ?? null,
+          }
+        },
+      }),
+      {
+        phase: 'acting',
+        failedSceneId: 1,
+        // T5：事件重放路径——transcript 为空，完成集由 deriveResumeInfo 显式给出
+        transcript: [],
+        completedActionBeatIds: ['a1'],
+        scenes: [{
+          sceneId: 1,
+          title: '门前对峙',
+          location: '旧宅门口',
+          time: '夜里',
+          goal: '让赵岩失去隐瞒空间',
+          presentCharacters: ['char-zhao', 'char-lin'],
+          actionBeats: [
+            {
+              beatId: 'a1', actor: 'char-zhao', pressure: '压力', action: '行动',
+              choice: '选择', consequence: '后果', exitCondition: '出口',
+            },
+            {
+              beatId: 'a2', actor: 'char-lin', pressure: '压力', action: '行动',
+              choice: '选择', consequence: '后果', exitCondition: '出口',
+            },
+          ],
+        }],
+      },
+    )
+
+    expect(result.status).toBe('completed')
+    // 显式完成集生效：a1 不重演，只演 a2
+    expect(invoked).toEqual(['a2'])
   })
 
   it('旧快照无 actionBeats 时记为整场缺口并完成，不回退 LLM 轮询', async () => {

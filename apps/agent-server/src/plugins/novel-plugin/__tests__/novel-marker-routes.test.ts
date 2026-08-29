@@ -69,6 +69,11 @@ function makeMockServices(): NovelServices {
       save: vi.fn(),
       get: vi.fn(),
     } as any,
+    discussionEventStore: {
+      append: vi.fn(),
+      list: vi.fn(() => []),
+      lastSeq: vi.fn(() => 0),
+    } as any,
     workflowRunStore: {
       save: vi.fn(),
       get: vi.fn(),

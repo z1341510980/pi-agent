@@ -2351,6 +2351,42 @@ export interface CreationResult {
   /** 失败阶段（status='error' 时标注） */
   failedPhase?: string
   /**
+   * 群聊演出链路诊断（2026-08-28 T7 透出）：流程来自群聊（create-discussion）时携带。
+   * 引擎 DiscussionDiagnostics 的展示子集（结构化兼容，多出的字段不进此类型），
+   * 供完成/出错卡片展示"演出是否真的发生、花了多少调用"。
+   */
+  diagnostics?: {
+    /** 场景计划来源：工具提交 / Markdown 回退 / 无 */
+    sceneSource?: 'tool' | 'markdown' | 'none'
+    scenesTotal?: number
+    /** 至少有一条角色发言的场景数 */
+    scenesWithActing?: number
+    /** 完成的动作节点数 */
+    completedActionBeats?: number
+    /** thin + skipped + unreached 的节点缺口数 */
+    incompleteActionBeats?: number
+    /** 完全没有有效演出的场景 ID */
+    barrenSceneIds?: number[]
+    /** 未完成节点明细（复盘定位用） */
+    incompleteActionBeatIds?: string[]
+    /** 规划阶段 Director 逻辑调用数（直呼后含纠正性重试） */
+    plannerInvocations?: number
+    /** 自主演出的角色逻辑回合数 */
+    autonomousCharacterTurns?: number
+    /** 角色主动 mention 次数 */
+    autonomousMentions?: number
+    /** mention 实际执行的回应回合数 */
+    mentionResponseTurns?: number
+    /** 策略表降级继续的节点数 */
+    degradedContinues?: number
+    /** 角色回合失败次数 */
+    characterTurnFailures?: number
+    /** 本次 run 的成员逻辑调用总数 */
+    totalMemberInvocations?: number
+    /** run 墙钟（毫秒） */
+    totalDurationMs?: number
+  }
+  /**
    * 结构化错误码（status='error' 时可选）。
    * 前端据此做精确分类与定向操作，替代仅靠消息文本猜归属。
    */

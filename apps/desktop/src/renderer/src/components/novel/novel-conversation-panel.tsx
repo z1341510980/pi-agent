@@ -719,6 +719,23 @@ export function NovelConversationPanel({
         onResume={(runId) => onResumeWorkflow?.(runId)}
       />
 
+      {/* ── 群聊演出诊断（T7 透出）：run 结束后展示调用账目与演出缺口 ── */}
+      {flowType === 'discussion' && result?.diagnostics && (() => {
+        const d = result.diagnostics
+        const gaps = d.incompleteActionBeats ?? 0
+        return (
+          <div className="shrink-0 border-b border-border/60 bg-surface-1/60 px-3 py-1.5">
+            <p className="truncate text-nano text-text-secondary" title="群聊演出诊断：场景有效数 / 节点完成与缺口 / 成员调用数 / 墙钟">
+              演出诊断：场景 {d.scenesWithActing ?? 0}/{d.scenesTotal ?? 0} 有效
+              ｜节点完成 {d.completedActionBeats ?? 0}{gaps > 0 ? `、缺口 ${gaps}` : ''}
+              ｜mention 回应 {d.mentionResponseTurns ?? 0}
+              ｜调用 {d.totalMemberInvocations ?? 0} 次
+              {d.totalDurationMs != null ? `｜耗时 ${Math.round(d.totalDurationMs / 1000)}s` : ''}
+            </p>
+          </div>
+        )
+      })()}
+
       {/* ── 消息流（错误卡经 stickyFooter 吸底，不再压缩消息可视区）── */}
       <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         <ConversationStream

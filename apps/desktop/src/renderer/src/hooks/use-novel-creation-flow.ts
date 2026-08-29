@@ -126,6 +126,65 @@ export function streamsChapterContent(agentType: AgentOutput['agentType']): bool
   return agentType === 'writer'
 }
 
+/**
+ * 统一占位覆盖辅助（2026-08-28 控制平面重排 T3）：
+ * director / character / moderator 三类 agent_output 共用的"覆盖占位或追加"逻辑。
+ *
+ * 工具主路径的终答常为空 stop，没有 TEXT_MESSAGE_* 去关闭 agent_start 的
+ * 「已启动」占位气泡；必须靠后端补发的 agent_output 事件覆盖占位，否则出现
+ * 空气泡、重复气泡、永久 streaming 三种症状。覆盖时保留占位气泡的时间戳，
+ * 不改写时间线顺序。
+ */
+function upsertAgentOutput(
+  prev: AgentOutput[],
+  input: {
+    agentType: AgentOutput['agentType']
+    agentName: string
+    content: string
+    /** 仅追加路径使用；覆盖占位时沿用占位气泡原时间戳。 */
+    timestamp: number
+    /** 角色回合的私有判断层，与公开正文同气泡分层展示。 */
+    actorTurn?: AgentOutput['actorTurn']
+    /** 预览截断长度（导演场景计划较长取 200，其余 100）。 */
+    previewLength?: number
+    /** 连续同类型输出合并进最后一条气泡（主持人点名防刷屏）。 */
+    mergeConsecutive?: boolean
+    /** 覆盖同类型最后一个「已启动且无正文」的占位气泡（工具主路径）。 */
+    overwritePlaceholder?: boolean
+  },
+): AgentOutput[] {
+  const preview = input.content.slice(0, input.previewLength ?? 100)
+  if (input.mergeConsecutive) {
+    const last = prev[prev.length - 1]
+    if (last && last.agentType === input.agentType && !last.streaming) {
+      return [
+        ...prev.slice(0, -1),
+        { ...last, content: `${last.content}\n\n${input.content}`, preview },
+      ]
+    }
+  }
+  const patch: AgentOutput = {
+    agentType: input.agentType,
+    agentName: input.agentName,
+    content: input.content,
+    preview,
+    timestamp: input.timestamp,
+    streaming: false,
+    ...(input.actorTurn ? { actorTurn: input.actorTurn } : {}),
+  }
+  if (input.overwritePlaceholder) {
+    const placeholderIndex = prev.findLastIndex(
+      (output) => output.agentType === input.agentType && output.streaming && !output.hasStreamedText,
+    )
+    if (placeholderIndex !== -1) {
+      const updated = [...prev]
+      updated[placeholderIndex] = { ...updated[placeholderIndex], ...patch }
+      return updated
+    }
+  }
+  return [...prev, patch]
+}
+
 type StreamAgentMeta = Pick<AgentOutput, 'agentType' | 'agentName'>
 
 const PHASE_AGENT_META: Record<string, StreamAgentMeta> = {
@@ -1428,26 +1487,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           // 群聊主持人点名（2026-08-24）：以完整气泡实时呈现，不再只更新状态栏一行文案
           if (data?.type === 'agent_output' && data.agentType === 'moderator' && typeof data.content === 'string') {
             const content = data.content
-            setAgentOutputs((prev) => {
-              const last = prev[prev.length - 1]
-              // 连续点名合并到同一条主持人气泡，避免刷屏
-              if (last && last.agentType === 'moderator' && !last.streaming) {
-                return [
-                  ...prev.slice(0, -1),
-                  { ...last, content: `${last.content}\n\n${content}`, preview: content.slice(0, 100) }
-                ]
-              }
-              return [
-                ...prev,
-                {
-                  agentType: 'moderator',
-                  agentName: data.agentName ?? '主持人',
-                  content,
-                  preview: content.slice(0, 100),
-                  timestamp: nextTimelineTimestamp(evt.timestamp)
-                }
-              ]
-            })
+            setAgentOutputs((prev) => upsertAgentOutput(prev, {
+              agentType: 'moderator',
+              agentName: data.agentName ?? '主持人',
+              content,
+              timestamp: nextTimelineTimestamp(evt.timestamp),
+              mergeConsecutive: true,
+            }))
             return
           }
           // 群聊 Director 的工具提交：工具调用后的终答可能为空，完整场景计划
@@ -1455,31 +1501,14 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           // 让用户看到工具参数中的完整内容，而不是只看到“已启动”或空正文。
           if (data?.type === 'agent_output' && data.agentType === 'director' && typeof data.content === 'string') {
             const content = data.content
-            setAgentOutputs((prev) => {
-              const last = prev[prev.length - 1]
-              if (last && last.agentType === 'director' && last.streaming && !last.hasStreamedText) {
-                return [
-                  ...prev.slice(0, -1),
-                  {
-                    ...last,
-                    content,
-                    preview: content.slice(0, 200),
-                    streaming: false,
-                  }
-                ]
-              }
-              return [
-                ...prev,
-                {
-                  agentType: 'director',
-                  agentName: data.agentName ?? '导演',
-                  content,
-                  preview: content.slice(0, 200),
-                  timestamp: nextTimelineTimestamp(evt.timestamp),
-                  streaming: false,
-                }
-              ]
-            })
+            setAgentOutputs((prev) => upsertAgentOutput(prev, {
+              agentType: 'director',
+              agentName: data.agentName ?? '导演',
+              content,
+              timestamp: nextTimelineTimestamp(evt.timestamp),
+              previewLength: 200,
+              overwritePlaceholder: true,
+            }))
             return
           }
           // 角色结构化工具回合：publicText 作为正文气泡，私有判断放进同一气泡的
@@ -1491,29 +1520,15 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           // 再加一条真实气泡（重复且看似卡死）。
           if (data?.type === 'agent_output' && data.agentType === 'character' && typeof data.content === 'string') {
             const content = data.content
-            const actorTurn = data.actorTurn
-            setAgentOutputs((prev) => {
-              const placeholderIndex = prev.findLastIndex(
-                (output) => output.agentType === 'character' && output.streaming && !output.hasStreamedText
-              )
-              const next = {
-                agentType: 'character' as const,
-                agentName: data.agentName ?? '角色',
-                content,
-                preview: content.slice(0, 200),
-                actorTurn,
-                streaming: false
-              }
-              if (placeholderIndex !== -1) {
-                const updated = [...prev]
-                updated[placeholderIndex] = { ...updated[placeholderIndex], ...next }
-                return updated
-              }
-              return [
-                ...prev,
-                { ...next, timestamp: nextTimelineTimestamp(evt.timestamp) }
-              ]
-            })
+            setAgentOutputs((prev) => upsertAgentOutput(prev, {
+              agentType: 'character',
+              agentName: data.agentName ?? '角色',
+              content,
+              timestamp: nextTimelineTimestamp(evt.timestamp),
+              actorTurn: data.actorTurn,
+              previewLength: 200,
+              overwritePlaceholder: true,
+            }))
             return
           }
           // 群聊过程事件：scene_change（场景切换）→ 创建 director 系统气泡
@@ -1806,7 +1821,116 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         ...(options?.styleExpertIds ? { styleExpertIds: options.styleExpertIds } : {})
       }
 
-      const runPromise = runFlow(url, body, controller)
+      /**
+       * T7：create-discussion 已改后台运行（POST 返 202 + runId），前端改为
+       * 消费事件 tail（GET events?from=seq）。tail 事件是调度事实：
+       * - agui：后台 emit 通道的完整镜像（TEXT_MESSAGE_* 流式正文、novel:progress、
+       *   novel:checkpoint、novel:user-message、RUN_*），payload 即原 AG-UI 事件，
+       *   直接喂 handleEvent——流式体验与旧 SSE 一致；
+       * - run_finished → novel:result（携带最终正文、diagnostics 与 canResume）+
+       *   RUN_FINISHED（与旧 emitter.result 的收尾序列一致）。
+       * 关闭面板只会断开 tail，run 在后台继续（断线不 abort）。
+       */
+      const consumeTail = async (eventsPath: string, controller: AbortController): Promise<void> => {
+        const tailUrl = `${browserConfig.apiBaseUrl}/api/plugins/novel${eventsPath}`
+        const tailResponse = await fetch(tailUrl, {
+          headers: { Accept: 'text/event-stream' },
+          signal: controller.signal
+        })
+        if (!tailResponse.ok || !tailResponse.body) {
+          throw new Error(`群聊事件流连接失败: HTTP ${tailResponse.status}`)
+        }
+        await parseSseStream(tailResponse.body, (event) => {
+          const tail = event as unknown as { type?: string; payload?: Record<string, unknown> }
+          switch (tail.type) {
+            case 'agui':
+              if (tail.payload) handleEvent(tail.payload as BaseEvent)
+              return
+            case 'run_finished':
+              handleEvent({
+                type: 'CUSTOM',
+                name: 'novel:result',
+                value: { timestamp: Date.now(), ...(tail.payload ?? {}) }
+              } as BaseEvent)
+              handleEvent({ type: 'RUN_FINISHED' } as BaseEvent)
+              return
+            default:
+              // run_started / plan_submitted / beat_* 等调度事实：UI 由 agui 镜像承载
+              return
+          }
+        })
+      }
+
+      const runPromise = (async (): Promise<void> => {
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: controller.signal
+          })
+          if (response.status === 409) {
+            // 章节已有后台 run 在跑（面板重开后再点开始等场景）：
+            // 取回运行中的 runId 转入事件 tail 观看，而不是报错阻断。
+            const activeResponse = await fetch(
+              `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/active-discussion-run`,
+              { signal: controller.signal }
+            )
+            if (activeResponse.ok) {
+              const active = (await activeResponse.json()) as { runId?: string; eventsPath?: string }
+              if (active.runId && active.eventsPath) {
+                handleEvent({ type: 'RUN_STARTED', threadId: '', runId: active.runId } as BaseEvent)
+                // 重开面板没有历史气泡状态：from=0 全量重放重建时间线（幂等，不重复气泡）
+                await consumeTail(active.eventsPath, controller)
+                return
+              }
+            }
+          }
+          if (!response.ok) {
+            let serverMessage = ''
+            try {
+              const payload = (await response.json()) as { error?: string | { message?: string }; message?: string }
+              serverMessage =
+                typeof payload.error === 'string'
+                  ? payload.error
+                  : (payload.error?.message ?? payload.message ?? '')
+            } catch {
+              // 非 JSON 错误响应保留 HTTP 状态作为兜底。
+            }
+            throw new Error(
+              serverMessage
+                ? `群聊创作启动失败：${serverMessage}`
+                : `群聊创作启动失败: HTTP ${response.status} ${response.statusText}`
+            )
+          }
+          const accepted = (await response.json()) as { runId?: string; eventsPath?: string }
+          if (!accepted.runId || !accepted.eventsPath) {
+            throw new Error('群聊创作受理响应缺少 runId/eventsPath')
+          }
+          // 等价于旧 SSE 的 RUN_STARTED：登记 runId，插话端点据此做运行级隔离
+          handleEvent({ type: 'RUN_STARTED', threadId: '', runId: accepted.runId } as BaseEvent)
+          await consumeTail(accepted.eventsPath!, controller)
+        } catch (err) {
+          // 用户主动取消（abort）：cancel()/reset() 已同步处理状态，不覆盖 phase
+          if (controller.signal.aborted) {
+            setIsRunning(false)
+            setCurrentCheckpoint(null)
+            latestAgentStartMessageIdRef.current = null
+            unmappedStreamMessageIdRef.current = null
+            unmappedStreamSequenceRef.current = 0
+            return
+          }
+          const message = err instanceof Error ? err.message : String(err)
+          setError(message)
+          setProgressMessage(null)
+          setPhase('error')
+          setIsRunning(false)
+          setCurrentCheckpoint(null)
+          latestAgentStartMessageIdRef.current = null
+          unmappedStreamMessageIdRef.current = null
+          unmappedStreamSequenceRef.current = 0
+        }
+      })()
       runFlowPromiseRef.current = runPromise
       try {
         await runPromise
@@ -1815,7 +1939,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         runFlowPromiseRef.current = null
       }
     },
-    [runFlow]
+    [handleEvent]
   )
 
   const resumeDiscussion = useCallback(

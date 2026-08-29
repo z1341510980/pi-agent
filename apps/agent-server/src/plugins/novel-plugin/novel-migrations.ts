@@ -2615,4 +2615,24 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
     id: '120_add_discussion_run_failed_action_beat',
     sql: `ALTER TABLE novel_discussion_runs ADD COLUMN failed_action_beat_id TEXT;`
   }
+  ,{
+    // 121: 群聊事件溯源（2026-08-28 控制平面重排 T4）：append-only 事件日志。
+    //
+    // 状态 = fold(events)，续跑 = 重放，取代 failedPhase 三元组 + transcript 反推。
+    // 首迭代与 novel_discussion_runs 快照并存：新 run 逐条追加事件，快照行仍按
+    // 旧路径写（只读兼容），下迭代再退化 run 行为索引 + 游标并停写三元组列。
+    id: '121_create_discussion_events',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_discussion_events (
+        run_id     TEXT NOT NULL,
+        seq        INTEGER NOT NULL,
+        type       TEXT NOT NULL,
+        payload    TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (run_id, seq)
+      );
+      CREATE INDEX IF NOT EXISTS idx_novel_discussion_events_run
+        ON novel_discussion_events(run_id, seq);
+    `
+  }
 ]

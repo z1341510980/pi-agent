@@ -574,7 +574,8 @@ export class NovelOrchestrator {
       const chapter = this.store.getChapter(projectId, chapterNumber)
       let directorResult = ''
       let needRewrite = !resume?.directorTask
-      // Director 未调用工具时的重试计数器，避免无限循环
+      // Director 未调用工具时的重试计数器：漏工具先自动纠正性重试（不弹检查点），
+      // 预算用尽才以 narrative_task_missing 检查点交用户决策。与群聊 planning 同策略。
       let directorToolMissedCount = 0
       const MAX_DIRECTOR_TOOL_MISS = 2
       // narrativeDraft 提到 while 外：Director 成功调用工具后，循环退出仍需读取 draft.task
@@ -593,38 +594,71 @@ export class NovelOrchestrator {
         // 每次循环重置 draft：保留对外部 narrativeDraft 引用，避免重试时旧 task 残留
         narrativeDraft = {}
         const submitNarrativeTaskTool = createNovelSubmitNarrativeTaskTool(narrativeDraft)
-        directorResult = await this.runAgent('director', projectId, chapterNumber,
-          `请依据章节上下文中的章纲、故事状态和节奏约束，为第 ${chapterNumber} 章规划叙事任务。`,
-          options,
-          { extraTools: [submitNarrativeTaskTool] },
-        )
+        // 纠正性重试带显式工具指令：空终答/漏工具更像模型抖动而非理解问题，
+        // 直接点名工具比泛泛的"重新规划"更有效。
+        const directorPrompt = directorToolMissedCount === 0
+          ? `请依据章节上下文中的章纲、故事状态和节奏约束，为第 ${chapterNumber} 章规划叙事任务。`
+          : `上一轮没有通过 novel_submit_narrative_task 工具提交叙事任务。请立即调用该工具，为第 ${chapterNumber} 章规划叙事任务（任务类型/POV/钩子/场景数等由工具参数承载），不要只输出文本说明。`
+        try {
+          directorResult = await this.runAgent('director', projectId, chapterNumber, directorPrompt, options,
+            { extraTools: [submitNarrativeTaskTool] })
+        } catch (err) {
+          // 工具可能已执行成功、错误发生在工具结果之后的往返（与 luna 空终答同类）：
+          // draft 里已有完整任务时以 payload 为准，不让一次 provider 抖动作废规划。
+          if (!narrativeDraft.task) throw err
+          this.context.logger.warn(
+            { projectId, chapterNumber, err },
+            'Director 调用报错但已捕获工具提交的叙事任务，以 payload 为准继续',
+          )
+          directorResult = ''
+        }
         narrativeDraft.rawOutput = directorResult
 
-        // 检查点 1
-        this.emitProgress(options, 'checkpoint_narrative', 'phase_change', { message: '等待用户确认叙事任务...' })
-        // ⚠️ 工具化方案：checkpoint.data 优先携带 Director 通过工具提交的结构化 NarrativeTask 对象，
-        // 前端 CheckpointMessage 识别 kind 后用 formatDetailBubble 格式化为可读 markdown 展示。
-        // 若 Director 未调用工具（narrativeDraft.task 为 undefined），构造显式提示让用户选择重写：
-        // 不再 fallback 到 directorResult（LLM 可能输出"叙事任务已通过工具提交"等误导性文本，
-        // 让用户误以为调了工具但其实没有）。
-        const directorTaskSubmitted = Boolean(narrativeDraft.task)
-        const checkpointData: unknown = narrativeDraft.task
-          ? { kind: 'narrative_task', ...narrativeDraft.task }
-          : {
+        // 工具未提交：先自动纠正性重试，不打断用户；预算用尽才交检查点。
+        if (!narrativeDraft.task) {
+          directorToolMissedCount++
+          this.context.logger.warn(
+            {
+              projectId,
+              chapterNumber,
+              directorTaskSubmitted: false,
+              directorOutputLength: directorResult.length,
+              missedCount: directorToolMissedCount,
+            },
+            'Director 检查点 1 前置：未通过工具提交叙事任务',
+          )
+          if (directorToolMissedCount < MAX_DIRECTOR_TOOL_MISS) {
+            this.emitProgress(options, 'directing', 'phase_change', {
+              message: `Director 未通过工具提交叙事任务（第 ${directorToolMissedCount}/${MAX_DIRECTOR_TOOL_MISS} 次），自动重试中...`,
+            })
+            needRewrite = true
+            continue
+          }
+          // 预算用尽：交用户决策（按意见重写重置预算，approve 视为再给一次机会）
+          const narrativeDecision = await options.onCheckpoint({
+            type: 'narrative_task',
+            phase: 'checkpoint_narrative',
+            data: {
               kind: 'narrative_task_missing',
               directorRawOutput: directorResult.slice(0, 800),
               message: 'Director 未通过工具提交叙事任务',
-            }
-        this.context.logger.warn(
-          {
-            projectId,
-            chapterNumber,
-            directorTaskSubmitted,
-            directorOutputLength: directorResult.length,
-            directorOutputPreview: directorResult.slice(0, 200),
-          },
-          'Director 检查点 1 状态：是否通过工具提交叙事任务',
-        )
+            },
+            options: ['approve', 'revise', 'rewrite', 'reject'],
+          })
+          if (narrativeDecision === 'reject') {
+            this.emitProgress(options, 'cancelled', 'cancelled', { message: '用户取消了创作流程' })
+            return { status: 'cancelled' }
+          }
+          directorToolMissedCount = 0
+          needRewrite = true
+          continue
+        }
+
+        // Director 已通过工具提交任务 → 检查点 1
+        // ⚠️ 工具化方案：checkpoint.data 携带 Director 通过工具提交的结构化 NarrativeTask 对象，
+        // 前端 CheckpointMessage 识别 kind 后用 formatDetailBubble 格式化为可读 markdown 展示。
+        this.emitProgress(options, 'checkpoint_narrative', 'phase_change', { message: '等待用户确认叙事任务...' })
+        const checkpointData: unknown = { kind: 'narrative_task', ...narrativeDraft.task }
         const narrativeDecision = await options.onCheckpoint({
           type: 'narrative_task',
           phase: 'checkpoint_narrative',
@@ -638,45 +672,14 @@ export class NovelOrchestrator {
         }
 
         if (narrativeDecision === 'rewrite' || narrativeDecision === 'revise') {
-          // 用户补充了修改意见，重新调用 Director
+          // 用户补充了修改意见，重新调用 Director（新一轮创意，重置漏工具预算）
           // userMessages 已由 setUserMessages 设置，runAgent 会注入 Director 输入
           this.emitProgress(options, 'directing', 'phase_change', { message: '按修改意见重新规划叙事任务...' })
+          directorToolMissedCount = 0
           continue
         }
 
-        // approve → 检查 Director 是否通过工具提交了任务
-        // ⚠️ 工具化方案：Director 必须调用 novel_submit_narrative_task 工具提交结构化对象。
-        // 未调用时给出明确错误而非降级默认值，避免 Director 真实意图丢失却静默继续。
-        if (!narrativeDraft.task) {
-          directorToolMissedCount++
-          this.context.logger.error(
-            { projectId, chapterNumber, directorOutputLength: directorResult.length, missedCount: directorToolMissedCount },
-            'Director 未调用 novel_submit_narrative_task 工具提交叙事任务',
-          )
-          if (directorToolMissedCount >= MAX_DIRECTOR_TOOL_MISS) {
-            // 达到上限：转为错误终止流程，避免无限重试
-            this.emitProgress(options, 'error', 'error', {
-              message: `Director 连续 ${directorToolMissedCount} 次未调用工具提交叙事任务，流程终止`,
-              detail: {
-                kind: 'narrative_tool_miss_limit',
-                directorRawOutput: directorResult.slice(0, 500),
-              },
-            })
-            return { status: 'error', error: 'Director 未通过工具提交叙事任务' }
-          }
-          this.emitProgress(options, 'directing', 'phase_change', {
-            message: `Director 未通过工具提交叙事任务（第 ${directorToolMissedCount}/${MAX_DIRECTOR_TOOL_MISS} 次），重试中...`,
-            detail: {
-              kind: 'narrative_task_not_submitted',
-              directorRawOutput: directorResult.slice(0, 500),
-            },
-          })
-          // 给 Director 一次重试机会
-          needRewrite = true
-          continue
-        }
-
-        // Director 已通过工具提交任务 → 跳出循环
+        // approve → 跳出循环
         needRewrite = false
       }
 
@@ -3364,6 +3367,8 @@ export class NovelOrchestrator {
     let agUiSession: Awaited<ReturnType<PluginContext['createAgUiSession']>> | undefined
     let unsubscribeUsage: (() => void) | undefined
     let capturedUsage: LlmUsageSnapshot | undefined
+    // 声明在 try 外：catch 补全错误信息时需要读取（见 subscribe 内的赋值）
+    let capturedLlmError = ''
     /**
      * 真实 payload 体积累加器。
      *
@@ -3434,10 +3439,17 @@ export class NovelOrchestrator {
       // （inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens/model/provider）
       // 供 AgentLog 面板展示真实缓存命中率。
       // 多次 subscribe 互不干扰，工厂内部的 StreamEmitter 订阅不受影响。
+      // 同时捕获 provider 错误：PI SDK 的 prompt() 不抛错（见 plugin-session-outcome.ts），
+      // assistant 终态 stopReason='error'（模型不存在/配额/网络）是故障的唯一信号；
+      // 不捕获的话错误被吞成空串——编排误判"无产出"、审计日志 error 为空。
+      capturedLlmError = ''
       unsubscribeUsage = session.subscribe((event: Record<string, unknown>) => {
         if (event.type !== 'message_end') return
         const msg = (event as { message?: Record<string, unknown> }).message
         if (!msg || msg.role !== 'assistant') return
+        if (msg.stopReason === 'error') {
+          capturedLlmError = (msg.errorMessage as string) || '未知 LLM 错误'
+        }
         const usage = extractLlmUsageFromMessage(msg)
         if (usage) capturedUsage = addLlmUsage(capturedUsage, usage)
       })
@@ -3465,6 +3477,10 @@ export class NovelOrchestrator {
       // 实时发射 TEXT_MESSAGE_CONTENT 增量事件，prompt() 只负责触发 LLM 调用。
       // 首 token 检测由 createAgUiSession 工厂的 onFirstText 回调完成（见上方调用）。
       const result = await session.prompt()
+      // provider 错误转真异常：让 catch 记录真实原因、流程错误对用户可见
+      if (capturedLlmError) {
+        throw new Error(`LLM 调用失败: ${capturedLlmError}`)
+      }
       streamEmitter.finishTextMessage()
 
       this.context.logger.info(
@@ -3497,12 +3513,17 @@ export class NovelOrchestrator {
       return result
     } catch (err) {
       logStatus = 'error'
-      logError = err instanceof Error ? err.message : String(err)
+      // prompt() 抛出的错误可能不带 provider 细节（真实原因只在事件流的
+      // stopReason='error' 终态里）；补全，审计日志绝不能是空错误。
+      const rawMessage = err instanceof Error ? err.message : String(err)
+      logError = capturedLlmError
+        ? (rawMessage ? `${rawMessage}（provider: ${capturedLlmError}）` : capturedLlmError)
+        : rawMessage
       this.context.logger.error(
-        { agentType, agentName: config.name, projectId, err },
+        { agentType, agentName: config.name, projectId, err, providerError: capturedLlmError || undefined },
         'Agent 推理失败',
       )
-      throw err
+      throw err instanceof Error && rawMessage ? err : new Error(logError || 'LLM 调用失败（未知错误）')
     } finally {
       clearInterval(heartbeatTimer)
       // 不再需要 heartbeatUnsubscribe()：首 token 检测已下沉到 createAgUiSession 工厂，

@@ -44,8 +44,8 @@ export const REVISER_SILENT_PROTECTION = '修订前的静默保护检查'
 /** Reviser 修订不新增比喻 */
 export const REVISER_NO_NEW_METAPHOR = '修订不新增比喻'
 
-/** 群聊 Writer：台词留存义务（P1-1 义务反转，2026-08-24）。演出台词的语义必须落地正文 */
-export const DISCUSSION_LINES_MUST_LAND = '推演中每个角色说过的关键台词，其语义都必须在正文中有着落'
+/** 群聊 Writer：台词留存义务（2026-08-29 口径修订：保留意图与信息差，授权改写/合并/拆分/挪位，禁止逐字钉入或全量丢弃） */
+export const DISCUSSION_LINES_MUST_LAND = '必须保留的是人物的核心表达、意图和信息差，不是原句——把推演台词机械钉进正文，和全部丢弃一样，都是失职'
 
 /** 群聊 Writer 风格约束：不机械整理成轮流对话记录（是风格建议，不再是丢弃台词的豁免条款） */
 export const DISCUSSION_NO_ROBOTIC_SCRIPT = '不要把演出机械整理成完整、准确、轮流发言的对话记录'

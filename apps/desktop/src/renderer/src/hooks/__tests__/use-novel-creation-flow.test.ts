@@ -105,17 +105,73 @@ describe('useNovelCreationFlow progress', () => {
     expect(result.content).toContain('流畅：卡了一下')
   })
 
-  it.each([
-    ['create-flow', 'startCreation'],
-    ['群聊', 'startDiscussion']
-  ] as const)('%s 的 phase_change 只覆盖单条进度，不追加对话', async (_label, method) => {
+  it('create-flow 的 phase_change 只覆盖单条进度，不追加对话', async () => {
     const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
     const { result } = renderHook(() => useNovelCreationFlow())
 
     await act(async () => {
-      await result.current[method]('project-1', 1)
+      await result.current.startCreation('project-1', 1)
     })
 
+    expect(result.current.progressMessage).toBe('导演 Agent 正在等待 LLM 响应...（已等待 20s）')
+    expect(result.current.agentOutputs).toHaveLength(0)
+    expect(result.current.events).toHaveLength(2)
+  })
+
+  it('群聊改消费事件 tail：agui 镜像流式事件只覆盖单条进度，不追加对话', async () => {
+    parseSseStreamMock.mockImplementationOnce(
+      async (_body: unknown, onEvent: (event: BaseEvent) => void) => {
+        // 事件 tail 的事件形如 { type, seq, payload }；agui.payload 即旧 SSE 的
+        // AG-UI 事件原样（TEXT_MESSAGE_* / CUSTOM novel:progress 等），直接进 handleEvent
+        onEvent({
+          type: 'agui',
+          payload: {
+            type: 'CUSTOM',
+            name: 'novel:progress',
+            value: {
+              timestamp: 1,
+              type: 'phase_change',
+              phase: 'directing',
+              data: { message: '导演 Agent 正在等待 LLM 响应...（已等待 10s）', type: 'phase_change' }
+            }
+          }
+        } as unknown as BaseEvent)
+        onEvent({
+          type: 'agui',
+          payload: {
+            type: 'CUSTOM',
+            name: 'novel:progress',
+            value: {
+              timestamp: 2,
+              type: 'phase_change',
+              phase: 'directing',
+              data: { message: '导演 Agent 正在等待 LLM 响应...（已等待 20s）', type: 'phase_change' }
+            }
+          }
+        } as unknown as BaseEvent)
+      }
+    )
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input)
+      if (url.includes('/create-discussion')) {
+        return new Response(
+          JSON.stringify({ ok: true, runId: 'run-tail-1', eventsPath: '/projects/project-1/discussion-runs/run-tail-1/events' }),
+          { status: 202, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+      return new Response('ok', { status: 200 })
+    })
+    const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
+    const { result } = renderHook(() => useNovelCreationFlow())
+
+    await act(async () => {
+      await result.current.startDiscussion('project-1', 1)
+    })
+
+    // POST 只受理：请求体发给 create-discussion，事件流走 GET events tail
+    const calledUrls = fetchMock.mock.calls.map(([input]) => String(input))
+    expect(calledUrls.some(url => url.includes('/create-discussion'))).toBe(true)
+    expect(calledUrls.some(url => url.includes('/discussion-runs/run-tail-1/events'))).toBe(true)
     expect(result.current.progressMessage).toBe('导演 Agent 正在等待 LLM 响应...（已等待 20s）')
     expect(result.current.agentOutputs).toHaveLength(0)
     expect(result.current.events).toHaveLength(2)

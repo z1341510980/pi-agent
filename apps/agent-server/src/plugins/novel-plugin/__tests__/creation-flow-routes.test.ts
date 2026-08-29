@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ConfirmationManager } from '../../../core/tool/confirmation-manager.js'
 import { createCreationFlowRoutes } from '../routes/creation-flow-routes.js'
+import { finishNovelChapterTask, registerNovelChapterTask } from '../utils/chapter-task-registry.js'
 
 function createReply() {
   const reply = {
@@ -363,6 +364,7 @@ describe('discussion model contract', () => {
       discussionRunner: { run },
       discussionSettingsStore: { get: vi.fn(() => ({ maxRounds: 20 })) },
       discussionRunStore: { save },
+      discussionEventStore: { append: vi.fn(), list: vi.fn(() => []), lastSeq: vi.fn(() => 0) },
       chapterChatStore: { addMany: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
     } as any
@@ -379,6 +381,13 @@ describe('discussion model contract', () => {
       log: { error: vi.fn() },
     } as any, reply as any)
 
+    // T6：受理即返回 202 + runId，执行转入后台，不再绑定 SSE 生命周期
+    expect(reply.statusCode).toBe(202)
+    expect(reply.payload).toMatchObject({
+      ok: true,
+      runId: expect.any(String),
+      eventsPath: expect.stringContaining('/discussion-runs/'),
+    })
     expect(run).toHaveBeenCalledWith(
       'project-1',
       1,
@@ -389,6 +398,12 @@ describe('discussion model contract', () => {
     )
     const firstRunOptions = (run.mock.calls as unknown as unknown[][])[0]?.[2]
     expect(firstRunOptions).not.toHaveProperty('memberModel')
+    // 后台执行完成：补 run_finished 终态事件并落快照
+    const append = services.discussionEventStore.append as ReturnType<typeof vi.fn>
+    await vi.waitFor(() => expect(append).toHaveBeenCalledWith(
+      expect.any(String), 'run_finished', expect.objectContaining({ status: 'completed', content: '正文' }),
+    ))
+    await vi.waitFor(() => expect(save).toHaveBeenCalled())
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ projectModel }))
     expect(save.mock.calls[0]?.[0]).not.toHaveProperty('memberModel')
   })
@@ -415,6 +430,7 @@ describe('discussion model contract', () => {
       discussionRunner: { run },
       discussionSettingsStore: { get: vi.fn(() => ({ maxRounds: 20 })) },
       discussionRunStore: { get: vi.fn(() => snapshot), save },
+      discussionEventStore: { append: vi.fn(), list: vi.fn(() => []), lastSeq: vi.fn(() => 0) },
       chapterChatStore: { addMany: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
     } as any
@@ -467,6 +483,7 @@ describe('discussion model contract', () => {
       discussionRunner: { run },
       discussionSettingsStore: { get: vi.fn(() => ({})) },
       discussionRunStore: { get: vi.fn(() => snapshot), save },
+      discussionEventStore: { append: vi.fn(), list: vi.fn(() => []), lastSeq: vi.fn(() => 0) },
       chapterChatStore: { addMany: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
     } as any
@@ -714,5 +731,94 @@ describe('create-team compatibility route', () => {
     )
     expect(execute).not.toHaveBeenCalled()
     expect(result).toMatchObject({ ok: true, data: { status: 'completed', content: '正文' } })
+  })
+})
+
+describe('discussion events tail and cancel (T6)', () => {
+  const makeServices = (store: { lastSeq: ReturnType<typeof vi.fn>; list: ReturnType<typeof vi.fn> }) => ({
+    discussionEventStore: store,
+  }) as any
+
+  it('events 端点：from=0 全量重放，run_finished 后自动收流', async () => {
+    const store = {
+      lastSeq: vi.fn(() => 2),
+      list: vi.fn(() => [
+        { runId: 'r1', seq: 1, type: 'run_started', payload: {}, createdAt: 1 },
+        { runId: 'r1', seq: 2, type: 'run_finished', payload: { status: 'completed' }, createdAt: 2 },
+      ]),
+    }
+    const route = createCreationFlowRoutes(makeServices(store)).find(item => (
+      item.path === '/projects/:projectId/discussion-runs/:runId/events'
+    ))!
+    const reply = createSseReply()
+
+    await route.handler({
+      params: { runId: 'r1' },
+      query: { from: '0' },
+      headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+    } as any, reply as any)
+
+    expect(reply.raw.writeHead).toHaveBeenCalledWith(200, expect.objectContaining({
+      'Content-Type': 'text/event-stream',
+    }))
+    const written = reply.raw.write.mock.calls.map(([data]) => String(data))
+    expect(written.some(data => data.includes('run_started'))).toBe(true)
+    expect(written.some(data => data.includes('run_finished'))).toBe(true)
+    // 终态已写出：流自动结束，无残留轮询
+    expect(reply.raw.end).toHaveBeenCalled()
+  })
+
+  it('events 端点：空事件流返回 404', async () => {
+    const route = createCreationFlowRoutes(makeServices({
+      lastSeq: vi.fn(() => 0),
+      list: vi.fn(() => []),
+    })).find(item => item.path === '/projects/:projectId/discussion-runs/:runId/events')!
+    const reply = createReply()
+
+    await route.handler({ params: { runId: 'missing' }, query: {}, headers: {} } as any, reply as any)
+
+    expect(reply.statusCode).toBe(404)
+  })
+
+  it('cancel 端点：按 runId 中止运行中的群聊任务并等待收尾', async () => {
+    const route = createCreationFlowRoutes({} as any).find(item => (
+      item.path === '/projects/:projectId/discussion-runs/:runId/cancel'
+    ))!
+    const task = registerNovelChapterTask('p-cancel:1', 'discussion', 'run-cancel-1')
+    const reply = createReply()
+
+    const handlerDone = route.handler({
+      params: { runId: 'run-cancel-1' },
+      headers: {},
+    } as any, reply as any) as Promise<unknown>
+    // 模拟后台 run 的 finally 收尾：resolve donePromise
+    setTimeout(() => finishNovelChapterTask('p-cancel:1', task), 0)
+    await handlerDone
+
+    expect(task.controller.signal.aborted).toBe(true)
+    expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({
+      ok: true, runId: 'run-cancel-1', cancelled: true,
+    }))
+  })
+
+  it('cancel 端点：已结束与不存在的 run 分别返回 409/404', async () => {
+    const store = {
+      lastSeq: vi.fn(() => 0),
+      list: vi.fn((runId: string) => runId === 'done-1'
+        ? [{ runId: 'done-1', seq: 1, type: 'run_finished', payload: {}, createdAt: 1 }]
+        : []),
+    }
+    const route = createCreationFlowRoutes(makeServices(store)).find(item => (
+      item.path === '/projects/:projectId/discussion-runs/:runId/cancel'
+    ))!
+
+    const finishedReply = createReply()
+    await route.handler({ params: { runId: 'done-1' }, headers: {} } as any, finishedReply as any)
+    expect(finishedReply.statusCode).toBe(409)
+
+    const missingReply = createReply()
+    await route.handler({ params: { runId: 'missing' }, headers: {} } as any, missingReply as any)
+    expect(missingReply.statusCode).toBe(404)
   })
 })

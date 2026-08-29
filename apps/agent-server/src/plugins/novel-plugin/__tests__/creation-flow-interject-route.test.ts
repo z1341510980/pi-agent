@@ -569,6 +569,7 @@ describe('群聊插话端点（kind=discussion）', () => {
       },
       orchestrator: createMockOrchestrator() as any,
       chapterChatStore: { add: chapterChatAdd },
+      discussionEventStore: { append: vi.fn(), list: vi.fn(() => []), lastSeq: vi.fn(() => 0) },
     } as any
     route = createCreationFlowRoutes(services).find(r => r.path === INTERJECT_PATH)! as typeof route
   })
@@ -717,6 +718,7 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
     const enqueuerQueue: Array<{ id: string; content: string; createdAt: number }> = []
     let capturedRunnerOptions: any
     let resolveFlow!: (value: unknown) => void
+    const eventAppends: Array<{ runId: string; type: string; payload: Record<string, unknown> }> = []
     const services = {
       store: {
         getProject: vi.fn(() => ({ id: PROJECT_ID })),
@@ -736,6 +738,13 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
       } as any,
       discussionSettingsStore: { get: vi.fn(() => ({})) } as any,
       discussionRunStore: { save: vi.fn() } as any,
+      discussionEventStore: {
+        append: vi.fn((runId: string, type: string, payload: Record<string, unknown> = {}) => {
+          eventAppends.push({ runId, type, payload })
+        }),
+        list: vi.fn(() => []),
+        lastSeq: vi.fn(() => 0),
+      } as any,
       chapterChatStore: { add: vi.fn(), addMany: vi.fn() } as any,
       confirmationManager: { listPending: vi.fn(() => []), requestDecision: vi.fn() } as any,
     } as any
@@ -744,6 +753,7 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
       enqueuerQueue,
       runnerOptions: () => capturedRunnerOptions,
       resolveFlow: (value: unknown) => resolveFlow(value),
+      eventAppends,
     }
   }
 
@@ -774,21 +784,23 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
     if (task) unregisterInterjectFlow(`${PROJECT_ID}|${CHAPTER}|${task.flowId}`)
   })
 
-  it('injected：Moderator 消费插话后，engine 回调沿 create-discussion SSE 推 injected 事件；终态后再插话 409', async () => {
-    const { services, enqueuerQueue, runnerOptions, resolveFlow } = createDiscussionServices()
+  it('injected：后台 run 中插话 201，queued/injected 状态落事件流；终态后再插话 409', async () => {
+    const { services, enqueuerQueue, runnerOptions, resolveFlow, eventAppends } = createDiscussionServices()
     const routes = createCreationFlowRoutes(services)
     const discussionRoute = routes.find(r => r.path === CREATE_DISCUSSION_PATH)! as { handler: (request: any, reply: any) => Promise<any> }
     const interjectRoute = routes.find(r => r.path === INTERJECT_PATH)! as { handler: (request: any, reply: any) => Promise<any> }
 
-    // 启动 create-discussion（SSE）：runner 挂起模拟群聊运行中
-    const sseReply = createSseReply()
-    const flowPromise = discussionRoute.handler(createSseRequest(), sseReply as any)
+    // 启动 create-discussion：T6 后台执行，受理即 202 + runId（runner 挂起模拟运行中）
+    const reply202 = createReply()
+    await discussionRoute.handler(createSseRequest(), reply202 as any)
+    expect(reply202.statusCode).toBe(202)
+    expect(reply202.payload).toMatchObject({ ok: true, runId: expect.any(String), eventsPath: expect.any(String) })
     expect(services.discussionRunner.run).toHaveBeenCalledTimes(1)
-    expect(sseReply.raw.write).toHaveBeenCalled()
     const activeTask = activeNovelChapterTasks.get(LOCK_KEY)
     expect(activeTask?.kind).toBe('discussion')
-    expect(activeTask?.flowId).toEqual(expect.any(String))
     const flowId = activeTask!.flowId
+    // run_started 同步入流，202 前事件流即可定位
+    expect(eventAppends.some(e => e.runId === flowId && e.type === 'run_started')).toBe(true)
 
     // 运行中插话：201，消息经 runner 登记的 enqueue 闭包进入 engine 队列
     const reply = createReply()
@@ -797,29 +809,28 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
     const messageId = (reply.payload as { data: { messageId: string } }).data.messageId
     expect(enqueuerQueue.map(m => m.id)).toEqual([messageId])
 
-    // queued 事件落到本 SSE 连接
-    let events = collectUserMessageEvents(sseReply)
-    expect(events).toHaveLength(1)
-    expect(events[0]).toMatchObject({
-      flowId,
-      messageId,
-      content: '群聊运行中的反馈',
-      status: 'queued',
-      timestamp: expect.any(Number),
-    })
+    // queued 状态经 publisher → emitter → agui mirror 落事件流（与旧 SSE 同一事件契约）
+    const queuedMirror = eventAppends.find(e => e.runId === flowId
+      && e.type === 'agui'
+      && (e.payload as { name?: string; value?: { status?: string; messageId?: string } }).name === 'novel:user-message'
+      && (e.payload as { value?: { status?: string; messageId?: string } }).value?.status === 'queued'
+      && (e.payload as { value?: { messageId?: string } }).value?.messageId === messageId)
+    expect(queuedMirror).toBeDefined()
 
-    // 模拟一轮 Moderator 消费：engine drain 后回调 options.onInterjectInjected
-    // （群聊无 agentType 语义，事件不携带 agentType 字段）
+    // 模拟一轮 engine drain：onInterjectInjected 回调把 injected 状态经同一通道落事件流
     runnerOptions().onInterjectInjected([messageId])
-    events = collectUserMessageEvents(sseReply)
-    expect(events).toHaveLength(2)
-    expect(events[1]).toMatchObject({ messageId, status: 'injected', timestamp: expect.any(Number) })
-    expect(events[1].agentType).toBeUndefined()
+    const injectedMirror = eventAppends.find(e => e.runId === flowId
+      && e.type === 'agui'
+      && (e.payload as { name?: string; value?: { status?: string; messageId?: string } }).name === 'novel:user-message'
+      && (e.payload as { value?: { status?: string; messageId?: string } }).value?.status === 'injected'
+      && (e.payload as { value?: { messageId?: string } }).value?.messageId === messageId)
+    expect(injectedMirror).toBeDefined()
 
-    // flow 终态：任务表清理 + 注册表注销
+    // flow 终态：后台 executeRun 补 run_finished 并清理任务表
     resolveFlow({ status: 'completed', transcript: [], scenes: [] })
-    await flowPromise
-    expect(sseReply.raw.end).toHaveBeenCalled()
+    await vi.waitFor(() => expect(eventAppends.some(e =>
+      e.runId === flowId && e.type === 'run_finished' && e.payload.status === 'completed')).toBe(true))
+    expect(activeNovelChapterTasks.get(LOCK_KEY)).toBeUndefined()
 
     // 终态后再插话 → 409（无运行中 discussion）
     const afterReply = createReply()
@@ -827,37 +838,35 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
     expect(afterReply.statusCode).toBe(409)
   })
 
-  it('dropped：engine 收尾时未消费的插话沿 create-discussion SSE 推 dropped 事件', async () => {
-    const { services, runnerOptions, resolveFlow } = createDiscussionServices()
+  it('dropped：engine 收尾 flush 的未消费插话，dropped 状态落事件流', async () => {
+    const { services, runnerOptions, resolveFlow, eventAppends } = createDiscussionServices()
     const routes = createCreationFlowRoutes(services)
-    const discussionRoute = routes.find(r => r.path === CREATE_DISCUSSION_PATH)! as { handler: (request: any, reply: any) => Promise<any> }
-    const interjectRoute = routes.find(r => r.path === INTERJECT_PATH)! as { handler: (request: any, reply: any) => Promise<any> }
+    const discussionRoute = routes.find(r => r.path === CREATE_DISCUSSION_PATH)!
+    const interjectRoute = routes.find(r => r.path === INTERJECT_PATH)!
+    void discussionRoute
 
-    const sseReply = createSseReply()
-    const flowPromise = discussionRoute.handler(createSseRequest(), sseReply as any)
-    const activeTask = activeNovelChapterTasks.get(LOCK_KEY)
-    expect(activeTask?.kind).toBe('discussion')
-    const flowId = activeTask!.flowId
+    const reply202 = createReply()
+    await discussionRoute.handler(createSseRequest(), reply202 as any)
+    expect(reply202.statusCode).toBe(202)
+    const flowId = activeNovelChapterTasks.get(LOCK_KEY)!.flowId
 
     const reply = createReply()
     await interjectRoute.handler(interjectRequest(flowId, { content: '来不及注入的群聊反馈' }), reply)
     expect(reply.statusCode).toBe(201)
     const messageId = (reply.payload as { data: { messageId: string } }).data.messageId
 
-    // 模拟 engine 收尾（engine.run finally 的 flushInterjectDropped）：
-    // 未被 Moderator 消费的插话以 dropped 回调暴露，经注册表路由回本 SSE
+    // 模拟 engine 收尾（runDiscussion finally 的 flushInterjectDropped）：
+    // 未被消费的插话以 dropped 回调暴露，状态经 agui mirror 落事件流
     runnerOptions().onInterjectDropped([messageId])
-    const events = collectUserMessageEvents(sseReply)
-    expect(events).toHaveLength(2)
-    expect(events[1]).toMatchObject({
-      messageId,
-      content: '来不及注入的群聊反馈',
-      status: 'dropped',
-      timestamp: expect.any(Number),
-    })
+    const droppedMirror = eventAppends.find(e => e.runId === flowId
+      && e.type === 'agui'
+      && (e.payload as { name?: string; value?: { status?: string; messageId?: string } }).name === 'novel:user-message'
+      && (e.payload as { value?: { status?: string; messageId?: string } }).value?.status === 'dropped'
+      && (e.payload as { value?: { messageId?: string } }).value?.messageId === messageId)
+    expect(droppedMirror).toBeDefined()
 
     resolveFlow({ status: 'completed', transcript: [], scenes: [] })
-    await flowPromise
-    expect(sseReply.raw.end).toHaveBeenCalled()
+    await vi.waitFor(() => expect(eventAppends.some(e =>
+      e.runId === flowId && e.type === 'run_finished')).toBe(true))
   })
 })
