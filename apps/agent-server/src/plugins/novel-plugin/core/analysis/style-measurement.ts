@@ -230,6 +230,69 @@ export function formatStyleMetricsAsFingerprint(
   return lines.join('\n')
 }
 
+/**
+ * 与档案对照的"偏离型"指纹：项目配置了文风档案时用它替代全量数字版。
+ *
+ * 旧做法把最近章节的统计均值（平均句长/对话占比/情感温度…）整块注入，
+ * 与档案里的同一组数字形成两套口径，把不同情绪的章节一齐拉向跨章均值。
+ * 这里只报告**可信偏离**（人称相反 / 温度差 ≥2 / 对话占比差 ≥15 个百分点），
+ * 让 Writer 知道"前文实际走向与档案目标的差距"；一致时明确说明无额外基线。
+ */
+export function formatStyleFingerprintDeviation(
+  snapshot: StyleMetricsSnapshot & {
+    shortSentenceRatio: number
+    longSentenceRatio: number
+  },
+  profile: {
+    narrativePerson: 'first' | 'third' | 'mixed'
+    dialogueRatio: number
+    emotionalTemperature: number
+  },
+  label: string,
+): string {
+  const deviations: string[] = []
+  if (
+    snapshot.narrativePerson !== 'mixed'
+    && profile.narrativePerson !== 'mixed'
+    && snapshot.narrativePerson !== profile.narrativePerson
+  ) {
+    const personLabel = (p: 'first' | 'third') => (p === 'first' ? '第一' : '第三')
+    deviations.push(
+      `叙事人称：前文以${personLabel(snapshot.narrativePerson)}人称为主，档案声明${personLabel(profile.narrativePerson)}人称；后续章节应向档案靠拢`,
+    )
+  }
+  const tempDelta = snapshot.emotionalTemperature - profile.emotionalTemperature
+  if (Math.abs(tempDelta) >= 2) {
+    deviations.push(
+      `情感温度：前文 ${snapshot.emotionalTemperature}/10，档案目标 ${profile.emotionalTemperature}/10（相差 ${Math.abs(tempDelta)}）`,
+    )
+  }
+  const dialogueDelta =
+    Math.round(snapshot.dialogue.charRatio * 100) - Math.round(profile.dialogueRatio)
+  if (Math.abs(dialogueDelta) >= 15) {
+    deviations.push(
+      `对话占比：前文 ${Math.round(snapshot.dialogue.charRatio * 100)}%，档案目标约 ${Math.round(profile.dialogueRatio)}%（相差 ${Math.abs(dialogueDelta)} 个百分点）`,
+    )
+  }
+
+  const lines: string[] = [`## 文风指纹（${label}，与档案对照）`, '']
+  if (deviations.length === 0) {
+    lines.push(
+      '最近正文的人称、情感温度与对话占比均在档案允许范围内，无额外数值基线。',
+      '',
+      '说明：本章文风以「项目文风档案」为准，按当前场景的任务、关系和压力自然波动，允许合理偏离均值；不得为了贴近均值复制前章的句式、开场或段落节拍。',
+    )
+  } else {
+    lines.push(
+      '最近正文与档案存在以下偏离。写作时不必延续前文状态，向档案方向自然回归即可，不必一步到位：',
+      ...deviations.map((deviation) => `- ${deviation}`),
+      '',
+      '说明：未列出的指标视为与档案一致。以上是观测对照，不是硬约束；当前场景的任务和叙事压力优先。',
+    )
+  }
+  return lines.join('\n')
+}
+
 // ═══════════════════════════════════════════════════════════════
 // P2-3：修订前后 L1 形态指标差异报告
 // ═══════════════════════════════════════════════════════════════

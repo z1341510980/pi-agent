@@ -8,7 +8,7 @@ import type { Tour } from '../types'
  *
  * 每步通过 shortcut 字段注入 <kbd> 元素展示快捷键。
  *
- * 数据来源：use-shortcut.ts（全局 12 个）+ use-novel-workspace-shortcuts.ts（小说专属 7 个）。
+ * 数据来源：use-shortcut.ts（全局 12 个）+ use-novel-workspace-shortcuts.ts（小说专属 4 组）。
  *
  * 最后一步 onNext：completeTour 写入 completedVersion，回到 home view（若不在）。
  */
@@ -29,8 +29,20 @@ export const shortcutsTour: Tour = {
     },
     {
       title: '打开设置',
-      description: '一键跳转到设置页（Provider / 模型 / Agent / 权限）。',
+      description: '一键跳转到设置页（助手 / 技能 / Provider / 模型 / 插件 / Agent / 权限 / 定时任务）。',
       shortcut: 'Ctrl+,',
+      side: 'over',
+    },
+    {
+      title: '聚焦输入框',
+      description: '光标一键回到对话输入框，配合 Enter 发送、/ 唤起斜杠命令。',
+      shortcut: 'Ctrl+L',
+      side: 'over',
+    },
+    {
+      title: '切换权限模式',
+      description: '在 Auto / Plan / Read-only / Full 四种权限模式间快速轮换。',
+      shortcut: 'Ctrl+M',
       side: 'over',
     },
     {
@@ -40,26 +52,14 @@ export const shortcutsTour: Tour = {
       side: 'over',
     },
     {
-      title: '对话栏切换',
-      description: '切换左侧会话列表 / 右侧上下文面板。',
-      shortcut: 'Ctrl+\\ / Ctrl+Shift+\\',
-      side: 'over',
-    },
-    {
-      title: '会话跳转',
-      description: '在最近会话间快速切换（上一会话 / 下一会话）。',
-      shortcut: 'Ctrl+[ / Ctrl+]',
-      side: 'over',
-    },
-    {
-      title: '小说工作区模式',
-      description: '切换小说工作区的写作 / 矩阵 / 分屏三种模式，以及专注模式。',
-      shortcut: 'Ctrl+1/2/3 / Ctrl+Shift+F',
+      title: '小说工作区布局',
+      description: '切换小说工作区的正文 / 正文+时间线 / 时间线 / 关系图四种布局，以及专注模式。',
+      shortcut: 'Ctrl+1/2/3/4 / Ctrl+Shift+F',
       side: 'over',
     },
     {
       title: '小说侧栏切换',
-      description: '切换小说工作区的左栏（项目树）/ 右栏（对话/详情/审计）。完成全部引导 ✓',
+      description: '切换小说工作区的左栏（项目列表）/ 右栏（会话/详情/设置/审校/审计）。完成全部引导 ✓',
       shortcut: 'Ctrl+B / Ctrl+J',
       side: 'over',
       onNext: () => {

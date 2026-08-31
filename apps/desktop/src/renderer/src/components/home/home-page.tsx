@@ -160,7 +160,7 @@ export function HomePage({ onOpenChat, onOpenNovel, onOpenSettings }: HomePagePr
         </section>
 
         {/* ── 最近活动 ── */}
-        <section className="grid gap-5 sm:grid-cols-2">
+        <section className="grid gap-5 sm:grid-cols-2" data-tour="home-recent">
           <div className="min-w-0">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="m-0 text-xs font-[760] uppercase tracking-wider text-subtle">

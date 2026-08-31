@@ -4,6 +4,7 @@ import { BookOpen, Copy, Eye, FileText, ImageIcon, Search, X } from 'lucide-reac
 import {
   listPromptItems,
   listPromptTags,
+  proxyExternalImageUrl,
   refreshPromptSources,
   type NormalizedPromptItem,
   type PromptTagInfo
@@ -22,15 +23,6 @@ export interface CanvasAsset {
 export type PromptItem = NormalizedPromptItem
 
 const STORAGE_KEY = 'pi-agent:infinite-canvas-assets'
-const PROXY_BASE = '/api/plugins/infinite-canvas/proxy-image?url='
-
-/** 外部图通过服务端代理绕过 CSP；data: URL 直接用。 */
-function resolveCover(url: string): string {
-  if (!url) return ''
-  if (url.startsWith('data:')) return url
-  if (url.startsWith('http')) return `${PROXY_BASE}${encodeURIComponent(url)}`
-  return ''
-}
 
 export function readCanvasAssets(): CanvasAsset[] {
   try {
@@ -187,7 +179,7 @@ export function CanvasAssetLibrary({
         title: item.title,
         description: item.description || item.prompt.slice(0, 200),
         prompt: item.prompt,
-        cover: resolveCover(item.coverUrl),
+        cover: proxyExternalImageUrl(item.coverUrl),
         sourceName: item.sourceName,
         tags: item.tags
       }))

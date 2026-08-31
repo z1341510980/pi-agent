@@ -170,8 +170,8 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
       `- 句式节奏：${RHYTHM_LABELS[profile.sentenceRhythm]}`,
       `- 语言语域：${REGISTER_LABELS[profile.vocabularyRegister]}`,
       `- 对话参考中心：约 ${Math.round(profile.dialogueRatio)}%（这是跨场景倾向，不是逐章配额）`,
-      `- 情感温度：${profile.emotionalTemperature}/10`,
-      `- 意象与比喻密度：${profile.imageryDensity}/10`,
+      `- 情感温度：${profile.emotionalTemperature}/10（跨章中心值，允许 ±2 随场景压力浮动：高压段可更高，余波段可更低）`,
+      `- 意象与比喻密度：${profile.imageryDensity}/10（跨章中心值，允许 ±2 浮动；动作段少修辞，静场可更密）`,
     ].join('\n'),
     // 文风档案属于 Agent identity，必须有明确体积预算。优先保留靠前规则，
     // 避免用户粘贴大量说明后让每次 Writer/Reviewer 调用膨胀数千字符。
@@ -330,6 +330,10 @@ const TASK_DECISIONS: Record<NarrativeTaskType, string> = {
 /**
  * 把项目级文风压缩成一次性的章节选择，避免 Writer 同时背诵整套统计指标。
  * 精确段落比例和修辞计数由写后质量门处理，这里只决定当前章节的写法重心。
+ *
+ * mode='acceptance' 供 Reviewer/Reviser 对照用：省略「稳定声音」与「任务落点」
+ * ——前者与静态身份里的文风档案逐字重复，后者与各自上下文里的叙事任务重复。
+ * 保留定位、场景重心与变化许可，这三项才是"本章允许什么波动"的判定依据。
  */
 export function buildStyleDecisionPack(input: {
   positioning?: ChapterPositioning | null
@@ -338,6 +342,7 @@ export function buildStyleDecisionPack(input: {
     NovelWritingStyleProfile,
     'narrativePerson' | 'narrativeDistance' | 'vocabularyRegister'
   >
+  mode?: 'full' | 'acceptance'
 }): string {
   const decision = input.positioning
     ? POSITIONING_DECISIONS[input.positioning]
@@ -346,6 +351,16 @@ export function buildStyleDecisionPack(input: {
         focus: '以人物此刻的欲望、阻力和选择决定速度，不预设统一段落形态。',
         variation: '根据场景压力自然改变句长、对话密度和感官重心。',
       }
+
+  if (input.mode === 'acceptance') {
+    return [
+      `### 本章风格决策（验收对照）：${decision.label}`,
+      `- 场景重心：${decision.focus}`,
+      `- 变化许可：${decision.variation}`,
+      '- 自然度：允许有来处的停顿、误解、句法不规则和局部闲笔；不要为了整齐而修平。',
+    ].join('\n')
+  }
+
   const stableVoice = input.profile
     ? `${PERSON_LABELS[input.profile.narrativePerson]}；${DISTANCE_LABELS[input.profile.narrativeDistance]}；${REGISTER_LABELS[input.profile.vocabularyRegister]}。`
     : '沿用现有正文的人称、观察距离和语域，不自行发明固定句式。'

@@ -142,6 +142,18 @@ export interface CanvasProject {
 
 const BASE = '/api/plugins/infinite-canvas'
 
+/**
+ * 外部 http(s) 图片会被渲染层 CSP（img-src 'self' data:）拦截，
+ * 统一改走服务端代理（服务端下载后本地回传，原图 URL 保留在 query 里）；
+ * data:/blob:/相对路径直接放行。
+ */
+export function proxyExternalImageUrl(url: string): string {
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    return `${BASE}/proxy-image?url=${encodeURIComponent(url)}`
+  }
+  return url
+}
+
 export async function listCanvasProjects(): Promise<
   Array<Omit<CanvasProject, 'nodes' | 'connections'>>
 > {

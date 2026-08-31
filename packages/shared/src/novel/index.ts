@@ -1894,6 +1894,8 @@ export interface ArrangedEntity {
   locationIds: string[]
   /** 本章需要出场的物品；可选以兼容旧版矩阵快照。 */
   itemIds?: string[]
+  /** 本章要推进的剧情事件（剧情轨道）；可选以兼容旧版矩阵快照。 */
+  narrativeIds?: string[]
   /**
    * 角色本章功能位编排（可选，未指定时不约束）。
    * 由 planEntitiesFromOutline 在编排阶段为每个新角色规划，注入 Writer 让其明确

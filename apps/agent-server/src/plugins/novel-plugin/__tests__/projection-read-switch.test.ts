@@ -107,7 +107,7 @@ describe('章节投影读切换', () => {
   it('返回的字段集与 ArrangedEntity 契约一致（含 itemIds / clueIds）', () => {
     const result = buildArrangedEntitiesForChapter(store, memoryStore, PROJECT_ID, 1)
     expect(Object.keys(result).sort()).toEqual([
-      'characterIds', 'clueIds', 'conflictIds', 'factionIds', 'foreshadowIds', 'itemIds', 'locationIds',
+      'characterIds', 'clueIds', 'conflictIds', 'factionIds', 'foreshadowIds', 'itemIds', 'locationIds', 'narrativeIds',
     ])
   })
 })

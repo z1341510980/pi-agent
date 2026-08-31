@@ -38,6 +38,28 @@ export function selectAdmissibleNewForeshadows<T extends ForeshadowAdmissionFiel
   return candidates.filter(isAdmissibleNewForeshadow).slice(0, maxNewPerChapter)
 }
 
+/** chapterAction 归一化表：LLM 常写中文或夹带说明文字，按包含关系映射到四值枚举 */
+const CHAPTER_ACTION_ALIASES: Array<{ type: 'plant' | 'reinforce' | 'reveal' | 'payoff'; words: string[] }> = [
+  { type: 'payoff', words: ['payoff', '回收', '兑现', '揭晓答案'] },
+  { type: 'reveal', words: ['reveal', '揭示', '揭露', '揭晓', '部分揭示', '曝光'] },
+  { type: 'reinforce', words: ['reinforce', '强化', '加深', '推进', '重提', '强调'] },
+  { type: 'plant', words: ['plant', '埋设', '埋下', '铺垫', '种下'] },
+]
+
+/**
+ * 把 LLM 输出的 chapterAction 归一化为 plant/reinforce/reveal/payoff。
+ * 顺序按 payoff > reveal > reinforce > plant：像"部分揭示后回收"这类复合描述
+ * 取更强的动作。无法识别返回 null，由调用方决定兜底。
+ */
+export function normalizeForeshadowChapterAction(value: unknown): 'plant' | 'reinforce' | 'reveal' | 'payoff' | null {
+  const text = String(value ?? '').trim().toLowerCase()
+  if (!text) return null
+  for (const alias of CHAPTER_ACTION_ALIASES) {
+    if (alias.words.some((word) => text.includes(word.toLowerCase()))) return alias.type
+  }
+  return null
+}
+
 /** 注入 LLM 的统一领域定义，供编排、反推与记忆沉淀复用。 */
 export const FORESHADOW_ADMISSION_PROMPT = `【伏笔准入规则（严格）】
 - 明线：角色公开追求的目标及读者当前看得见的主要因果链，例如主角为父报仇。

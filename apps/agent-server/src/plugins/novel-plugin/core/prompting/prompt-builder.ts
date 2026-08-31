@@ -79,6 +79,7 @@ import {
 import {
   measureStyleMetrics,
   formatStyleMetricsAsFingerprint,
+  formatStyleFingerprintDeviation,
 } from '../analysis/style-measurement.js'
 import {
   buildStyleDecisionPack,
@@ -118,6 +119,7 @@ import type {
   NovelFaction,
   NovelLocation,
   NovelItem,
+  NovelNarrative,
   NovelWorldElement,
   NovelEdge,
   NovelVolume,
@@ -448,6 +450,8 @@ export interface NovelPromptStores {
   getLocation(locationId: string): NovelLocation | undefined
   /** 按 ID 查询物品（供 arrangedEntities 注入时使用） */
   getItem(itemId: string): NovelItem | undefined
+  /** 按 ID 查询剧情事件（供 arrangedEntities 注入时使用；可选以兼容测试桩） */
+  getNarrative?(narrativeId: string): NovelNarrative | undefined
   /** 查询指定角色拥有的所有物品（供提示词注入"主角拥有什么"） */
   listItemsByOwner?(ownerId: string): NovelItem[]
   /** 查询项目的所有卷（供注入卷纲） */
@@ -1716,7 +1720,7 @@ export class NovelPromptBuilder {
     // 文风指纹：与 writingStyleProfile 叠加（profile 给方向，指纹给实际基准）。
     // 指标不可信时 formatStyleFingerprint 会自行降级为参考值，不作硬约束。
     if (prevChapters.length > 0) {
-      const fingerprint = this.formatStyleFingerprint(prevChapters)
+      const fingerprint = this.formatStyleFingerprint(prevChapters, projectId)
       if (fingerprint) sections.push({ chunkId: 'style-fingerprint', content: fingerprint })
     }
 
@@ -1885,7 +1889,7 @@ export class NovelPromptBuilder {
         parts.push(
           '## 矩阵执行验收（Reviewer 专属）\n\n' +
             '正文必须让上述编排实体实际参与本章事件，不得只在叙述中点名；' +
-            '角色必须完成其本章功能位，冲突/伏笔必须按标注的推进节点执行。' +
+            '角色必须完成其本章功能位，冲突/伏笔必须按标注的推进节点执行，剧情事件必须真实发生。' +
             '你必须逐项核对矩阵实体是否全部兑现，未兑现项必须在审稿报告中明确指出。'
         )
       }
@@ -1898,8 +1902,9 @@ export class NovelPromptBuilder {
           positioning: constraints.positioning ?? narrativeTask.positioning ?? null,
           narrativeTaskType: narrativeTask.type,
           profile: this.stores.getWritingStyleProfile?.(projectId),
+          mode: 'acceptance',
         }),
-        '以上决策中许可的变化不属于风格偏离；仅当正文违反稳定声音（人称/视角信息范围/硬约束）或完全脱离档案声音时才判失败。',
+        '以上决策中许可的变化不属于风格偏离；仅当正文违反稳定声音（人称/视角信息范围/硬约束，见身份段文风档案）或完全脱离档案声音时才判失败。',
       ].join('\n\n'))
       if (parts.length > 0) chunks.push({ chunkId: 'reviewer-rubric', content: parts.join('\n\n---\n\n') })
     }
@@ -1916,8 +1921,9 @@ export class NovelPromptBuilder {
             positioning: constraints.positioning ?? narrativeTask.positioning ?? null,
             narrativeTaskType: narrativeTask.type,
             profile: this.stores.getWritingStyleProfile?.(projectId),
+            mode: 'acceptance',
           }),
-          '修订时保持上述决策：决策许可的句长、对话密度和节奏变化不是问题，不要为了贴近档案把它们修平。',
+          '修订时保持上述决策：决策许可的句长、对话密度和节奏变化不是问题，不要为了贴近档案把它们修平。稳定声音以身份段的文风档案为准。',
         ].join('\n\n'),
       })
     }
@@ -2753,6 +2759,28 @@ export class NovelPromptBuilder {
         }
       }
     }
+    // ── 本章剧情事件（剧情轨道，ai-arrange 的 narratives 产出）──
+    // 剧情实体不在章节边界快照里（ChapterBoundaryEntities 未含 narratives），
+    // 直接按 ID 反查当前实体；剧情描述是"发生了什么"的一句话事件，不含未来状态。
+    if ((arranged.narrativeIds ?? []).length > 0) {
+      const narrativeLines: string[] = []
+      for (const id of arranged.narrativeIds ?? []) {
+        const narrative = this.stores.getNarrative?.(id)
+        if (!narrative) continue
+        const typeLabel: Record<string, string> = {
+          advance: '剧情推进', turn: '转折', reversal: '反转', suspense: '悬念',
+          resolve: '收束', setup: '铺垫', reveal: '揭示', misc: '其他',
+        }
+        narrativeLines.push(
+          `- [${typeLabel[narrative.type] ?? narrative.type}] ${narrative.description}`
+        )
+      }
+      if (narrativeLines.length > 0) {
+        lines.push('### 本章剧情事件')
+        lines.push('这些是本章要实际发生的关键事件（不是摘要，正文必须把它们写出来）：')
+        lines.push(...narrativeLines)
+      }
+    }
     if (arranged.factionIds.length > 0) {
       const facs = arranged.factionIds
         .map(resolveFaction)
@@ -2976,7 +3004,8 @@ export class NovelPromptBuilder {
         (arranged.clueIds ?? []).length > 0 ||
         arranged.factionIds.length > 0 ||
         arranged.locationIds.length > 0 ||
-        (arranged.itemIds ?? []).length > 0)
+        (arranged.itemIds ?? []).length > 0 ||
+        (arranged.narrativeIds ?? []).length > 0)
     )
   }
 
@@ -3007,6 +3036,7 @@ export class NovelPromptBuilder {
     for (const id of arranged.factionIds) ids.add(id)
     for (const id of arranged.locationIds) ids.add(id)
     for (const id of arranged.itemIds ?? []) ids.add(id)
+    for (const id of arranged.narrativeIds ?? []) ids.add(id)
     return ids
   }
 
@@ -4440,8 +4470,13 @@ export class NovelPromptBuilder {
    * 注入 Writer/Reviewer 的 SEMI 层，让 LLM 在 context compaction 后仍能保持文风一致。
    * 统计实现已统一到 core/analysis/style-measurement（与参考小说分析、专家蒸馏
    * 共用同一测量器，V2 方案阶段 1）；此处只负责取样本与格式化。
+   *
+   * 注入口径分两档：
+   * - 项目配置了文风档案 → 「与档案对照」的偏离型指纹（只报可信偏离，不重复注入
+   *   一组与档案同口径的全书均值，避免把不同情绪的章节拉向同一均值）；
+   * - 无档案 → 保留全量统计版（此时指纹是唯一的数值基线）。
    */
-  private formatStyleFingerprint(prevChapters: NovelChapter[]): string {
+  private formatStyleFingerprint(prevChapters: NovelChapter[], projectId: string): string {
     if (prevChapters.length === 0) return ''
 
     // 取最近 2-3 章的正文合并分析
@@ -4455,11 +4490,16 @@ export class NovelPromptBuilder {
     const snapshot = measureStyleMetrics(sampleText)
     if (snapshot.sentenceCount === 0) return ''
 
-    const sampleRange: [number, number] = [
-      prevChapters[0].chapterNumber,
-      prevChapters[prevChapters.length - 1].chapterNumber
-    ]
-    return formatStyleMetricsAsFingerprint(snapshot, `第${sampleRange[0]}-${sampleRange[1]}章提取`)
+    const label = `第${prevChapters[0].chapterNumber}-${prevChapters[prevChapters.length - 1].chapterNumber}章提取`
+    const profile = this.stores.getWritingStyleProfile?.(projectId)
+    if (profile) {
+      return formatStyleFingerprintDeviation(snapshot, {
+        narrativePerson: profile.narrativePerson,
+        dialogueRatio: profile.dialogueRatio,
+        emotionalTemperature: profile.emotionalTemperature,
+      }, label)
+    }
+    return formatStyleMetricsAsFingerprint(snapshot, label)
   }
 
   /**

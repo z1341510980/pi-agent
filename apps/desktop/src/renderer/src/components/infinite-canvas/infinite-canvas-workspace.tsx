@@ -38,15 +38,14 @@ import {
   generateCanvasText,
   getCanvasProject,
   listCanvasProjects,
+  proxyExternalImageUrl,
   renameCanvasProject,
   reverseCanvasPrompt,
   saveCanvasGraph,
-  canvasGeneratedImageContent,
   type CanvasGraphPayload,
   type CanvasNodeRow,
   type CanvasProject,
   type CanvasProjectSettings,
-  type CanvasGeneratedImage,
   type CanvasNodeData as ApiCanvasNodeData,
   type ViewportTransform
 } from '@/api/infinite-canvas-client'
@@ -137,6 +136,15 @@ function cloneConnections(connections: LocalConnection[]): LocalConnection[] {
 function projectNodeFromRow(row: CanvasNodeRow): LocalNode {
   const metadata = { ...(row.metadata ?? {}) }
   if (metadata.content === undefined && row.content) metadata.content = row.content
+  // 图片节点的外部生成 URL 统一换成服务端代理地址，避免渲染层 CSP 拦截。
+  if (row.type === 'image' && typeof metadata.content === 'string') {
+    metadata.content = proxyExternalImageUrl(metadata.content)
+  }
+  if (Array.isArray(metadata.images)) {
+    metadata.images = metadata.images.map((image) =>
+      typeof image === 'string' ? proxyExternalImageUrl(image) : image
+    )
+  }
   return {
     id: row.id,
     type: row.type,
@@ -201,7 +209,8 @@ function fileAsDataUrl(file: File): Promise<string> {
 
 async function imageContentAsDataUrl(content: string): Promise<string> {
   if (content.startsWith('data:')) return content
-  const response = await fetch(content)
+  // 外部 URL 直连会被 connect-src CSP 拦截，经服务端代理取回。
+  const response = await fetch(proxyExternalImageUrl(content))
   if (!response.ok) throw new Error(`参考图片读取失败（HTTP ${response.status}）`)
   const blob = await response.blob()
   return fileAsDataUrl(new File([blob], 'reference-image', { type: blob.type || 'image/png' }))
@@ -1128,7 +1137,7 @@ export function InfiniteCanvasWorkspace({
           model: typeof source.metadata?.model === 'string' ? source.metadata.model : undefined,
           size: typeof source.metadata?.size === 'string' ? source.metadata.size : undefined
         })
-        const image = result.images[0]
+        const image = proxyExternalImageUrl(result.images[0])
         if (!image) throw new Error('没有返回编辑结果')
         const dimensions = await readMediaSize(image, 'image')
         const size = fitNodeSize(dimensions.width, dimensions.height, source.width, source.height)
@@ -1938,7 +1947,9 @@ export function InfiniteCanvasWorkspace({
         if (controller.signal.aborted) return
         const images =
           generationMode === 'image' && 'images' in result && Array.isArray(result.images)
-            ? result.images.filter((value): value is string => typeof value === 'string' && value.length > 0)
+            ? result.images
+                .filter((value): value is string => typeof value === 'string' && value.length > 0)
+                .map(proxyExternalImageUrl)
             : []
         if (images.length > 0) {
           // 对齐参考批量堆叠：多图结果落进单个节点的 images 批次，主图 + 可展开网格。

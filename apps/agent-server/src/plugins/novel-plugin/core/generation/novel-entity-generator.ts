@@ -22,6 +22,7 @@ import type { NovelMemoryStore, CreateEventChangeInput } from '../novel-memory-s
 import {
   FORESHADOW_ADMISSION_PROMPT,
   isAdmissibleNewForeshadow,
+  normalizeForeshadowChapterAction,
   selectAdmissibleNewForeshadows,
   type ForeshadowAdmissionFields,
 } from '../entities/foreshadow-policy.js'
@@ -44,6 +45,8 @@ import type {
   NovelLocation,
   NovelItem,
   NovelWorldElement,
+  NovelNarrative,
+  NarrativeType,
 } from '../types.js'
 import {
   nextChapterSpans,
@@ -59,6 +62,7 @@ type EntityPlan = {
   factions: { coreStyle: string }[]
   locations: { coreStyle: string }[]
   items: { coreStyle: string }[]
+  narratives?: Array<{ coreStyle: string; narrativeType?: NarrativeType }>
 }
 
 type EntityPlanLogContext = {
@@ -103,6 +107,7 @@ export interface ArrangeUndoCapture {
   createdFactionIds: string[]
   createdLocationIds: string[]
   createdItemIds: string[]
+  createdNarrativeIds: string[]
 }
 
 export function createArrangeUndoCapture(): ArrangeUndoCapture {
@@ -114,6 +119,7 @@ export function createArrangeUndoCapture(): ArrangeUndoCapture {
     createdFactionIds: [],
     createdLocationIds: [],
     createdItemIds: [],
+    createdNarrativeIds: [],
   }
 }
 
@@ -290,6 +296,21 @@ const EXISTING_HINT_PATTERN = /^(?:已有|复用|existing)\s*[:：]\s*(.+)$/i
 /** 伏笔本章动作，直接映射为 ForeshadowBeat.type */
 export const VALID_FORESHADOW_CHAPTER_ACTIONS = new Set(['plant', 'reinforce', 'reveal', 'payoff'])
 
+/** NarrativeType 枚举，与 @repo/shared/novel 的 NarrativeType 同源 */
+const NARRATIVE_TYPES = ['advance', 'turn', 'reversal', 'suspense', 'resolve', 'setup', 'reveal', 'misc'] as const
+
+/** 剧情类型中文标签（进度提示与编排明细用） */
+const NARRATIVE_TYPE_LABELS: Record<NarrativeType, string> = {
+  advance: '剧情推进',
+  turn: '转折',
+  reversal: '反转',
+  suspense: '悬念',
+  resolve: '收束',
+  setup: '铺垫',
+  reveal: '揭示',
+  misc: '其他',
+}
+
 /** 解析并执行新伏笔准入门槛；已有伏笔复用不受“新增一条”上限影响。 */
 export function normalizePlannedForeshadows(
   value: unknown,
@@ -309,11 +330,13 @@ export function normalizePlannedForeshadows(
   // 旧实现只认全角冒号「已有：」，与 parseExistingHint 的口径不一致：
   // LLM 写成半角「已有:」时，复用项会被当成新增项走准入门槛，进而被静默丢弃。
   const isExistingHint = (coreStyle: string): boolean => EXISTING_HINT_PATTERN.test(coreStyle.trim())
-  const existing = rawForeshadows.filter((f) =>
-    isExistingHint(f.coreStyle)
-    && isAdmissibleNewForeshadow(f)
-    && VALID_FORESHADOW_CHAPTER_ACTIONS.has(String(f.chapterAction)),
-  )
+  // 复用项只要求 chapterAction 可归一化（中文/夹带说明都能映射）；
+  // 归一化失败时兜底为 reinforce —— 复用项缺一个 beat 会在矩阵格子里消失
+  // （前端与矩阵都按 beats 判断"本章是否涉及该伏笔"），宁可多记一次强化
+  // 也不能静默丢失。准入字段（importance 等）只约束新增，不再过滤复用。
+  const existing = rawForeshadows
+    .filter((f) => isExistingHint(f.coreStyle))
+    .map((f) => ({ ...f, chapterAction: normalizeForeshadowChapterAction(f.chapterAction) ?? 'reinforce' }))
   const created = selectAdmissibleNewForeshadows(
     rawForeshadows.filter((f) => !isExistingHint(f.coreStyle)),
   )
@@ -705,7 +728,7 @@ export class NovelEntityGenerator {
 
     onProgress?.({
       phase: 'planned',
-      message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔 / ${plan.factions.length} 势力 / ${plan.locations.length} 地点 / ${plan.items.length} 物品`,
+      message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔 / ${plan.factions.length} 势力 / ${plan.locations.length} 地点 / ${plan.items.length} 物品 / ${(plan.narratives ?? []).length} 剧情`,
       data: plan,
       // 携带 detail 用于前端展示规划清单气泡
       detail: {
@@ -716,6 +739,7 @@ export class NovelEntityGenerator {
         factions: plan.factions.map((s) => s.coreStyle),
         locations: plan.locations.map((s) => s.coreStyle),
         items: plan.items.map((s) => s.coreStyle),
+        narratives: (plan.narratives ?? []).map((s) => s.coreStyle),
       },
     })
 
@@ -725,6 +749,7 @@ export class NovelEntityGenerator {
     const factionIds: string[] = []
     const locationIds: string[] = []
     const itemIds: string[] = []
+    const narrativeIds: string[] = []
     // 撤销上下文：外部传入时（待确认草稿），补偿动作同步登记进去供用户拒绝时回滚。
     const undo = undoCapture ?? createArrangeUndoCapture()
     const {
@@ -735,6 +760,7 @@ export class NovelEntityGenerator {
       createdFactionIds,
       createdLocationIds,
       createdItemIds,
+      createdNarrativeIds,
     } = undo
     /** LLM 标注"已有：X"但后端匹配失败的项，用于日志与前端提示（这类项会被当新实体重造） */
     const unresolvedExistingHints: string[] = []
@@ -745,7 +771,7 @@ export class NovelEntityGenerator {
      * 是"已推进实体重复初始态"的唯一入口，必须留痕而不是静默降级。
      * 六类实体此前各自复制了一份 warn + push，措辞还不一致。
      */
-    const reportUnresolvedHint = (kind: EntityKind, label: string, hintName: string): void => {
+    const reportUnresolvedHint = (kind: string, label: string, hintName: string): void => {
       this.context.logger.warn(
         { projectId, chapterNumber, hintName, kind },
         'generateAndArrange：标注为已有但未匹配到实体，降级为新建（可能造成重复实体/状态回退）',
@@ -761,6 +787,7 @@ export class NovelEntityGenerator {
     const generatedFactions: Array<{ name: string; type: string }> = []
     const generatedLocations: Array<{ name: string; type: string }> = []
     const generatedItems: Array<{ name: string; type: string; ownerId: string | null }> = []
+    const generatedNarratives: Array<{ description: string; type: NarrativeType }> = []
     let batchGeneration: BatchGenerationRun = {
       generated: new Map(),
       itemCount: 0,
@@ -1250,6 +1277,58 @@ export class NovelEntityGenerator {
         createdIds: createdItemIds,
         collect: (it) => { generatedItems.push({ name: it.name, type: it.type, ownerId: it.ownerId }) },
       })
+
+      // ── 剧情：独立循环（不走批量生成——描述即规划文本，无需再为它发起 LLM 调用）──
+      // 剧情轨道此前不在 ai-arrange 编排范围内，矩阵「剧情」行只能手动拖入。
+      // 现在按章纲规划本章关键事件：复用已有事件线（追加本章跨度）或新建一条。
+      const existingNarrativeByDesc = new Map<string, NovelNarrative>()
+      for (const n of this.store.listNarratives(projectId)) {
+        existingNarrativeByDesc.set(n.description.slice(0, 40), n)
+      }
+      /** 复用已有剧情条目：追加本章跨度并收集结果 */
+      const reuseNarrative = (existing: NovelNarrative, message: string): void => {
+        onProgress?.({ phase: 'generating', message })
+        appendChapterSpanWithRollback(
+          existing,
+          chapterNumber,
+          (id, patch) => this.store.updateNarrative(id, patch),
+          rollbackActions,
+        )
+        existingNarrativeByDesc.set(existing.description.slice(0, 40), existing)
+        narrativeIds.push(existing.id)
+        generatedNarratives.push({ description: existing.description.slice(0, 60), type: existing.type })
+      }
+      for (const spec of plan.narratives ?? []) {
+        signal?.throwIfAborted()
+        const hint = this.parseExistingHint(spec.coreStyle)
+        if (hint.mode === 'existing') {
+          const existing = findExistingByDescription(existingNarrativeByDesc, hint.name)
+            ?? [...existingNarrativeByDesc.values()].find((n) => n.description.includes(hint.name))
+          if (existing) {
+            reuseNarrative(existing, `复用已有剧情：${existing.description.slice(0, 30)}`)
+            continue
+          }
+          reportUnresolvedHint('narrative', '剧情', hint.name.slice(0, 24))
+        }
+        // 新建前查重：LLM 换措辞复述已有事件时合并而不是新建重复条目
+        const description = (hint.mode === 'existing' ? hint.name : spec.coreStyle).trim()
+        const dup = findExistingByDescription(existingNarrativeByDesc, description)
+        if (dup) {
+          reuseNarrative(dup, '检测到相似剧情，合并为已有事件')
+          continue
+        }
+        const created = this.store.createNarrative({
+          projectId,
+          description,
+          type: spec.narrativeType ?? 'advance',
+          chapterSpans: [[chapterNumber, chapterNumber]],
+          status: 'active',
+        })
+        createdNarrativeIds.push(created.id)
+        existingNarrativeByDesc.set(created.description.slice(0, 40), created)
+        narrativeIds.push(created.id)
+        generatedNarratives.push({ description: created.description.slice(0, 60), type: created.type })
+      }
     } catch (err) {
       // 标记日志状态为失败，供 finally 块写入日志使用
       logStatus = 'error'
@@ -1267,6 +1346,7 @@ export class NovelEntityGenerator {
             factions: createdFactionIds.length,
             locations: createdLocationIds.length,
             items: createdItemIds.length,
+            narratives: createdNarrativeIds.length,
           },
         },
         `generateAndArrange 失败，已回滚 ${rolledBack} 个新建实体并撤销复用实体变更`,
@@ -1295,6 +1375,7 @@ export class NovelEntityGenerator {
             factions: generatedFactions,
             locations: generatedLocations,
             items: generatedItems,
+            narratives: generatedNarratives,
           },
           batchGeneration: {
             itemCount: batchGeneration.itemCount,
@@ -1312,6 +1393,7 @@ export class NovelEntityGenerator {
             factionCount: factionIds.length,
             locationCount: locationIds.length,
             itemCount: itemIds.length,
+            narrativeCount: narrativeIds.length,
             characterFunctionCount: characterFunctions.length,
           },
         }, null, 2)
@@ -1409,10 +1491,11 @@ export class NovelEntityGenerator {
         factions: generatedFactions,
         locations: generatedLocations,
         items: generatedItems,
+        narratives: generatedNarratives,
       },
     })
     this.context.logger.info(
-      { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length, clues: clueIds.length, factions: factionIds.length, locations: locationIds.length, items: itemIds.length, characterFunctions: characterFunctions.length },
+      { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length, clues: clueIds.length, factions: factionIds.length, locations: locationIds.length, items: itemIds.length, narratives: narrativeIds.length, characterFunctions: characterFunctions.length },
       'generateAndArrange 完成：实体已落库',
     )
     // ── 账本投影 ──
@@ -1456,6 +1539,7 @@ export class NovelEntityGenerator {
     this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'location', entityIds: locationIds, source: 'ai-arrange' })
     this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'item', entityIds: itemIds, source: 'ai-arrange' })
     this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'clue', entityIds: clueIds, source: 'ai-arrange' })
+    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'narrative', entityIds: narrativeIds, source: 'ai-arrange' })
     return {
       characterIds,
       conflictIds,
@@ -1464,6 +1548,7 @@ export class NovelEntityGenerator {
       factionIds,
       locationIds,
       itemIds,
+      narrativeIds,
       characterFunctions: characterFunctions.length > 0 ? characterFunctions : undefined,
     }
   }
@@ -1525,6 +1610,7 @@ export class NovelEntityGenerator {
     const deletions: Array<[string[], (id: string) => unknown]> = [
       [undo.createdLocationIds, (id) => this.store.deleteLocation(id)],
       [undo.createdItemIds, (id) => this.store.deleteItem(id)],
+      [undo.createdNarrativeIds, (id) => this.store.deleteNarrative(id)],
       [undo.createdFactionIds, (id) => this.store.deleteFaction(id)],
       [undo.createdForeshadowIds, (id) => this.store.deleteForeshadow(id)],
       [undo.createdConflictIds, (id) => this.store.deleteConflict(id)],
@@ -1543,6 +1629,7 @@ export class NovelEntityGenerator {
     return undo.createdCharacterIds.length + undo.createdConflictIds.length
       + undo.createdForeshadowIds.length + undo.createdFactionIds.length
       + undo.createdLocationIds.length + undo.createdItemIds.length
+      + undo.createdNarrativeIds.length
   }
 
   /**
@@ -1764,6 +1851,7 @@ export class NovelEntityGenerator {
     const existingFactions = this.store.listFactions(projectId)
     const existingLocations = this.store.listLocations(projectId)
     const existingItems = this.store.listItems(projectId)
+    const existingNarratives = this.store.listNarratives(projectId)
 
     // ── 收集三层大纲：项目大纲 + 卷纲 + 章纲 ──
     // ⚠️ 历史问题：之前只传 chapter.outline，LLM 看不到项目整体大纲和当前卷的卷纲，
@@ -1781,12 +1869,14 @@ export class NovelEntityGenerator {
     const formatExistingList = (
       items: Array<{ name?: string; description?: string; state?: string; recency?: number }>,
       fallbackLabel: string,
+      maxChars = 6000,
     ): string => {
       if (items.length === 0) return `（暂无${fallbackLabel}）`
       // 旧实现把项目内全部实体描述原样塞进规划 prompt，项目变大后会让
       // 每次 ai-arrange/reverse-arrange 的输入 token 随历史线性膨胀。
       // 保留排序后的前缀条目，超出预算的实体仍可在生成阶段按名查重。
-      const maxChars = 6000
+      // 冲突/伏笔没有 name 字段，复用匹配完全依赖描述文本，预算给得比其他类别宽，
+      // 否则目标条目被截掉后 LLM 只能新建重复实体或直接漏编排。
       const lines: string[] = []
       let usedChars = 0
       // ⚠️ 排序必须是"最近出场优先"，不能用字典序：
@@ -1837,8 +1927,8 @@ export class NovelEntityGenerator {
     // source='content': 从已写好的正文反推实体（新功能）
     const isReverse = source === 'content'
     const sourceInstruction = isReverse
-      ? '你是小说实体反推助手。根据以下已写好的章节正文，反推本章涉及哪些实体（角色/冲突/伏笔/势力/地点/物品），包括已有实体和新出现的实体。'
-      : '你是小说实体规划助手。根据以下三层大纲（项目大纲 + 卷纲 + 章纲），规划本章需要哪些实体（包括已有 + 新增）。'
+      ? '你是小说实体反推助手。根据以下已写好的章节正文，反推本章涉及哪些实体（角色/冲突/伏笔/势力/地点/物品/剧情事件），包括已有实体和新出现的实体。'
+      : '你是小说实体规划助手。根据以下三层大纲（项目大纲 + 卷纲 + 章纲），规划本章需要哪些实体（包括已有 + 新增），以及本章要推进的剧情事件。'
 
     const userPrompt = [
       sourceInstruction,
@@ -1867,8 +1957,8 @@ export class NovelEntityGenerator {
       '复用写法（coreStyle 字段）：',
       '- 角色/势力/地点/物品（有独立 name 字段）：写 "已有：<name>"，如 "已有：林墨"、"已有：国安总局"、"已有：镇魂印"',
       '  名字必须与清单完全一致，不要加括注、后缀或状态说明（写 "已有：林墨"，不要写 "已有：林墨（觉醒后）"）',
-      '- 冲突/伏笔（无 name 字段，只有 description）：写 "已有：<描述前 40 字>"，',
-      '  必须原样复制下方清单中的描述前 40 字（后端按前 40 字匹配）',
+      '- 冲突/伏笔/剧情（无 name 字段，只有 description）：写 "已有：<描述开头一段文字>"，',
+      '  尽量原样复制下方清单中的描述（后端支持前缀/包含匹配，改写越少匹配越准）',
       '- 新增实体：写一句话描述其核心特征（不要加"已有："前缀）',
       '',
       '**关键**：返回的数组要包含"本章需要登场的所有实体"，不要因为是已有就跳过。',
@@ -1889,7 +1979,7 @@ export class NovelEntityGenerator {
         description: c.description,
         state: joinState(`阶段：${c.stage}`, `强度：${c.intensity}/10`, c.currentStep && `已推进到：${c.currentStep}`, c.nextStep && `下一步：${c.nextStep}`),
         recency: lastSpanChapter(c.chapterSpans),
-      })), '冲突'),
+      })), '冲突', 9000),
       '',
       `### 已有伏笔（${existingForeshadows.length}）`,
       formatExistingList(existingForeshadows.map((f) => ({
@@ -1901,7 +1991,7 @@ export class NovelEntityGenerator {
           (f.beats ?? []).length > 0 && `已发生节点：${(f.beats ?? []).map((b) => `第${b.chapter}章${b.type}`).join('、')}`,
         ),
         recency: Math.max(f.lastChapter ?? 0, ...(f.beats ?? []).map((b) => b.chapter), 0),
-      })), '伏笔'),
+      })), '伏笔', 9000),
       '',
       `### 已有势力（${existingFactions.length}）`,
       formatExistingList(existingFactions.map((f) => ({
@@ -1927,10 +2017,19 @@ export class NovelEntityGenerator {
         recency: lastSpanChapter(it.chapterSpans),
       })), '物品'),
       '',
+      `### 已有剧情（${existingNarratives.length}）`,
+      formatExistingList(existingNarratives.map((n) => ({
+        name: undefined,
+        description: n.description,
+        state: joinState(`类型：${n.type}`, `状态：${n.status}`),
+        recency: lastSpanChapter(n.chapterSpans),
+      })), '剧情', 9000),
+      '',
       '【返回格式】',
       '返回严格 JSON：',
-      '{"characters":[{"coreStyle":"已有：林墨","plotFunction":"open_phase","functionNote":"功能位具体描述"}],"conflicts":[{"coreStyle":"已有：主角今日必须凑齐定额镇魔石料，否则将被逐出大阵庇护范围，暴露于"}],"foreshadows":[{"coreStyle":"已有：父亲遗物上的编号","importance":"critical","narrativeRole":"dark_line","hiddenQuestion":"父亲真正因何死亡","plannedPayoff":"在查到旧案主谋时揭示编号来源并回收","chapterAction":"reinforce"}],"factions":[{"coreStyle":"已有：国安总局"}],"locations":[{"coreStyle":"已有：国安总局指挥大厅"}],"items":[{"coreStyle":"已有：镇魂印"}]}',
-      '所有伏笔都必须返回 importance、narrativeRole、hiddenQuestion、plannedPayoff。复用已有伏笔还必须返回本章实际动作 chapterAction=plant|reinforce|reveal|payoff；缺少任一项都会被过滤。',
+      '{"characters":[{"coreStyle":"已有：林墨","plotFunction":"open_phase","functionNote":"功能位具体描述"}],"conflicts":[{"coreStyle":"已有：主角今日必须凑齐定额镇魔石料，否则将被逐出大阵庇护范围，暴露于"}],"foreshadows":[{"coreStyle":"已有：父亲遗物上的编号","importance":"critical","narrativeRole":"dark_line","hiddenQuestion":"父亲真正因何死亡","plannedPayoff":"在查到旧案主谋时揭示编号来源并回收","chapterAction":"reinforce"}],"factions":[{"coreStyle":"已有：国安总局"}],"locations":[{"coreStyle":"已有：国安总局指挥大厅"}],"items":[{"coreStyle":"已有：镇魂印"}],"narratives":[{"coreStyle":"林墨在考核中故意落败，换取进入内层的资格","narrativeType":"advance"}]}',
+      '所有新增伏笔都必须返回 importance、narrativeRole、hiddenQuestion、plannedPayoff，缺任一项会被过滤（单章最多新增 1 条）。',
+      '复用已有伏笔只需返回 chapterAction（本章动作：plant埋设 / reinforce强化 / reveal揭示 / payoff回收，中英文均可），准入字段可省略；省略 chapterAction 时按"强化"处理。',
       '',
       '【物品编排说明（重要）】',
       '物品追踪角色拥有的关键道具（武器/法宝/钥匙/信物/线索物品等），用于跨章节一致性。',
@@ -1944,6 +2043,13 @@ export class NovelEntityGenerator {
       '- 冲突是会迫使角色作出选择、并持续改变后续行动的核心对抗，不是一次事故的复述、情绪、环境描写或章末悬念。',
       '- 默认允许 0 条冲突；一章通常不超过 2 条。没有独立、不可替代的剧情推进时，conflicts 必须返回空数组。',
       '- 同一事件只能对应一条冲突。已有冲突足以覆盖本章事件时，必须按“已有：<描述前40字>”复用，禁止换一种措辞新建。',
+      '',
+      '【剧情编排（重要，剧情轨道/矩阵「剧情」行的数据来源）】',
+      '- narratives 返回本章实际发生的关键剧情事件（本章在讲什么事），每条一句话，主谓宾完整，能让读者不看正文也知道发生了什么。',
+      '- 一章通常 1-4 条：按"本章发生了几件值得记的事"拆分，不要把整章内容压缩成一句，也不要把每个动作都列成一条。',
+      '- narrativeType 从以下枚举选一：advance（剧情推进）/ turn（转折）/ reversal（反转）/ suspense（悬念）/ resolve（收束）/ setup（铺垫）/ reveal（揭示）/ misc（其他）。',
+      '- 本章事件与已有剧情条目延续同一事件线时，写 "已有：<描述开头一段文字>" 复用（后端会追加本章到该条剧情的跨度）。',
+      '- 事件线已完结的旧剧情不要复用；新章的新事件写一句话描述直接新增。',
       '',
       '【角色功能位编排（重要，避免工具人化）】',
       '每个返回的角色（无论已有/新增）必须指定 plotFunction（从以下 7 个枚举选一）：',
@@ -2085,7 +2191,7 @@ export class NovelEntityGenerator {
           { projectId, err: llmErr, resultLength: result.length },
           'planEntitiesFromOutline LLM 调用失败',
         )
-        const emptyPlan = { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] as { coreStyle: string }[], items: [] as { coreStyle: string }[] }
+        const emptyPlan = { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] as { coreStyle: string }[], items: [] as { coreStyle: string }[], narratives: [] as Array<{ coreStyle: string; narrativeType?: NarrativeType }> }
         return {
           plan: emptyPlan,
           logContext: {
@@ -2110,7 +2216,7 @@ export class NovelEntityGenerator {
           { rawTextPreview: text.slice(0, 200) },
           'planEntitiesFromOutline JSON 解析失败（可能被截断），使用空 plan 兜底',
         )
-        const emptyPlan = { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] as { coreStyle: string }[], items: [] as { coreStyle: string }[] }
+        const emptyPlan = { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] as { coreStyle: string }[], items: [] as { coreStyle: string }[], narratives: [] as Array<{ coreStyle: string; narrativeType?: NarrativeType }> }
         call.result = text
         call.status = 'error'
         call.error = 'JSON 解析失败（可能被截断）'
@@ -2164,9 +2270,23 @@ export class NovelEntityGenerator {
           ? json.items
               .map((it: unknown) => ({ coreStyle: ensureString((it as { coreStyle?: unknown })?.coreStyle, '新物品') }))
           : [],
+        narratives: Array.isArray(json.narratives)
+          ? json.narratives
+              .map((n: unknown) => {
+                const obj = n as { coreStyle?: unknown; narrativeType?: unknown }
+                const coreStyle = ensureString(obj?.coreStyle, '').trim()
+                if (!coreStyle) return null
+                const rawType = String(obj?.narrativeType ?? '').trim()
+                const narrativeType = (NARRATIVE_TYPES as readonly string[]).includes(rawType)
+                  ? rawType as NarrativeType
+                  : 'advance'
+                return { coreStyle, narrativeType }
+              })
+              .filter((n): n is { coreStyle: string; narrativeType: NarrativeType } => n != null)
+          : [],
       }
       this.context.logger.info(
-        { projectId, characters: plan.characters.length, conflicts: plan.conflicts.length, foreshadows: plan.foreshadows.length, factions: plan.factions.length, locations: plan.locations.length, items: plan.items.length },
+        { projectId, characters: plan.characters.length, conflicts: plan.conflicts.length, foreshadows: plan.foreshadows.length, factions: plan.factions.length, locations: plan.locations.length, items: plan.items.length, narratives: plan.narratives.length },
         'planEntitiesFromOutline 解析完成',
       )
       call.result = text

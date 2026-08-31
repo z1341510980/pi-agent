@@ -218,6 +218,7 @@ export interface ArrangedEntitiesPayload {
   factionIds: string[]
   locationIds: string[]
   itemIds?: string[]
+  narrativeIds?: string[]
   characterFunctions?: Array<{ characterId: string; function: string; note?: string }>
 }
 

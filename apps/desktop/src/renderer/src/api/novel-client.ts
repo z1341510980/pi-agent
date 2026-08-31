@@ -2046,6 +2046,7 @@ export interface ChapterArrangedEntitiesResponse {
     factionIds: string[]
     locationIds: string[]
     itemIds: string[]
+    narrativeIds: string[]
   }
   /** 另一种事实源的结果，仅用于对比展示 */
   alternativeSource: ProjectionSource

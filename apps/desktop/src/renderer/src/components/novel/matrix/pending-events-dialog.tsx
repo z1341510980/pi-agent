@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/dialog'
 import { toastError, toastSuccess } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
+import { formatChangeValue, resolveDimensionLabel, translateEnumValue } from './matrix-model'
 
 const EVENT_TYPE_LABEL: Record<string, string> = {
   encounter: '相遇',
@@ -108,14 +109,14 @@ export function PendingEventsDialog({
     }
   }, [projectId, load])
 
-  // 变化预览：dimension + before→after 紧凑展示
+  // 变化预览：dimension + before→after 紧凑展示（值经 formatChangeValue 处理对象/数组/UUID，避免 [object Object]）
   const changePreview = (item: PendingEventItem): string => {
     const changes = item.changes
     if (changes.length === 0) return '无关联变化'
     const parts = changes.slice(0, 3).map((c) => {
-      const dim = c.dimension.replace(/^[a-z]+\.[a-z_]+\.?/, '').replace(/_/g, ' ')
-      const from = c.beforeValue == null || c.beforeValue === '' ? '—' : String(c.beforeValue)
-      const to = c.afterValue == null || c.afterValue === '' ? '—' : String(c.afterValue)
+      const dim = resolveDimensionLabel(c.dimension)
+      const from = translateEnumValue(formatChangeValue(c.beforeValue)) || '—'
+      const to = translateEnumValue(formatChangeValue(c.afterValue)) || '—'
       return `${dim}: ${from} → ${to}`
     })
     return parts.join('；') + (changes.length > 3 ? ` 等 ${changes.length} 项` : '')

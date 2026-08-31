@@ -34,6 +34,7 @@ exports[`Golden arrange 快照 > 场景 1：全部复用已有实体（章纲编
   "locationIds": [
     "«fx:location»",
   ],
+  "narrativeIds": [],
 }
 `;
 
@@ -466,6 +467,7 @@ exports[`Golden arrange 快照 > 场景 2：全部新建（章纲编排） > arr
   "locationIds": [
     "«new-6»",
   ],
+  "narrativeIds": [],
 }
 `;
 
@@ -985,6 +987,7 @@ exports[`Golden arrange 快照 > 场景 3：复用与新建混合（章纲编排
   "locationIds": [
     "«fx:location»",
   ],
+  "narrativeIds": [],
 }
 `;
 
@@ -1458,6 +1461,7 @@ exports[`Golden arrange 快照 > 场景 4：正文反推（source=content，账�
   "locationIds": [
     "«new-2»",
   ],
+  "narrativeIds": [],
 }
 `;
 

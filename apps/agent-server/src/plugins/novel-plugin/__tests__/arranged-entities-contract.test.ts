@@ -53,6 +53,7 @@ describe('ArrangedEntity 传输层契约', () => {
       factionIds: [FIXTURE_IDS.faction],
       locationIds: [FIXTURE_IDS.location],
       itemIds: [FIXTURE_IDS.item],
+      narrativeIds: [],
       characterFunctions: [
         { characterId: FIXTURE_IDS.protagonist, function: 'change_judgment', note: '把失控读成结构' },
         { characterId: FIXTURE_IDS.scientist, function: 'reveal_world_rule' },
@@ -85,7 +86,7 @@ describe('ArrangedEntity 传输层契约', () => {
     const schemaKeys = Object.keys(arrangedEntitiesSchema.shape).sort()
     const typeKeys: Array<keyof ArrangedEntity> = [
       'characterIds', 'conflictIds', 'foreshadowIds', 'clueIds',
-      'factionIds', 'locationIds', 'itemIds', 'characterFunctions',
+      'factionIds', 'locationIds', 'itemIds', 'narrativeIds', 'characterFunctions',
     ]
     expect(schemaKeys).toEqual([...typeKeys].sort())
   })
@@ -135,6 +136,7 @@ describe('ArrangedEntity 传输层契约', () => {
       factionIds: [],
       locationIds: [],
       itemIds: [],
+      narrativeIds: [],
       characterFunctions: [],
     })
   })

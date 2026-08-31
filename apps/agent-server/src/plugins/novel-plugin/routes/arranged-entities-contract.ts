@@ -43,6 +43,7 @@ export const arrangedEntitiesSchema = z.object({
   factionIds: idList,
   locationIds: idList,
   itemIds: idList,
+  narrativeIds: idList,
   characterFunctions: z.array(z.object({
     characterId: z.string(),
     function: z.enum(PLOT_FUNCTIONS),
@@ -122,6 +123,7 @@ export function findForeignArrangedEntities(
   check('faction', arranged.factionIds, (id) => store.getFaction(id))
   check('location', arranged.locationIds, (id) => store.getLocation(id))
   check('item', arranged.itemIds, (id) => store.getItem(id))
+  check('narrative', arranged.narrativeIds, (id) => store.getNarrative(id))
   check(
     'characterFunction',
     arranged.characterFunctions?.map((entry) => entry.characterId),

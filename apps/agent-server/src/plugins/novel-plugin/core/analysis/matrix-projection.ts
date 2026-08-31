@@ -483,5 +483,6 @@ export function buildArrangedEntitiesForChapter(
     factionIds: buckets.faction,
     locationIds: buckets.location,
     itemIds: buckets.item,
+    narrativeIds: buckets.narrative,
   }
 }

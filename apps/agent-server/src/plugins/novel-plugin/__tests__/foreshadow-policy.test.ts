@@ -46,7 +46,7 @@ describe('伏笔准入规则', () => {
     expect(selectAdmissibleNewForeshadows(candidates)).toEqual([candidates[0]])
   })
 
-  it('AI 编排只保留本章有明确动作的合格已有伏笔，并过滤普通新事项', () => {
+  it('AI 编排：已有伏笔复用不再要求准入字段，chapterAction 归一化/兜底；新增仍走准入门槛', () => {
     expect(normalizePlannedForeshadows([
       {
         coreStyle: '已有：父亲遗物上的编号',
@@ -56,7 +56,11 @@ describe('伏笔准入规则', () => {
         plannedPayoff: '查到旧案主谋时揭示编号来源',
         chapterAction: 'reinforce',
       },
+      // 复用项缺准入字段与 chapterAction：不再整条丢弃（旧实现会静默消失），
+      // chapterAction 兜底为 reinforce，保证矩阵格子里一定有 beat
       { coreStyle: '已有：只是仍未回收的旧条目' },
+      // 复用项 chapterAction 写中文：归一化到枚举
+      { coreStyle: '已有：父亲遗物上的编号', chapterAction: '揭示' },
       { coreStyle: '工头今天没有说话' },
       {
         coreStyle: '父亲遗物编号与旧案卷宗一致',
@@ -66,7 +70,9 @@ describe('伏笔准入规则', () => {
         plannedPayoff: '查到旧案主谋时揭示编号来源',
       },
     ])).toEqual([
-      expect.objectContaining({ coreStyle: '已有：父亲遗物上的编号' }),
+      expect.objectContaining({ coreStyle: '已有：父亲遗物上的编号', chapterAction: 'reinforce' }),
+      expect.objectContaining({ coreStyle: '已有：只是仍未回收的旧条目', chapterAction: 'reinforce' }),
+      expect.objectContaining({ coreStyle: '已有：父亲遗物上的编号', chapterAction: 'reveal' }),
       expect.objectContaining({ coreStyle: '父亲遗物编号与旧案卷宗一致' }),
     ])
   })
