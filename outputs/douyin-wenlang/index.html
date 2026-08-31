@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1080, initial-scale=1">
+<title>wenlang-agent · 抖音 30s</title>
+<style>
+:root{
+  --bg:#06070d;
+  --bg2:#0b0e18;
+  --red:#FF2D55;
+  --orange:#FF7A2F;
+  --cyan:#22E4FF;
+  --green:#2BE58B;
+  --white:#F7F9FC;
+  --gray:#79839A;
+  --line:rgba(255,255,255,.09);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:#000;overflow:hidden;-webkit-font-smoothing:antialiased}
+#stage{
+  position:relative;width:1080px;height:1920px;overflow:hidden;
+  background:var(--bg);
+  font-family:"PingFang SC","Microsoft YaHei","Hiragino Sans GB","Source Han Sans SC",sans-serif;
+  color:var(--white);
+}
+
+/* ---------- 背景层 ---------- */
+.bg-grid{
+  position:absolute;inset:-200px;opacity:.5;
+  background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);
+  background-size:60px 60px;
+  animation:gridDrift 24s linear infinite;
+}
+@keyframes gridDrift{to{transform:translate(60px,60px)}}
+.bg-glow{position:absolute;inset:0;pointer-events:none}
+.glow{position:absolute;border-radius:50%;filter:blur(120px);opacity:.55}
+.g1{width:900px;height:900px;left:-260px;top:200px;background:rgba(255,45,85,.30)}
+.g2{width:800px;height:800px;right:-260px;top:900px;background:rgba(34,228,255,.20)}
+.g3{width:700px;height:700px;left:190px;bottom:-180px;background:rgba(255,122,47,.16)}
+.vig{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 45%,transparent 40%,rgba(0,0,0,.72) 100%)}
+.noise{
+  position:absolute;inset:0;opacity:.055;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>");
+}
+
+/* ---------- 场景容器 ---------- */
+.scene{position:absolute;inset:0;opacity:0;visibility:hidden}
+.scene.on{opacity:1;visibility:visible}
+.scene.settled *{animation-play-state:paused!important;animation-delay:-2s!important}
+
+/* ---------- 通用动画 ---------- */
+@keyframes fadeUp{from{opacity:0;transform:translateY(46px)}to{opacity:1;transform:translateY(0)}}
+@keyframes slamIn{
+  0%{opacity:0;transform:translateY(-70px) scale(1.5)}
+  55%{opacity:1;transform:translateY(6px) scale(.965)}
+  75%{transform:translateY(-3px) scale(1.015)}
+  100%{opacity:1;transform:translateY(0) scale(1)}
+}
+@keyframes typeOn{from{width:0}to{width:100%}}
+@keyframes strike{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes popIn{from{opacity:0;transform:scale(.55)}to{opacity:1;transform:scale(1)}}
+@keyframes slideL{from{opacity:0;transform:translateX(-90px)}to{opacity:1;transform:translateX(0)}}
+@keyframes slideR{from{opacity:0;transform:translateX(90px)}to{opacity:1;transform:translateX(0)}}
+@keyframes shake{
+  0%,100%{transform:translateX(0)}
+  15%{transform:translateX(-13px)}35%{transform:translateX(11px)}
+  55%{transform:translateX(-7px)}75%{transform:translateX(5px)}
+}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.15}}
+
+/* ---------- S1 钩子 ---------- */
+#hook .wrap{position:absolute;left:80px;top:560px;width:920px}
+.h-l1{
+  font-size:132px;font-weight:900;line-height:1.06;letter-spacing:-2px;
+  background:linear-gradient(100deg,#fff 20%,#C9D3E6 100%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.h-l2{
+  font-size:132px;font-weight:900;line-height:1.06;letter-spacing:-2px;margin-top:2px;
+  background:linear-gradient(100deg,var(--red) 0%,var(--orange) 100%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+#hook.on .h-l1{animation:fadeUp .62s cubic-bezier(.16,1,.3,1) both}
+#hook.on .h-l2{animation:slamIn .58s cubic-bezier(.16,1,.3,1) 1.30s both}
+.badge{
+  display:inline-block;margin-top:46px;padding:16px 34px;border-radius:999px;
+  font-size:40px;font-weight:700;letter-spacing:2px;
+  background:rgba(255,45,85,.13);border:1.5px solid rgba(255,45,85,.42);color:#FF6B87;
+}
+#hook.on .badge{animation:popIn .5s cubic-bezier(.16,1,.3,1) 2.05s both}
+
+/* ---------- S2 痛点 ---------- */
+#pain .wrap{position:absolute;left:80px;top:600px;width:920px}
+.pain-t{font-size:58px;font-weight:800;color:#FF6B87;letter-spacing:1px;margin-bottom:56px}
+#pain.on .pain-t{animation:fadeUp .5s cubic-bezier(.16,1,.3,1) both}
+.pcard{
+  position:relative;background:rgba(255,255,255,.045);border:1.5px solid var(--line);
+  border-left:8px solid var(--red);border-radius:22px;padding:38px 42px;margin-bottom:34px;
+}
+#pain.on .pcard:nth-child(2){animation:slideL .52s cubic-bezier(.16,1,.3,1) .45s both}
+#pain.on .pcard:nth-child(3){animation:slideL .52s cubic-bezier(.16,1,.3,1) 1.05s both}
+#pain.on .pcard:nth-child(4){animation:slideL .52s cubic-bezier(.16,1,.3,1) 1.65s both}
+/* 只闪光晕，不碰 transform，避免与 slideL 抢同一属性 */
+#pain.on .pcard.shk{animation:slideL .52s cubic-bezier(.16,1,.3,1) 1.65s both,
+                              redPulse .62s ease-in-out 2.25s both}
+@keyframes redPulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(255,45,85,0)}
+  50%{box-shadow:0 0 0 7px rgba(255,45,85,.17)}
+}
+.pcard .n{font-size:30px;font-weight:900;color:var(--red);letter-spacing:3px;display:block;margin-bottom:12px}
+.pcard .x{font-size:52px;font-weight:700;line-height:1.32}
+.pcard .s{font-size:32px;font-weight:500;color:var(--gray);margin-top:12px;line-height:1.45}
+
+/* ---------- S3 转折 ---------- */
+#turn .wrap{position:absolute;left:80px;top:700px;width:920px;text-align:center}
+.t-1{font-size:76px;font-weight:700;color:var(--gray);text-decoration:line-through;
+     text-decoration-color:rgba(255,45,85,.75);text-decoration-thickness:6px}
+#turn.on .t-1{animation:fadeUp .5s cubic-bezier(.16,1,.3,1) both}
+.t-2{font-size:112px;font-weight:900;margin-top:44px;line-height:1.1;letter-spacing:-1px}
+.t-2 em{font-style:normal;background:linear-gradient(100deg,var(--cyan),#7AF5D6);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+#turn.on .t-2{animation:slamIn .55s cubic-bezier(.16,1,.3,1) .70s both}
+.t-3{font-size:44px;font-weight:600;color:#9AA6BD;margin-top:44px;line-height:1.5}
+#turn.on .t-3{animation:fadeUp .5s cubic-bezier(.16,1,.3,1) 1.35s both}
+
+/* ---------- S4 产品演示 ---------- */
+#demo .head{position:absolute;left:80px;top:170px;width:920px}
+.demo-kicker{font-size:34px;font-weight:800;letter-spacing:6px;color:var(--cyan)}
+.demo-title{font-size:74px;font-weight:900;margin-top:14px;letter-spacing:-1px}
+#demo.on .head{animation:fadeUp .5s cubic-bezier(.16,1,.3,1) both}
+
+.app{
+  position:absolute;left:60px;top:412px;width:960px;height:1200px;
+  background:linear-gradient(180deg,#0E1220 0%,#0A0D16 100%);
+  border:1.5px solid rgba(255,255,255,.13);border-radius:30px;overflow:hidden;
+  box-shadow:0 50px 120px rgba(0,0,0,.75),0 0 0 1px rgba(255,255,255,.03) inset;
+}
+#demo.on .app{animation:popIn .6s cubic-bezier(.16,1,.3,1) .35s both}
+.app-bar{
+  height:88px;display:flex;align-items:center;padding:0 30px;gap:14px;
+  background:rgba(255,255,255,.045);border-bottom:1.5px solid rgba(255,255,255,.08);
+}
+.dot{width:20px;height:20px;border-radius:50%}
+.d1{background:#FF5F57}.d2{background:#FEBC2E}.d3{background:#28C840}
+.app-name{margin-left:18px;font-size:32px;font-weight:700;color:#D6DEEC;letter-spacing:1px}
+.app-tag{
+  margin-left:auto;font-size:24px;font-weight:700;padding:7px 18px;border-radius:8px;
+  background:rgba(43,229,139,.14);color:var(--green);border:1px solid rgba(43,229,139,.35);
+}
+.app-body{display:flex;height:1112px}
+
+/* 左：流水线 */
+.flow{
+  width:470px;padding:30px 26px;border-right:1.5px solid rgba(255,255,255,.07);
+  display:flex;flex-direction:column;
+}
+.flow-t{font-size:26px;font-weight:800;color:var(--gray);letter-spacing:4px;margin-bottom:22px}
+.flow-note{
+  margin-top:auto;padding:24px 22px;border-radius:16px;
+  background:rgba(34,228,255,.055);border:1.5px solid rgba(34,228,255,.22);
+  font-size:27px;font-weight:600;color:#7FA8B8;line-height:1.5;
+}
+.flow-note b{color:var(--cyan);font-weight:800}
+.step{
+  position:relative;display:flex;gap:18px;align-items:flex-start;
+  padding:26px 20px;border-radius:16px;margin-bottom:18px;
+  background:rgba(255,255,255,.028);border:1.5px solid transparent;transition:none;
+}
+.step .ico{
+  width:52px;height:52px;border-radius:14px;flex:none;display:flex;align-items:center;justify-content:center;
+  font-size:26px;font-weight:900;background:rgba(255,255,255,.07);color:#5D6880;
+}
+.step .nm{font-size:34px;font-weight:800;color:#5D6880;line-height:1.2}
+.step .ds{font-size:23px;font-weight:500;color:#4A5468;margin-top:6px;line-height:1.4}
+.step .ck{margin-left:auto;font-size:24px;font-weight:900;color:transparent}
+.step.done{background:rgba(43,229,139,.08);border-color:rgba(43,229,139,.32)}
+.step.done .ico{background:linear-gradient(135deg,var(--green),#17B26A);color:#04220F}
+.step.done .nm{color:#EAF3EE}
+.step.done .ds{color:#7E9A8C}
+.step.done .ck{color:var(--green)}
+.step.run{background:rgba(34,228,255,.10);border-color:rgba(34,228,255,.48);
+  box-shadow:0 0 0 4px rgba(34,228,255,.08)}
+.step.run .ico{background:linear-gradient(135deg,var(--cyan),#0D9FC7);color:#04222A}
+.step.run .nm{color:#EAFBFF}
+.step.run .ds{color:#8FBAC7}
+.step.run .ck{color:var(--cyan);animation:blink .9s infinite}
+#demo.on .step:nth-child(2){animation:fadeUp .5s .75s both}
+#demo.on .step:nth-child(3){animation:fadeUp .5s .85s both}
+#demo.on .step:nth-child(4){animation:fadeUp .5s .95s both}
+#demo.on .step:nth-child(5){animation:fadeUp .5s 1.05s both}
+#demo.on .step:nth-child(6){animation:fadeUp .5s 1.15s both}
+
+/* 右：状态面板 */
+.panel{width:490px;padding:30px 26px;display:flex;flex-direction:column;gap:20px}
+.demo-foot{
+  position:absolute;left:60px;top:1652px;width:960px;text-align:center;
+  font-size:30px;font-weight:600;color:var(--gray);line-height:1.5;
+}
+.demo-foot b{color:#B9C4D8;font-weight:800}
+.pcard2{
+  background:rgba(255,255,255,.03);border:1.5px solid rgba(255,255,255,.09);
+  border-radius:18px;padding:22px 24px;
+}
+.pt{font-size:24px;font-weight:800;color:var(--gray);letter-spacing:3px;margin-bottom:16px}
+.chg{display:flex;flex-direction:column;align-items:flex-start;gap:8px;font-size:26px;font-weight:600;margin-bottom:18px;line-height:1.35}
+.chg:last-child{margin-bottom:0}
+.arrow{font-size:30px;line-height:1;color:#4A5468;font-weight:900;transform:rotate(90deg)}
+.old{color:#6B7689;text-decoration:line-through;text-decoration-color:rgba(255,45,85,.6);white-space:nowrap}
+.new{color:var(--green);font-weight:800;white-space:nowrap}
+.new.c{color:var(--cyan)}
+#demo.on .pcard2:nth-child(1){animation:fadeUp .5s 1.30s both}
+#demo.on .pcard2:nth-child(2){animation:fadeUp .5s 1.45s both}
+
+/* 质量门 */
+.gates{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.gate{
+  display:flex;align-items:center;gap:10px;padding:15px 16px;border-radius:12px;
+  background:rgba(255,255,255,.028);border:1.5px solid rgba(255,255,255,.07);
+  font-size:24px;font-weight:700;color:#5D6880;
+}
+.gate .led{width:16px;height:16px;border-radius:50%;background:#2A3244;flex:none}
+.gate.ok{color:#D9E6DE;border-color:rgba(43,229,139,.30);background:rgba(43,229,139,.07)}
+.gate.ok .led{background:var(--green);box-shadow:0 0 14px rgba(43,229,139,.85)}
+#demo.on .pcard2:nth-child(3){animation:fadeUp .5s 1.60s both}
+
+/* 输出计数 */
+.counter{
+  margin-top:auto;display:flex;align-items:baseline;justify-content:center;gap:14px;
+  padding:24px 0 6px;border-top:1.5px solid rgba(255,255,255,.08);
+}
+.counter .lb{font-size:26px;font-weight:700;color:var(--gray)}
+.counter .vl{font-size:62px;font-weight:900;color:var(--white);letter-spacing:-1px}
+.counter .un{font-size:28px;font-weight:800;color:var(--gray)}
+
+/* ---------- S5 卖点 ---------- */
+#points .wrap{position:absolute;left:80px;top:560px;width:920px}
+.p-t{font-size:64px;font-weight:900;margin-bottom:52px;letter-spacing:-1px}
+#points.on .p-t{animation:fadeUp .45s cubic-bezier(.16,1,.3,1) both}
+.blk{
+  display:flex;gap:26px;align-items:flex-start;padding:36px 38px;border-radius:24px;margin-bottom:30px;
+  background:linear-gradient(100deg,rgba(255,255,255,.055),rgba(255,255,255,.015));
+  border:1.5px solid var(--line);
+}
+.blk .idx{
+  width:64px;height:64px;border-radius:18px;flex:none;display:flex;align-items:center;justify-content:center;
+  font-size:34px;font-weight:900;color:#06121A;
+}
+.b1 .idx{background:linear-gradient(135deg,var(--cyan),#0D9FC7)}
+.b2 .idx{background:linear-gradient(135deg,var(--orange),#E0521A)}
+.b3 .idx{background:linear-gradient(135deg,var(--green),#17B26A)}
+.blk .hh{font-size:48px;font-weight:900;line-height:1.24;letter-spacing:-.5px}
+.blk .ss{font-size:31px;font-weight:500;color:var(--gray);margin-top:12px;line-height:1.45}
+#points.on .b1{animation:slideR .48s cubic-bezier(.16,1,.3,1) .35s both}
+#points.on .b2{animation:slideR .48s cubic-bezier(.16,1,.3,1) 1.35s both}
+#points.on .b3{animation:slideR .48s cubic-bezier(.16,1,.3,1) 2.35s both}
+#points.on .b1.dim,#points.on .b2.dim{opacity:.32;filter:saturate(.4)}
+.dimt{transition:opacity .35s,filter .35s}
+
+/* ---------- S6 CTA ---------- */
+#cta .wrap{position:absolute;left:80px;top:640px;width:920px}
+.logo{display:flex;align-items:center;gap:22px}
+.logo .mk{
+  width:88px;height:88px;border-radius:24px;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(135deg,var(--red),var(--orange));font-size:46px;font-weight:900;color:#fff;
+  box-shadow:0 18px 46px rgba(255,45,85,.42);
+}
+.logo .nm{font-size:66px;font-weight:900;letter-spacing:-1px}
+#cta.on .logo{animation:popIn .55s cubic-bezier(.16,1,.3,1) both}
+.cta-1{font-size:112px;font-weight:900;margin-top:70px;line-height:1.14;letter-spacing:-2px}
+.cta-1 em{font-style:normal;background:linear-gradient(100deg,var(--red),var(--orange));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+#cta.on .cta-1{animation:slamIn .55s cubic-bezier(.16,1,.3,1) .40s both}
+.cta-2{
+  display:inline-block;margin-top:56px;padding:26px 52px;border-radius:20px;
+  font-size:52px;font-weight:900;letter-spacing:1px;color:#fff;
+  background:linear-gradient(100deg,var(--red),var(--orange));
+  box-shadow:0 22px 60px rgba(255,45,85,.40);
+}
+#cta.on .cta-2{animation:popIn .5s cubic-bezier(.16,1,.3,1) 1.15s both}
+.cta-3{font-size:36px;font-weight:600;color:var(--gray);margin-top:40px;line-height:1.5}
+#cta.on .cta-3{animation:fadeUp .5s 1.55s both}
+
+/* ---------- 底部进度条 ---------- */
+.prog{position:absolute;left:0;bottom:0;height:10px;width:100%;background:rgba(255,255,255,.09);z-index:60}
+.prog i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--red),var(--orange),var(--cyan))}
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <div class="bg-grid"></div>
+  <div class="bg-glow">
+    <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div>
+  </div>
+  <div class="vig"></div>
+
+  <!-- S1 钩子 -->
+  <div class="scene" id="hook">
+    <div class="wrap">
+      <div class="h-l1">AI 能写小说。</div>
+      <div class="h-l2">但活不过 30 章。</div>
+      <div class="badge">人设崩 · 伏笔忘 · 前后矛盾</div>
+    </div>
+  </div>
+
+  <!-- S2 痛点 -->
+  <div class="scene" id="pain">
+    <div class="wrap">
+      <div class="pain-t">你一定遇到过</div>
+      <div class="pcard">
+        <span class="n">01</span>
+        <div class="x">第 12 章埋的伏笔</div>
+        <div class="s">到第 40 章，AI 根本不记得有过这回事</div>
+      </div>
+      <div class="pcard">
+        <span class="n">02</span>
+        <div class="x">上一章受的伤，这一章好了</div>
+        <div class="s">角色状态没有账本，写一段忘一段</div>
+      </div>
+      <div class="pcard shk">
+        <span class="n">03</span>
+        <div class="x">一股 AI 味</div>
+        <div class="s">碎段、解释腔、模板句，每个角色一个腔调</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- S3 转折 -->
+  <div class="scene" id="turn">
+    <div class="wrap">
+      <div class="t-1">换个更强的模型就好了？</div>
+      <div class="t-2">缺的不是模型<br><em>是记账的人</em></div>
+      <div class="t-3">长篇拼的不是文采，是几十万字里<br>谁还记得谁欠了什么</div>
+    </div>
+  </div>
+
+  <!-- S4 产品演示 -->
+  <div class="scene" id="demo">
+    <div class="head">
+      <div class="demo-kicker">REAL WORKFLOW</div>
+      <div class="demo-title">看它怎么写完一章</div>
+    </div>
+
+    <div class="app">
+      <div class="app-bar">
+        <span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span>
+        <span class="app-name">wenlang-agent · 小说工作台</span>
+        <span class="app-tag">第 47 章</span>
+      </div>
+      <div class="app-body">
+        <div class="flow">
+          <div class="flow-t">多 AGENT 流水线</div>
+          <div class="step" data-i="0">
+            <div class="ico">导</div>
+            <div><div class="nm">导演 Director</div><div class="ds">定这一章要完成什么</div></div>
+            <div class="ck">&#10003;</div>
+          </div>
+          <div class="step" data-i="1">
+            <div class="ico">写</div>
+            <div><div class="nm">作家 Writer</div><div class="ds">只注入本章出场角色</div></div>
+            <div class="ck">&#10003;</div>
+          </div>
+          <div class="step" data-i="2">
+            <div class="ico">审</div>
+            <div><div class="nm">审稿 Reviewer</div><div class="ds">盲审文字 + 完整验收</div></div>
+            <div class="ck">&#10003;</div>
+          </div>
+          <div class="step" data-i="3">
+            <div class="ico">改</div>
+            <div><div class="nm">修订 Reviser</div><div class="ds">按严重度局部重写</div></div>
+            <div class="ck">&#10003;</div>
+          </div>
+          <div class="step" data-i="4">
+            <div class="ico">记</div>
+            <div><div class="nm">记忆 Memory</div><div class="ds">回写全部状态账本</div></div>
+            <div class="ck">&#10003;</div>
+          </div>
+
+          <div class="flow-note">每步都有<b>人工检查点</b><br>不满意随时插手改方向</div>
+        </div>
+
+        <div class="panel">
+          <div class="pcard2">
+            <div class="pt">角色状态账本</div>
+            <div class="chg"><span class="old">沈砚 · 借据未还</span><span class="arrow">&#8594;</span><span class="new">已还清，反握把柄</span></div>
+            <div class="chg"><span class="old">弧光：挣扎期</span><span class="arrow">&#8594;</span><span class="new">弧光：转化期</span></div>
+          </div>
+
+          <div class="pcard2">
+            <div class="pt">伏笔回收</div>
+            <div class="chg"><span class="old">铜钥匙 · 第 7 章埋下</span><span class="arrow">&#8594;</span><span class="new c">第 47 章已回收</span></div>
+            <div class="chg"><span class="old">未回收债务 9 条</span><span class="arrow">&#8594;</span><span class="new">8 条</span></div>
+          </div>
+
+          <div class="pcard2">
+            <div class="pt">四道质量门</div>
+            <div class="gates">
+              <div class="gate" data-g="0"><span class="led"></span>事件密度</div>
+              <div class="gate" data-g="1"><span class="led"></span>文风形态</div>
+              <div class="gate" data-g="2"><span class="led"></span>文字盲审</div>
+              <div class="gate" data-g="3"><span class="led"></span>完整验收</div>
+            </div>
+            <div class="counter">
+              <span class="lb">本章正文</span>
+              <span class="vl" id="wc">0</span>
+              <span class="un">字 · 已过审</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="demo-foot">只有<b>记忆 Agent</b>能改状态账本，其余全部只读</div>
+  </div>
+
+  <!-- S5 卖点 -->
+  <div class="scene" id="points">
+    <div class="wrap">
+      <div class="p-t">它替你记住的，比大纲多得多</div>
+      <div class="blk b1 dimt" data-b="0">
+        <div class="idx">1</div>
+        <div>
+          <div class="hh">17 个实体轨道，逐章记账</div>
+          <div class="ss">角色 / 伏笔 / 线索 / 冲突 / 势力 / 信息差<br>每一章结束自动回写，不是靠回忆</div>
+        </div>
+      </div>
+      <div class="blk b2 dimt" data-b="1">
+        <div class="idx">2</div>
+        <div>
+          <div class="hh">写前排节拍，写后过四道门</div>
+          <div class="ss">未来 3-8 章的戏剧功能、爽点、情绪债务先排好<br>写完再拦碎段、解释腔和模板句</div>
+        </div>
+      </div>
+      <div class="blk b3 dimt" data-b="2">
+        <div class="idx">3</div>
+        <div>
+          <div class="hh">200+ 角色也不炸上下文</div>
+          <div class="ss">只把本章出场角色注入完整设定<br>其余留名字和状态，需要时再查</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- S6 CTA -->
+  <div class="scene" id="cta">
+    <div class="wrap">
+      <div class="logo">
+        <div class="mk">文</div>
+        <div class="nm">wenlang-agent</div>
+      </div>
+      <div class="cta-1">把<em>记账</em>交给它<br>你只管写</div>
+      <div class="cta-2">评论扣 1</div>
+      <div class="cta-3">发你完整的多 Agent 小说工作流图<br>和四道质量门的配置清单</div>
+    </div>
+  </div>
+
+  <div class="noise"></div>
+  <div class="prog"><i id="progI"></i></div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  var TOTAL = 30000;
+
+  // 场景时间轴 [id, startMs, endMs]
+  var T = [
+    ['hook',   0,     3400],
+    ['pain',   3400,  7400],
+    ['turn',   7400,  9400],
+    ['demo',   9400,  23000],
+    ['points', 23000, 27200],
+    ['cta',    27200, 30000]
+  ];
+
+  // demo 内部子时间轴（相对 demo 起点）
+  var STEPS = [1500, 4100, 6700, 8900, 11100];      // 5 步流水线依次点亮
+  var STEP_DONE = 12400;                             // 全部完成时刻
+  var PANEL_AT = 11500;                              // Memory 回写后，状态面板更新
+  var GATES = [9100, 9900, 10600, 11400];            // 四道门依次亮
+  var COUNT_FROM = 11600, COUNT_TO = 13100, COUNT_MAX = 4186;
+
+  var $ = function(s){ return document.querySelector(s); };
+  var $$ = function(s){ return Array.prototype.slice.call(document.querySelectorAll(s)); };
+
+  var scenes = {};
+  T.forEach(function(t){ scenes[t[0]] = document.getElementById(t[0]); });
+
+  var steps = $$('#demo .step');
+  var gates = $$('#demo .gate');
+  var blks  = $$('#points .blk');
+  var progI = $('#progI');
+  var wcEl  = $('#wc');
+
+  // 状态面板：到 PANEL_AT 之前显示旧值
+  var panelApplied = false;
+  function applyPanel(){
+    if (panelApplied) return;
+    panelApplied = true;
+    $$('#demo .chg').forEach(function(el, i){
+      var o = el.querySelector('.old');
+      var n = el.querySelector('.new');
+      if (o) { o.style.textDecoration = 'none'; o.style.color = '#4A5468'; }
+      if (n) { n.style.animation = 'popIn .42s cubic-bezier(.16,1,.3,1) both'; }
+    });
+  }
+  function resetPanel(){
+    panelApplied = false;
+    $$('#demo .chg').forEach(function(el){
+      var o = el.querySelector('.old');
+      var n = el.querySelector('.new');
+      if (o) { o.style.textDecoration = ''; o.style.color = ''; }
+      if (n) { n.style.animation = 'none'; }
+    });
+  }
+
+  var stepState = -1, gateState = -1;
+
+  function resetAll(){
+    stepState = -1; gateState = -1;
+    steps.forEach(function(s){ s.className = 'step'; });
+    gates.forEach(function(g){ g.className = 'gate'; });
+    blks.forEach(function(b){ b.style.opacity = ''; b.style.filter = ''; });
+    resetPanel();
+    wcEl.textContent = '0';
+    T.forEach(function(t){
+      var el = scenes[t[0]];
+      el.classList.remove('on','settled');
+    });
+    // 重启 CSS 动画
+    void document.body.offsetHeight;
+  }
+
+  function render(t){
+    if (t > TOTAL) t = TOTAL;
+
+    // 场景可见性
+    T.forEach(function(seg, idx){
+      var el = scenes[seg[0]];
+      var on = (t >= seg[1] && t < seg[2]);
+      if (on && !el.classList.contains('on')) {
+        el.classList.remove('settled');
+        el.classList.add('on');
+      } else if (!on) {
+        el.classList.remove('on');
+      }
+    });
+
+    // demo 子动画
+    if (t >= T[3][1] && t < T[3][2]) {
+      var d = t - T[3][1];
+
+      // 流水线
+      var active = -1;
+      for (var i = 0; i < STEPS.length; i++) { if (d >= STEPS[i]) active = i; }
+      if (active !== stepState) {
+        stepState = active;
+        steps.forEach(function(s, i){
+          s.className = 'step' + (i < active ? ' done' : (i === active ? ' run' : ''));
+        });
+        if (d >= STEP_DONE) {
+          steps.forEach(function(s){ s.className = 'step done'; });
+        }
+      }
+      if (d >= STEP_DONE && stepState !== 99) {
+        stepState = 99;
+        steps.forEach(function(s){ s.className = 'step done'; });
+      }
+
+      // 状态面板
+      if (d >= PANEL_AT) applyPanel();
+
+      // 质量门
+      var g = -1;
+      for (var k = 0; k < GATES.length; k++) { if (d >= GATES[k]) g = k; }
+      if (g !== gateState) {
+        gateState = g;
+        gates.forEach(function(el, i){ el.className = 'gate' + (i <= g ? ' ok' : ''); });
+      }
+
+      // 字数滚动
+      var w = 0;
+      if (d >= COUNT_FROM) {
+        var p = Math.min(1, (d - COUNT_FROM) / (COUNT_TO - COUNT_FROM));
+        p = 1 - Math.pow(1 - p, 3);
+        w = Math.round(COUNT_MAX * p);
+      }
+      wcEl.textContent = String(w);
+    }
+
+    // 卖点卡片：只高亮当前一张
+    if (t >= T[4][1] && t < T[4][2]) {
+      var pd = t - T[4][1];
+      var cur = 0;
+      if (pd >= 2350) cur = 2; else if (pd >= 1350) cur = 1;
+      blks.forEach(function(b, i){
+        b.style.opacity = (i === cur) ? '1' : '.34';
+        b.style.filter  = (i === cur) ? 'none' : 'saturate(.4)';
+      });
+    }
+
+    progI.style.width = (t / TOTAL * 100).toFixed(2) + '%';
+  }
+
+  // ---- 驱动 ----
+  var seekMs = null;
+  var m = /[?&]t=(\d+)/.exec(location.search);
+  if (m) seekMs = parseInt(m[1], 10);
+
+  if (seekMs !== null) {
+    // 静态截图模式：跳到指定时刻，所有动画落到终态
+    resetAll();
+    render(seekMs);
+    T.forEach(function(seg){
+      if (seekMs >= seg[1] && seekMs < seg[2]) {
+        var el = scenes[seg[0]];
+        el.classList.add('on','settled');
+      }
+    });
+    document.documentElement.setAttribute('data-seek','1');
+  } else {
+    var startAt = null;
+    function loop(now){
+      if (startAt === null) startAt = now;
+      var t = now - startAt;
+      render(t);
+      if (t <= TOTAL + 400) requestAnimationFrame(loop);
+      else document.documentElement.setAttribute('data-done','1');
+    }
+    resetAll();
+    requestAnimationFrame(loop);
+  }
+
+  window.__seek = function(ms){ resetAll(); render(ms); };
+})();
+</script>
+</body>
+</html>
