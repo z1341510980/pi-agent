@@ -27,6 +27,7 @@ import type {
   StoryStage, ChapterStatus, ChapterRhythm,
   TargetPlatform,
   NovelCharacterPlotRole,
+  NovelCharacterGender,
   NovelForeshadowCategory, ForeshadowStatus, ForeshadowPlantMethod, ForeshadowRecoverMethod,
   ConflictType, ConflictStage, ConflictTier, ClimaxType, ConflictProgressionMode,
   RelationshipAlignment, RelationshipTrend,
@@ -182,6 +183,8 @@ export interface CompleteChapterInput {
 export interface CreateCharacterInput {
   name: string
   description?: string
+  /** 性别：male=男 / female=女 / other=其他；null=未设定 */
+  gender?: NovelCharacterGender | null
   identity?: string
   personality?: string
   appearance?: string

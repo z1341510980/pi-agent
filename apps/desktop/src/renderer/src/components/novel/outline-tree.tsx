@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactElement } from 'react'
-import { ChevronDown, Plus, Wand2, BookText, Zap, RefreshCw } from 'lucide-react'
+import { ChevronDown, Plus, Wand2, BookText, Zap, RefreshCw, Trash2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { useNovelDataStore } from '@/stores/novel-data-store'
@@ -30,6 +30,8 @@ export interface OutlineTreeProps {
   chapters: NovelChapter[]
   onManualArrange: (chapter: NovelChapter) => void
   onAiArrange: (chapter: NovelChapter) => void
+  /** 删除章节（含后端重排与运行锁校验）；由侧栏统一处理后端错误呈现 */
+  onDeleteChapter?: (chapter: NovelChapter) => void
 }
 
 export function OutlineTree({
@@ -37,6 +39,7 @@ export function OutlineTree({
   volumes,
   chapters,
   onAiArrange,
+  onDeleteChapter,
 }: OutlineTreeProps): ReactElement {
   const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
   const playheadChapter = useNovelUiStore((s) => s.playheadChapter)
@@ -180,6 +183,7 @@ export function OutlineTree({
                     onClick={() => handleSelectChapter(ch)}
                     onAiArrange={() => onAiArrange(ch)}
                     onOutlineSelect={() => handleSelectChapter(ch)}
+                    onDelete={onDeleteChapter ? () => onDeleteChapter(ch) : undefined}
                   />
                 ))}
                 {/* 卷内新建章：新章节直接归属该卷，不会游离到所有卷之外 */}
@@ -209,6 +213,7 @@ export function OutlineTree({
               onClick={() => handleSelectChapter(ch)}
               onAiArrange={() => onAiArrange(ch)}
               onOutlineSelect={() => handleSelectChapter(ch)}
+              onDelete={onDeleteChapter ? () => onDeleteChapter(ch) : undefined}
             />
           ))}
         </div>
@@ -227,6 +232,7 @@ interface ChapterRowProps {
   onClick: () => void
   onAiArrange: () => void
   onOutlineSelect: () => void
+  onDelete?: () => void
 }
 
 function ChapterRow({
@@ -237,6 +243,7 @@ function ChapterRow({
   onClick,
   onAiArrange,
   onOutlineSelect,
+  onDelete,
 }: ChapterRowProps): ReactElement {
   const beat = useNovelBeatStore((s) =>
     s.beats.find((item) => item.chapterNumber === chapter.chapterNumber)
@@ -401,6 +408,29 @@ function ChapterRow({
           >
             <Wand2 className="size-3" /> AI编排
           </Button>
+          {onDelete && (
+            <button
+              type="button"
+              title={
+                isPublished
+                  ? '已发布章节不能删除，请先进入修订或撤回流程'
+                  : `删除第${chapter.chapterNumber}章（后续章节自动前移重排）`
+              }
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `确认删除第${chapter.chapterNumber}章「${chapter.title || '未命名'}」？后续章节将自动前移重排，此操作不可撤销。`,
+                  )
+                ) {
+                  onDelete()
+                }
+              }}
+              disabled={isPublished}
+              className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+            >
+              <Trash2 className="size-3" />
+            </button>
+          )}
         </div>
       </div>
     </div>

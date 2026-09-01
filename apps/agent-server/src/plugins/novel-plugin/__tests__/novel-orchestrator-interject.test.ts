@@ -246,7 +246,6 @@ describe('NovelOrchestrator 插话队列（create-flow 中途反馈）', () => {
     orchestrator.setUserMessages(fx.projectId, FIXTURE_TARGET_CHAPTER, ['第二条检查点意见'])
 
     await expect(invokeRunAgentOnce('director')).rejects.toThrow(STOP_ERROR)
-
     const userMessage = sessionArg().userMessage as string
     // 检查点通道：覆盖后只剩第二条
     expect(userMessage).toContain('## 用户创作指令')
@@ -258,6 +257,127 @@ describe('NovelOrchestrator 插话队列（create-flow 中途反馈）', () => {
     expect(userMessage).toContain('打斗戏改用棍')
     // 插话已注入即出队
     expect(orchestrator.pendingMessages()).toEqual([])
+  })
+
+  it('检查点指令在 LLM 调用失败时保留，成功调用后才消费', async () => {
+    const pending = (orchestrator as unknown as { pendingUserMessages: Map<string, string[]> }).pendingUserMessages
+    const key = `${fx.projectId}|${FIXTURE_TARGET_CHAPTER}`
+    orchestrator.setUserMessages(fx.projectId, FIXTURE_TARGET_CHAPTER, ['压缩节奏，多写对话'])
+
+    // 失败路径：createAgUiSession 抛错（beforeEach 默认）→ 指令保留。
+    // 旧实现先 delete 再调 LLM，一次网关 502 重试就让这轮指令静默丢失。
+    await expect(invokeRunAgentOnce('director')).rejects.toThrow(STOP_ERROR)
+    expect(pending.get(key)).toEqual(['压缩节奏，多写对话'])
+
+    // 成功路径：prompt 正常返回 → 指令被消费（消费后不再注入）
+    createAgUiSessionSpy.mockImplementation(() => ({
+      session: { prompt: async () => '完成', subscribe: () => () => {}, dispose: () => {}, abort: () => {} },
+      streamEmitter: { finishTextMessage: () => {}, handleSessionEvent: () => {} },
+      messageId: 'test-message',
+      dispose: () => {},
+    }))
+    await invokeRunAgentOnce('director')
+    expect(pending.get(key)).toBeUndefined()
+  })
+
+  it('产出已拿到、事件流随后报 provider 错误：以产出为准，不作废本轮', async () => {
+    // 2026-09-01 实测：Writer 写满 3868 字（trace llm_response=completed），
+    // 终答之后 Pi Session 的维护往返报 "A server error occurred"，旧实现
+    // 无条件把 capturedLlmError 转成异常 → 整章 create-flow 作废、正文丢弃。
+    const chapterText = '木叶忍者学校的毕业考核从上午开始。'.repeat(20)
+    createAgUiSessionSpy.mockImplementation(() => {
+      let listener: ((event: Record<string, unknown>) => void) | undefined
+      return {
+        session: {
+          prompt: async () => {
+            // 先给成功终答，再模拟产出之后的维护往返失败
+            listener?.({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } })
+            listener?.({
+              type: 'message_end',
+              message: { role: 'assistant', stopReason: 'error', errorMessage: 'A server error occurred. Please try again.' },
+            })
+            return chapterText
+          },
+          subscribe: (cb: (event: Record<string, unknown>) => void) => {
+            listener = cb
+            return () => { listener = undefined }
+          },
+          dispose: () => {},
+          abort: () => {},
+        },
+        streamEmitter: { finishTextMessage: () => {}, handleSessionEvent: () => {} },
+        messageId: 'test-message',
+        dispose: () => {},
+      }
+    })
+
+    await expect(invokeRunAgentOnce('writer')).resolves.toBe(chapterText)
+  })
+
+  it('无产出且事件流报 provider 错误：仍然抛错（不把空结果当成功）', async () => {
+    createAgUiSessionSpy.mockImplementation(() => {
+      let listener: ((event: Record<string, unknown>) => void) | undefined
+      return {
+        session: {
+          prompt: async () => {
+            listener?.({
+              type: 'message_end',
+              message: { role: 'assistant', stopReason: 'error', errorMessage: 'A server error occurred. Please try again.' },
+            })
+            return '   '
+          },
+          subscribe: (cb: (event: Record<string, unknown>) => void) => {
+            listener = cb
+            return () => { listener = undefined }
+          },
+          dispose: () => {},
+          abort: () => {},
+        },
+        streamEmitter: { finishTextMessage: () => {}, handleSessionEvent: () => {} },
+        messageId: 'test-message',
+        dispose: () => {},
+      }
+    })
+
+    await expect(invokeRunAgentOnce('writer')).rejects.toThrow('A server error occurred')
+  })
+
+  it('pi SDK 重试序列 error → error → stop：成功终答清空既有错误，不误判失败', async () => {
+    // 2026-09-01 诊断日志实证（~/.pi/diag/session-diag.log）：
+    //   message-end stopReason=error "A server error occurred."
+    //   message-end stopReason=error "A server error occurred."
+    //   message-end stopReason=stop  textChars=3868
+    // SDK 自带重试第 3 次成功。旧订阅只在 error 时赋值、从不清空，
+    // 于是成功产出照样被 capturedLlmError 判定失败，整章作废。
+    const chapterText = '操场上铺着薄薄一层尘土。'.repeat(30)
+    createAgUiSessionSpy.mockImplementation(() => {
+      let listener: ((event: Record<string, unknown>) => void) | undefined
+      return {
+        session: {
+          prompt: async () => {
+            const fail = {
+              type: 'message_end',
+              message: { role: 'assistant', stopReason: 'error', errorMessage: 'A server error occurred. Please try again.' },
+            }
+            listener?.(fail)
+            listener?.(fail)
+            listener?.({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } })
+            return chapterText
+          },
+          subscribe: (cb: (event: Record<string, unknown>) => void) => {
+            listener = cb
+            return () => { listener = undefined }
+          },
+          dispose: () => {},
+          abort: () => {},
+        },
+        streamEmitter: { finishTextMessage: () => {}, handleSessionEvent: () => {} },
+        messageId: 'test-message',
+        dispose: () => {},
+      }
+    })
+
+    await expect(invokeRunAgentOnce('writer')).resolves.toBe(chapterText)
   })
 
   it('runAgentOnce 注入后触发 onInterjectInjected（ids + agentType），盲审不消费', async () => {

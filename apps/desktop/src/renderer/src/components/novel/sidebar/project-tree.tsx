@@ -15,6 +15,7 @@ import {
   Layers,
   Search,
   Gem,
+  Film,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -30,6 +31,7 @@ import {
   createItem,
   deleteCharacter,
   deleteChapter,
+  deleteNarrative,
   deleteConflict,
   deleteClue,
   deleteForeshadow,
@@ -49,6 +51,7 @@ import {
   type NovelWorldElement,
   type NovelInformationLayer,
   type NovelItem,
+  type NovelNarrative,
   createInfoLayer,
   deleteInfoLayer,
 } from '@/api/novel-client'
@@ -61,12 +64,25 @@ import { useBeatPlansLoader } from '@/hooks/use-beat-plans'
 
 // ── 项目分组树 ──
 
+/** 剧情类型中文标签（与矩阵 matrix-model 同源） */
+const NARRATIVE_TYPE_LABELS: Record<string, string> = {
+  advance: '剧情推进',
+  turn: '转折',
+  reversal: '反转',
+  suspense: '悬念',
+  resolve: '收束',
+  setup: '铺垫',
+  reveal: '揭示',
+  misc: '其他事件',
+}
+
 export interface ProjectTreeProps {
   projectId: string
   project: NovelProject
   characters: NovelCharacter[]
   chapters: NovelChapter[]
   volumes: NovelVolume[]
+  narratives: NovelNarrative[]
   conflicts: NovelConflict[]
   clues: NovelClue[]
   foreshadows: NovelForeshadow[]
@@ -87,6 +103,7 @@ export function ProjectTree({
   characters,
   chapters,
   volumes,
+  narratives,
   conflicts,
   clues,
   foreshadows,
@@ -112,6 +129,7 @@ export function ProjectTree({
   const upsertItem = useNovelDataStore((s) => s.upsertItem)
   const removeCharacter = useNovelDataStore((s) => s.removeCharacter)
   const removeChapter = useNovelDataStore((s) => s.removeChapter)
+  const removeNarrative = useNovelDataStore((s) => s.removeNarrative)
   const removeConflict = useNovelDataStore((s) => s.removeConflict)
   const removeClue = useNovelDataStore((s) => s.removeClue)
   const removeForeshadow = useNovelDataStore((s) => s.removeForeshadow)
@@ -249,19 +267,39 @@ export function ProjectTree({
       type: DraggableEntityType,
       id: string,
       label: string,
+      /** 调用方已自带更具体的确认弹窗（如章节行的重排提示）时跳过通用确认 */
+      skipConfirm = false,
     ) => {
-      if (!window.confirm(`确认删除「${label}」？此操作不可撤销。`)) return
+      if (!skipConfirm && !window.confirm(`确认删除「${label}」？此操作不可撤销。`)) return
       try {
         switch (type) {
           case 'character':
             await deleteCharacter(id)
             removeCharacter(id)
             break
-          case 'chapter':
-            await deleteChapter(id)
-            removeChapter(id)
-            // 删章会触发后端节拍重排（章号左移），重拉保持徽标同步
-            void reloadBeats()
+          case 'chapter': {
+            // 已发布章的 409 约束在前端预检查（后端仍兜底）；
+            // 运行中的创作流程锁定由后端 409 返回，catch 里呈现给用户
+            const target = chapters.find((c) => c.id === id)
+            if (target?.status === 'published') {
+              window.alert('已发布章节不能删除，请先进入修订或撤回流程。')
+              return
+            }
+            try {
+              await deleteChapter(id)
+              removeChapter(id)
+              // 删章会触发后端节拍重排（章号左移），重拉保持徽标同步
+              void reloadBeats()
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err)
+              window.alert(`删除章节失败：${message}`)
+              throw err
+            }
+            break
+          }
+          case 'narrative':
+            await deleteNarrative(id)
+            removeNarrative(id)
             break
           case 'conflict':
             await deleteConflict(id)
@@ -300,7 +338,7 @@ export function ProjectTree({
         console.error('[NovelSidebar] 删除实体失败:', err)
       }
     },
-    [removeCharacter, removeChapter, removeConflict, removeClue, removeForeshadow, removeFaction, removeLocation, removeWorldElement, removeInfoLayer, removeItem],
+    [chapters, removeCharacter, removeChapter, removeNarrative, removeConflict, removeClue, removeForeshadow, removeFaction, removeLocation, removeWorldElement, removeInfoLayer, removeItem],
   )
 
   return (
@@ -324,6 +362,7 @@ export function ProjectTree({
           chapters={chapters}
           onManualArrange={onManualArrange}
           onAiArrange={onAiArrange}
+          onDeleteChapter={(ch) => void handleDelete('chapter', ch.id, ch.title || `第${ch.chapterNumber}章`, true)}
         />
       </CollapsibleGroup>
 
@@ -355,6 +394,37 @@ export function ProjectTree({
               entityType="character"
               entityId={c.id}
               onDelete={() => handleDelete('character', c.id, c.name || '角色')}
+            />
+          ))
+        )}
+      </CollapsibleGroup>
+
+      {/* 剧情轨道（矩阵「剧情」行同源：编排/AI 编排生成的跨章事件线） */}
+      <CollapsibleGroup
+        kind="narrative"
+        icon={Film}
+        label="剧情"
+        count={narratives.length}
+        accent="text-teal-600"
+        collapsed={collapsedGroups.includes('narrative')}
+        onToggle={toggleCollapsedGroup}
+        onAdd={() => {}}
+        addLabel=""
+        hideAdd
+      >
+        {narratives.length === 0 ? (
+          <EmptyHint text="暂无剧情（AI 编排会自动生成，也可在矩阵中手动新建）" />
+        ) : (
+          narratives.map((n) => (
+            <EntityItem
+              key={n.id}
+              label={n.description.length > 18 ? `${n.description.slice(0, 18)}...` : n.description}
+              sublabel={NARRATIVE_TYPE_LABELS[n.type] ?? n.type}
+              selected={selectedNodeId === n.id}
+              onClick={() => onSelectEntity(n.id, 'narrative')}
+              entityType="narrative"
+              entityId={n.id}
+              onDelete={() => handleDelete('narrative', n.id, '剧情')}
             />
           ))
         )}

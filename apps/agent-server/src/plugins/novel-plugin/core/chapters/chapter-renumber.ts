@@ -186,6 +186,14 @@ export const CHAPTER_RENUMBER_FIELDS: ChapterRenumberField[] = [
   // 卷级节拍表：NOT NULL chapter_number → 被删章的节拍行删除，其余前移，
   // 否则删章后节拍仍指向旧章号，节拍↔章节映射静默错位
   { table: 'novel_beat_plans', column: 'chapter_number', kind: 'scalar', nullable: false },
+  // 信息层揭示章：可空 → 命中被删章置 NULL（保留信息层本体，揭示计划失效待作者重排）
+  { table: 'novel_information_layers', column: 'reveal_chapter', kind: 'scalar', nullable: true },
+  // 实体候选章号：可空 → 命中被删章置 NULL（候选的 content_revision 已随章节级联删除）
+  { table: 'novel_entity_candidates', column: 'chapter_number', kind: 'scalar', nullable: true },
+  // 工作流运行快照：NOT NULL → 被删章的 run 行删除，其余前移。
+  // 不重排的话 getLatestResumable(新 N 章) 会捞出旧章号的半成品快照，
+  // resumable-runs 列表也会把断点挂到错误章节下
+  { table: 'novel_workflow_runs', column: 'chapter_number', kind: 'scalar', nullable: false },
 ]
 
 // 启动时校验 CHAPTER_RENUMBER_FIELDS 的标识符合法性（防御性，防止未来误传用户输入）

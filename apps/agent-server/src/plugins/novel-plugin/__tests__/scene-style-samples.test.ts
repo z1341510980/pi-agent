@@ -43,6 +43,51 @@ describe('inferSceneType（P1-2 场景类型推断）', () => {
   it('无关键词兜底为静场', () => {
     expect(inferSceneType('主角整理父亲遗物，发现一张旧船票')).toBe('quiet')
   })
+
+  it('信息/关系/低压章不因单字或弱动作词误判为动作场', () => {
+    // 实测误判：叙事任务里"不主动追逐连线"让信息章拿到动作场样本（95% 单句段）
+    expect(inferSceneType('不沿线冲击，不主动追逐，不补力', 'information')).toBe('quiet')
+    // Director 定位优先于文本关键词
+    expect(inferSceneType('追杀在巷子里展开，主角突围', 'information')).toBe('quiet')
+    expect(inferSceneType('他已无处可逃，只能硬拼', 'advancement')).toBe('quiet')
+    // 高压/推进章保留动作判定
+    expect(inferSceneType('追杀在巷子里展开，主角突围', 'high_pressure')).toBe('action')
+    expect(inferSceneType('刀光落下，两人贴身搏斗', 'advancement')).toBe('action')
+    // 对话判定不受定位压制
+    expect(inferSceneType('审讯室对峙，逼问玉佩下落', 'information')).toBe('dialogue')
+  })
+})
+
+describe('文风样本水印清洗（2026-09 实测修复）', () => {
+  it('盗版站水印符号与域名式碎片在注入前被清掉', () => {
+    const section = buildSceneSampleSection({
+      positiveExamples: [
+        `他低下头，看着掌心的旧照片。如.闻枉 冕￠废.越读 窗外的雨敲着屋檐。丸′ ! 鰰?占 耕?鑫′嶵筷, 他把照片收进口袋。齐盛.暁税·枉? 嶵新·漳结-哽新?哙· 门外的脚步声近了。￠x,i·nw,anb·en!.or·g? 他吹熄了灯。`,
+      ],
+      sceneType: 'quiet',
+    })
+
+    expect(section).not.toBe('')
+    expect(section).not.toMatch(/[￠′·]/)
+    expect(section).not.toContain('nw,anb')
+    expect(section).not.toContain('?.')
+    // 正文文字保留（水印字符清除不等于整句删除）
+    expect(section).toContain('旧照片')
+    expect(section).toContain('吹熄了灯')
+  })
+
+  it('半句结尾的样本退到最近句末，不再教模型"断句"', () => {
+    const section = buildSceneSampleSection({
+      positiveExamples: [
+        `他把信折好放进抽屉，动作很慢。窗台上的猫翻了个身，继续晒太阳。一位杂役道出`,
+      ],
+      sceneType: 'quiet',
+    })
+    const body = section.split('【场景样本 1')[1] ?? ''
+    const trimmedBody = body.replace(/^】?\n?/, '').trim()
+    expect(trimmedBody).not.toContain('一位杂役道出')
+    expect(trimmedBody.endsWith('。') || trimmedBody.endsWith('？') || trimmedBody.endsWith('！')).toBe(true)
+  })
 })
 
 describe('buildSceneSampleSection（P1-2 分桶样本）', () => {

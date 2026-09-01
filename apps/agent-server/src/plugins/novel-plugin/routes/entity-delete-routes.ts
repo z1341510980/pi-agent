@@ -2,6 +2,7 @@ import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import type { NovelServices } from '../novel-services.js'
 import { success } from '../../../lib/api-response.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
+import { activeNovelChapterTasks, chapterCreationLocks } from '../utils/chapter-task-registry.js'
 
 type DeleteEntity = (id: string) => boolean
 
@@ -27,7 +28,17 @@ export function createEntityDeleteRoutes(services: NovelServices): RouteDefiniti
         const chapter = store.getChapterById(request.params.id)
         if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
         if (chapter.status === 'published') throw new AppError(ErrorCode.CONFLICT, '已发布章节不能删除，请先进入修订或撤回流程', 409)
+        // 运行互斥：该章有创作流程/讨论/AI 编排正在跑时禁止删除，
+        // 否则流程后续阶段（Memory/Finalizer 写 chapter_id NOT NULL 的表）会炸进 error 终态
+        const lockKey = `${chapter.projectId}:${chapter.chapterNumber}`
+        if (chapterCreationLocks.has(lockKey) || activeNovelChapterTasks.has(lockKey)) {
+          throw new AppError(ErrorCode.CONFLICT, '该章节正在创作流程中运行，请先停止流程后再删除', 409)
+        }
         if (!store.deleteChapter(request.params.id)) throw new AppError(ErrorCode.INTERNAL_SERVER_ERROR, '删除章节失败', 500)
+        // 进程内清理：重排后其余章号左移，残留的检查点指令（key 无 runId 维度）
+        // 会被左移后的新章误注入；chunk 缓存按项目清空重建（旧章的上下文 chunk 不再按章可寻址）
+        services.orchestrator.clearStalePendingUserMessages(chapter.projectId, chapter.chapterNumber)
+        services.orchestrator.chunkCache.clearProject(chapter.projectId)
         return success({ id: request.params.id, deleted: true }, request.traceId)
       },
     },

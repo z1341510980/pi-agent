@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type ReactElement } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Select,
   SelectContent,
@@ -32,6 +33,7 @@ import {
 
 export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
   const upsertProject = useNovelDataStore((s) => s.upsertProject)
+  const queryClient = useQueryClient()
   const [form, setForm] = useState({
     title: entity.title,
     genre: entity.genre,
@@ -85,6 +87,8 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
         targetPlatform: form.targetPlatform === '__none__' ? null : form.targetPlatform
       })
       upsertProject(updated)
+      // 与新建章/卷的惯例对齐：保存成功后失效项目数据缓存，防止后台对账回退大纲树
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', entity.id] })
       toastSuccess('项目已保存', '修改已生效')
     } catch (err) {
       const msg = err instanceof Error ? err.message : '保存失败'
@@ -93,7 +97,7 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
     } finally {
       setSaving(false)
     }
-  }, [entity.id, form, upsertProject])
+  }, [entity.id, form, queryClient, upsertProject])
 
   return (
     <div className="space-y-2">
@@ -105,6 +109,7 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
         onSave={async (outline) => {
           const updated = await updateProject(entity.id, { outline })
           upsertProject(updated)
+          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', entity.id] })
         }}
       />
 

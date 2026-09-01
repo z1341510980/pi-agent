@@ -29,9 +29,11 @@ import {
   type NovelCharacter,
   type NovelCharacterHistory,
   type NovelCharacterPlotRole,
+  type NovelCharacterGender,
 } from '@/api/novel-client'
 import {
   CHARACTER_PLOT_ROLE_OPTIONS,
+  CHARACTER_GENDER_OPTIONS,
   CONFLICT_STAGE_OPTIONS,
   DYNAMIC_FIELDS,
   HISTORY_FIELD_LABELS,
@@ -53,6 +55,7 @@ export function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElem
   const conflicts = useNovelDataStore((s) => s.conflicts)
   const [form, setForm] = useState({
     name: entity.name,
+    gender: entity.gender ?? null,
     identity: entity.identity,
     personality: entity.personality,
     appearance: entity.appearance,
@@ -109,6 +112,22 @@ export function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElem
       <FormSection title="基础信息" icon={<User className="size-3.5" />} collapsible={false}>
         <FieldRow label="姓名">
           <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+        </FieldRow>
+        <FieldRow label="性别">
+          <Select
+            value={form.gender ?? '__none__'}
+            onValueChange={(v) => setForm((f) => ({ ...f, gender: v === '__none__' ? null : (v as NovelCharacterGender) }))}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="未设置" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">未设置</SelectItem>
+              {CHARACTER_GENDER_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </FieldRow>
         <FieldRow label="身份">
           <TextArea variant="short" value={form.identity} onChange={(e) => setForm((f) => ({ ...f, identity: e.target.value }))} />

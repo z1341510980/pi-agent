@@ -595,11 +595,17 @@ export class NovelEngine {
     // 独立 Reader 冷读结论为 needs_attention 时阻止发布；
     // passed / degraded（自审降级）不拦截——降级只是验证强度不足，不是负面证据。
     // 可选调用兼容部分 mock store。
+    // 结论绑定内容指纹：Reviser/后续修订改动正文后，旧读感结论自动失效
+    // （needs_attention 对旧版本不再拦截，passed 也不会替新版本背书）。
     const lengduQuality = this.store.getChapterLengduQuality?.(chapterId)
     if (lengduQuality?.status === 'needs_attention') {
-      throw new Error(
-        `lengdu 独立读感未通过（${lengduQuality.summary || '存在待处理读感问题'}），请先修订或复核后再发布`
-      )
+      const recordedHash = (lengduQuality as { contentHash?: string }).contentHash
+      const stale = recordedHash != null && recordedHash !== contentHash
+      if (!stale) {
+        throw new Error(
+          `lengdu 独立读感未通过（${lengduQuality.summary || '存在待处理读感问题'}），请先修订或复核后再发布`
+        )
+      }
     }
 
     // 发布是受前置条件保护的专用命令，绕过普通编辑迁移表中的 published 禁入规则。

@@ -121,6 +121,7 @@ describe('NovelStore - 角色 CRUD', () => {
   it('createCharacter 创建角色', () => {
     const c = store.createCharacter({
       id: 'c-1', projectId: 'p-1', name: '主角', description: '描述',
+      gender: 'female',
       identity: '身份', personality: '性格', appearance: '外貌',
       currentState: '初始', currentGoal: '目标', currentPressure: '压力',
       secret: '秘密', arcStage: 'setup', arcHistory: '[]', speechStyle: '口语',
@@ -129,7 +130,28 @@ describe('NovelStore - 角色 CRUD', () => {
     })
     expect(c.id).toBe('c-1')
     expect(c.name).toBe('主角')
+    expect(c.gender).toBe('female')
     expect(c.createdAt).toBeGreaterThan(0)
+  })
+
+  it('gender 字段往返：未设定归一为 null，非法值回退 null，更新可改写', () => {
+    store.createCharacter({
+      id: 'c-g1', projectId: 'p-1', name: '未设定', description: '',
+      identity: '', personality: '', appearance: '',
+      currentState: '', currentGoal: '', currentPressure: '',
+      secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
+      isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
+    })
+    expect(store.getCharacter('c-g1')?.gender).toBeNull()
+
+    // 非法枚举值直接写库（绕过 API 校验）→ 读取归一为 null
+    db.prepare("UPDATE novel_characters SET gender = 'unknown' WHERE id = 'c-g1'").run()
+    expect(store.getCharacter('c-g1')?.gender).toBeNull()
+
+    const updated = store.updateCharacter('c-g1', { gender: 'male' })
+    expect(updated?.gender).toBe('male')
+    expect(store.getCharacter('c-g1')?.gender).toBe('male')
   })
 
   it('getCharacter 读取角色', () => {

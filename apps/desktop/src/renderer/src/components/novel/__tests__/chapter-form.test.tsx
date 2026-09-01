@@ -1,5 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactElement } from 'react'
 import type { NovelChapter } from '@/api/novel-client'
 
 const {
@@ -59,6 +61,14 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/** ChapterForm 保存链路会 invalidate 项目数据缓存，测试需要挂在 QueryClientProvider 下 */
+function renderWithQueryClient(ui: ReactElement): ReturnType<typeof render> {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>)
+}
+
 describe('ChapterForm', () => {
   it('待审章节通过专用发布命令进入 published', async () => {
     const published = { ...reviewChapter, status: 'published' as const }
@@ -66,7 +76,7 @@ describe('ChapterForm', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { ChapterForm } = await import('../detail-forms/chapter-form')
 
-    render(<ChapterForm entity={reviewChapter} />)
+    renderWithQueryClient(<ChapterForm entity={reviewChapter} />)
     fireEvent.click(screen.getByRole('button', { name: '发布章节' }))
 
     await waitFor(() => expect(publishChapter).toHaveBeenCalledWith('chapter-1'))
@@ -77,7 +87,7 @@ describe('ChapterForm', () => {
   it('非待审章节不显示发布命令', async () => {
     const { ChapterForm } = await import('../detail-forms/chapter-form')
 
-    render(<ChapterForm entity={{ ...reviewChapter, status: 'drafting' }} />)
+    renderWithQueryClient(<ChapterForm entity={{ ...reviewChapter, status: 'drafting' }} />)
 
     expect(screen.queryByRole('button', { name: '发布章节' })).toBeNull()
   })
@@ -118,7 +128,7 @@ describe('ChapterForm', () => {
     updateChapter.mockResolvedValue(updated)
     const { ChapterForm } = await import('../detail-forms/chapter-form')
 
-    render(<ChapterForm entity={reviewChapter} />)
+    renderWithQueryClient(<ChapterForm entity={reviewChapter} />)
     fireEvent.click(screen.getByRole('button', { name: 'AI 生成章纲' }))
 
     await screen.findByText('AI 章纲草稿')
@@ -181,12 +191,18 @@ describe('ChapterForm', () => {
       warnings: [],
     })
     const { ChapterForm } = await import('../detail-forms/chapter-form')
-    const { rerender } = render(<ChapterForm entity={reviewChapter} />)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const withProvider = (ui: ReactElement): ReactElement => (
+      <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
+    )
+    const { rerender } = render(withProvider(<ChapterForm entity={reviewChapter} />))
 
     fireEvent.click(screen.getByRole('button', { name: 'AI 生成章纲' }))
     await screen.findByText('AI 章纲草稿')
 
-    rerender(<ChapterForm entity={{ ...reviewChapter, status: 'published' }} />)
+    rerender(withProvider(<ChapterForm entity={{ ...reviewChapter, status: 'published' }} />))
 
     await waitFor(() => expect(screen.queryByText('AI 章纲草稿')).toBeNull())
     expect((screen.getByRole('textbox', { name: '章纲内容' }) as HTMLTextAreaElement).disabled)

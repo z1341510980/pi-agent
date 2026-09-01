@@ -2,7 +2,7 @@ import { type TargetPlatform } from '@/api/novel-client'
 
 // ── 通用节点类型（用于删除等操作；拖拽已统一走 @dnd-kit useDraggable）──
 
-export type DraggableEntityType = 'character' | 'chapter' | 'foreshadow' | 'conflict' | 'clue' | 'faction' | 'location' | 'world_element' | 'info_layer' | 'item'
+export type DraggableEntityType = 'character' | 'chapter' | 'narrative' | 'foreshadow' | 'conflict' | 'clue' | 'faction' | 'location' | 'world_element' | 'info_layer' | 'item'
 
 // ── 目标平台选项（与 novel-detail-panel.tsx 保持一致）──
 

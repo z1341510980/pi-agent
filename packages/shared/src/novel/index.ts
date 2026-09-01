@@ -665,12 +665,20 @@ export type NovelCharacterPlotRole =
   | 'function'
   | 'background'
 
+/**
+ * 角色性别（迁移 122）。
+ * 可空：旧数据无值视为未设定；other 覆盖跨性别 / 无性别 / 灵体等设定。
+ */
+export type NovelCharacterGender = 'male' | 'female' | 'other'
+
 export interface NovelCharacter {
   id: string
   projectId: string
   name: string
   description: string
   // 静态设定
+  /** 性别（迁移 122）：旧数据可能无值（未设定）；other 覆盖跨性别 / 无性别 / 灵体等设定 */
+  gender?: NovelCharacterGender | null
   identity: string
   personality: string
   appearance: string

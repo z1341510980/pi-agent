@@ -5,6 +5,7 @@ import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
 import {
   splitTargetWords,
+  formatSceneBudgetGuidance,
   buildScenePlanFromNarrativeTask,
   buildScenePlanFromSceneDefinitions,
   type PlanBudget,
@@ -30,6 +31,26 @@ describe('splitTargetWords 字数拆分', () => {
     expect(splitTargetWords(3000, 3)).toEqual([1000, 1000, 1000])
     expect(splitTargetWords(3001, 3)).toEqual([1000, 1000, 1001])
     expect(splitTargetWords(3000, 1)).toEqual([3000])
+  })
+})
+
+describe('formatSceneBudgetGuidance 逐场预算提示', () => {
+  it('sceneCount>=2：逐场写死均分预算，并要求笔墨向核心场景倾斜', () => {
+    const text = formatSceneBudgetGuidance(3, 3000)
+    expect(text).toContain('场景 1 ≈ 1000 字')
+    expect(text).toContain('场景 3 ≈ 1000 字')
+    expect(text).toContain('核心场景')
+    expect(text).toContain('硬上限')
+  })
+
+  it('sceneCount=1：单场景写透，不拆分', () => {
+    const text = formatSceneBudgetGuidance(1, 3000)
+    expect(text).toContain('单场景')
+    expect(text).not.toContain('场景 2')
+  })
+
+  it('sceneCount 未标注：回落到自拆场指引', () => {
+    expect(formatSceneBudgetGuidance(undefined, 3000)).toContain('未标注场景数')
   })
 })
 

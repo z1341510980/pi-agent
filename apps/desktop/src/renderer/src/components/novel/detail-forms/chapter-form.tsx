@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Send } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -45,6 +46,7 @@ const CHAPTER_STATUS_LABELS: Record<ChapterStatus, string> = {
 
 export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
   const upsertChapter = useNovelDataStore((s) => s.upsertChapter)
+  const queryClient = useQueryClient()
   const [form, setForm] = useState({
     title: entity.title,
     status: entity.status,
@@ -59,13 +61,23 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
   const [outlineSaveError, setOutlineSaveError] = useState<string | null>(null)
   const statusOptions = CHAPTER_STATUS_TRANSITIONS[entity.status]
 
+  // 章纲草稿的「已同步基准」：effect 回写只在草稿与基准一致（用户无未保存修改）时执行，
+  // 防止后台对账 / 创作流程回写把正在编辑的章纲静默覆盖。
+  const syncedOutlineRef = useRef(entity.outline ?? '')
+  const prevChapterIdRef = useRef(entity.id)
+
   useEffect(() => {
+    const switchedChapter = prevChapterIdRef.current !== entity.id
+    prevChapterIdRef.current = entity.id
     setForm({
       title: entity.title,
       status: entity.status,
       rhythm: entity.rhythm ?? '',
     })
-    setOutlineDraft(entity.outline ?? '')
+    setOutlineDraft((prev) =>
+      switchedChapter || prev === syncedOutlineRef.current ? (entity.outline ?? '') : prev,
+    )
+    syncedOutlineRef.current = entity.outline ?? ''
     setAppliedOutlineGeneration(null)
     setOutlineSaveError(null)
   }, [entity.id, entity.title, entity.status, entity.rhythm, entity.outline])
@@ -101,6 +113,9 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
       })
       setAppliedOutlineGeneration(null)
       upsertChapter(updated)
+      // 与新建章/卷的惯例对齐：保存成功后失效项目数据缓存，
+      // 避免后台 refetch 用缓存里的旧 outline 对账覆盖，导致大纲树回退旧值
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', entity.projectId] })
     } catch (err) {
       const message = err instanceof Error ? err.message : '保存失败'
       if (outlineChanged) setOutlineSaveError(message)
@@ -108,7 +123,7 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
     } finally {
       setSaving(false)
     }
-  }, [appliedOutlineGeneration, entity.id, entity.outline, form, outlineDraft, upsertChapter])
+  }, [appliedOutlineGeneration, entity.id, entity.outline, entity.projectId, form, outlineDraft, queryClient, upsertChapter])
 
   const handlePublish = useCallback(async () => {
     if (publishing || entity.status !== 'review') return
@@ -118,6 +133,7 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
     try {
       const updated = await publishChapter(entity.id)
       upsertChapter(updated)
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', entity.projectId] })
       toastSuccess('章节已发布', `第 ${updated.chapterNumber} 章已进入正式时间线`)
     } catch (err) {
       const message = err instanceof Error ? err.message : '发布失败'
@@ -126,7 +142,7 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
     } finally {
       setPublishing(false)
     }
-  }, [entity.id, entity.status, publishing, upsertChapter])
+  }, [entity.id, entity.projectId, entity.status, publishing, queryClient, upsertChapter])
 
   return (
     <div className="space-y-2">
@@ -212,6 +228,7 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
 
 export function VolumeForm({ entity }: { entity: NovelVolume }): ReactElement {
   const upsertVolume = useNovelDataStore((s) => s.upsertVolume)
+  const queryClient = useQueryClient()
   const [form, setForm] = useState({
     title: entity.title,
   })
@@ -226,12 +243,13 @@ export function VolumeForm({ entity }: { entity: NovelVolume }): ReactElement {
     try {
       const updated = await updateVolume(entity.id, { title: form.title })
       upsertVolume(updated)
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', entity.projectId] })
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存失败')
     } finally {
       setSaving(false)
     }
-  }, [entity.id, form, upsertVolume])
+  }, [entity.id, entity.projectId, form, queryClient, upsertVolume])
 
   return (
     <div className="space-y-2">
@@ -243,6 +261,7 @@ export function VolumeForm({ entity }: { entity: NovelVolume }): ReactElement {
         onSave={async (outline) => {
           const updated = await updateVolume(entity.id, { outline })
           upsertVolume(updated)
+          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', entity.projectId] })
         }}
       />
 

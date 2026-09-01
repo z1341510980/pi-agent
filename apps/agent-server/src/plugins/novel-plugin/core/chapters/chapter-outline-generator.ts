@@ -22,6 +22,8 @@ import {
 import {
   buildChapterOutlineDraftFromSubmit,
   createChapterOutlineSubmitTool,
+  formatChapterOutlineSubmitAttempts,
+  type ChapterOutlineSubmitAttempt,
   type ChapterOutlineSubmitDraftHolder,
   hashChapterOutline,
   hashChapterOutlineContext,
@@ -173,7 +175,10 @@ export class ChapterOutlineGenerator {
       },
       params.projectId
     ) + '\n\n必须调用 submit_chapter_outline 工具提交章纲；不要在对话文本中输出 JSON。'
-    const taskMessage = this.buildTaskMessage(params.mode, params.instruction)
+    const taskMessage = this.buildTaskMessage(params.mode, params.instruction, {
+      hasCharacters: characterNames.size > 0,
+      hasStorylines: storylineNames.size > 0
+    })
     const contextText = JSON.stringify(outlineContext, null, 2)
     const userMessage = `${taskMessage}\n\n<chapter_outline_context>\n${contextText}\n</chapter_outline_context>`
 
@@ -253,6 +258,20 @@ export class ChapterOutlineGenerator {
       if (submitDraft.payload) {
         // ── 主路径：工具提交（结构化参数经 provider 约束 + SDK 校验后闭包捕获）──
         draft = buildChapterOutlineDraftFromSubmit(submitDraft.payload, references)
+      } else if (submitDraft.attempts?.length) {
+        // 模型调过工具但每次都被协议校验打回（工具已把纠正提示回给模型，仍未修好）。
+        // 直接报最后一次的失败原因，不再走文本兜底——文本里此时只有确认语。
+        const last = submitDraft.attempts[submitDraft.attempts.length - 1]
+        this.context.logger.warn(
+          {
+            chapterNumber: params.chapterNumber,
+            attempts: submitDraft.attempts.length,
+            reason: last.reason,
+            payload: last.payload
+          },
+          '章纲工具提交全部未通过协议校验'
+        )
+        throw new Error(last.reason ?? '章纲提交参数不符合协议')
       } else {
         // ── 兜底：provider 未发起工具调用 → 容错解析自由文本 + 一次修复轮 ──
         try {
@@ -273,7 +292,9 @@ export class ChapterOutlineGenerator {
             ].join('\n')
           )
           rawResult = repairedRaw
-          draft = parseChapterOutlineDraft(repairedRaw, references)
+          draft = submitDraft.payload
+            ? buildChapterOutlineDraftFromSubmit(submitDraft.payload, references)
+            : parseChapterOutlineDraft(repairedRaw, references)
         }
       }
       const resolvedModelId =
@@ -306,6 +327,10 @@ export class ChapterOutlineGenerator {
     } finally {
       unsubscribe()
       session.dispose()
+      // 工具提交的原始参数落库：session.prompt() 只返回助手确认语（"章纲已提交…"），
+      // 模型真正传给 submit_chapter_outline 的结构在日志里此前完全缺失，
+      // 协议校验失败时无从判断是哪个字段被填了什么。
+      const submissionAudit = formatChapterOutlineSubmitAttempts(submitDraft.attempts)
       this.recordCall({
         projectId: params.projectId,
         chapterNumber: params.chapterNumber,
@@ -315,7 +340,8 @@ export class ChapterOutlineGenerator {
         chapterContext: contextText,
         userMessage: taskMessage,
         taskInput: params.instruction ?? '',
-        result: rawResult,
+        result: submissionAudit ? `${rawResult}\n\n${submissionAudit}`.trim() : rawResult,
+        toolSubmissions: submitDraft.attempts ?? [],
         durationMs: Date.now() - startedAt,
         status,
         error: errorMessage,
@@ -637,16 +663,31 @@ export class ChapterOutlineGenerator {
     }
   }
 
-  private buildTaskMessage(mode: ChapterOutlineGenerationMode, instruction?: string): string {
+  private buildTaskMessage(
+    mode: ChapterOutlineGenerationMode,
+    instruction: string | undefined,
+    availability: { hasCharacters: boolean; hasStorylines: boolean }
+  ): string {
     const modeInstruction = {
       create: '忽略当前编辑内容，从项目事实重新规划本章。',
       rewrite: '保留当前章纲的有效意图，修复结构、因果和连续性问题。',
       expand: '不改变当前章纲的核心走向，补足推进步骤、阻力、转折和结尾状态。'
     }[mode]
+    // 上下文里一个角色/故事线都没有时（新项目、实体尚未抽取），模型仍会照提示词
+    // 给出 mode=single 或故事线推进，只能填空 ID —— 直接打穿协议校验。在此显式封口。
+    const referenceConstraints = [
+      ...(availability.hasCharacters
+        ? []
+        : ['本次上下文没有任何已有角色：povSuggestions 只能用 mode=omniscient 或 mode=none，禁止 mode=single，禁止编造角色 ID。']),
+      ...(availability.hasStorylines
+        ? []
+        : ['本次上下文没有任何已有故事线：storylines 必须为空数组，禁止编造故事线 ID。'])
+    ]
     return [
       `生成模式：${mode}`,
       modeInstruction,
       instruction?.trim() ? `作者补充要求：${instruction.trim()}` : '作者补充要求：无',
+      ...referenceConstraints,
       '依据下方上下文生成一份章纲草稿。只返回协议规定的 JSON。'
     ].join('\n')
   }
@@ -661,6 +702,8 @@ export class ChapterOutlineGenerator {
     userMessage: string
     taskInput: string
     result: string
+    /** 模型对 submit_chapter_outline 的每次提交（含被协议打回的） */
+    toolSubmissions?: readonly ChapterOutlineSubmitAttempt[]
     durationMs: number
     status: 'success' | 'error' | 'cancelled'
     error: string
@@ -669,6 +712,7 @@ export class ChapterOutlineGenerator {
     payload: PayloadTotals
     contextFingerprint: string
   }): void {
+    const toolSubmissions = input.toolSubmissions ?? []
     try {
       this.store.insertAgentLog({
         projectId: input.projectId,
@@ -683,8 +727,15 @@ export class ChapterOutlineGenerator {
         userMessage: input.userMessage,
         taskInput: input.taskInput,
         userInstructions: input.taskInput ? [input.taskInput] : [],
-        tools: [],
-        toolNames: [],
+        // tools 段承载工具入参审计（结构化），result 段同时带可读文本副本
+        tools: toolSubmissions.map((attempt, index) => ({
+          tool: 'submit_chapter_outline',
+          attempt: index + 1,
+          accepted: attempt.accepted,
+          ...(attempt.reason ? { reason: attempt.reason } : {}),
+          arguments: attempt.payload
+        })),
+        toolNames: toolSubmissions.length > 0 ? ['submit_chapter_outline'] : [],
         askStoryPolicy: 'allOffWithReferences',
         askStoryEnabled: false,
         result: input.result,
@@ -722,8 +773,8 @@ export class ChapterOutlineGenerator {
         systemPrompt: input.systemPrompt,
         userMessage: input.userMessage,
         taskInput: input.taskInput,
-        tools: '[]',
-        toolNames: '[]',
+        tools: JSON.stringify(toolSubmissions),
+        toolNames: JSON.stringify(toolSubmissions.length > 0 ? ['submit_chapter_outline'] : []),
         result: input.result,
         resultLength: input.result.length,
         durationMs: input.durationMs,

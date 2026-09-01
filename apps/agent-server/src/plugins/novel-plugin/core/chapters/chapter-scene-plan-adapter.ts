@@ -49,6 +49,97 @@ export function splitTargetWords(total: number, count: number): number[] {
   return Array.from({ length: count }, (_, i) => base + (i === count - 1 ? remainder : 0))
 }
 
+/** 场景笔墨等级：核心承载主任务/高潮，过场只做承接与过渡 */
+export type SceneEmphasis = 'core' | 'transition'
+
+/** 核心场景相对过场的笔墨权重 */
+const CORE_WEIGHT = 2
+const TRANSITION_WEIGHT = 1
+
+/**
+ * 从 narrativeTask 文本解析每场的主次标注。
+ *
+ * Director 契约要求按「场景N【核心】/（过场）」分段书写（见 role-director.md
+ * 「主次笔墨」）。这里只做宽松匹配：识别到几场就返回几场，未标注的按过场处理，
+ * 完全没有标注时返回空数组，由调用方回落到均分。
+ *
+ * 不做严格解析：标注格式的强制校验在 submit 工具（拒绝并要求重提），
+ * 这里只负责"能读到多少就用多少"，读不到不影响出稿。
+ */
+export function parseSceneEmphasis(narrativeTask: string, sceneCount: number): SceneEmphasis[] {
+  if (!narrativeTask || sceneCount < 1) return []
+  const emphases: SceneEmphasis[] = []
+  // 场景 1【核心】 / 场景1（核心高潮） / 场景 2【过场】 —— 括号类型与空格都放宽
+  const pattern = /场景\s*(\d+)\s*[【（(\[]([^】）)\]]{0,12})[】）)\]]/g
+  for (const match of narrativeTask.matchAll(pattern)) {
+    const index = Number.parseInt(match[1], 10)
+    if (!Number.isFinite(index) || index < 1 || index > sceneCount) continue
+    emphases[index - 1] = match[2].includes('核心') ? 'core' : 'transition'
+  }
+  if (emphases.length === 0) return []
+  return Array.from({ length: sceneCount }, (_, i) => emphases[i] ?? 'transition')
+}
+
+/** 按权重拆字数，舍入差额给权重最大的那一场（核心场景吃余量） */
+export function splitWeightedTargetWords(total: number, weights: number[]): number[] {
+  const sum = weights.reduce((acc, w) => acc + w, 0)
+  if (sum <= 0) return splitTargetWords(total, weights.length)
+  const raw = weights.map((w) => Math.floor((total * w) / sum))
+  const remainder = total - raw.reduce((acc, v) => acc + v, 0)
+  if (remainder !== 0) {
+    let heaviest = 0
+    for (let i = 1; i < weights.length; i += 1) {
+      if (weights[i] > weights[heaviest]) heaviest = i
+    }
+    raw[heaviest] += remainder
+  }
+  return raw
+}
+
+/**
+ * 逐场字数预算提示（注入 Writer 创作指令的 {{scene_budgets}} 占位符）。
+ *
+ * 2026-09-01：此前只让 Writer「目标÷场数自己分配」，模型自计数不可靠，
+ * 首稿惯性超写且前场写满、核心剧情没展开就爆字数。这里把结果逐场写死，
+ * Writer 只需按行核对。
+ *
+ * 均分同样不够：实测 Director 把三场全标成【核心】，均分 1000/1000/1000 等于
+ * 没有主次，Writer 每场都按"核心"的密度写，首稿 4740 字（158%）。
+ * 因此按主次标注加权（核心 2 : 过场 1），并把每场标注一并写进提示里 ——
+ * 模型看到"场景 2（过场）≈ 600 字"比看到"过场从简"这种形容词有效得多。
+ */
+export function formatSceneBudgetGuidance(
+  sceneCount: number | undefined,
+  targetWords: number,
+  narrativeTask?: string,
+): string {
+  if (sceneCount == null || sceneCount < 1) {
+    return '叙事任务未标注场景数：按叙事任务的自然分段拆场，给每场分配预算（约等于目标字数 ÷ 场数）。'
+  }
+  const n = Math.min(sceneCount, 5)
+  if (n === 1) {
+    return `本章单场景写透：全场预算 ${targetWords} 字，写到该收就收，不要为了填满而加戏。`
+  }
+  const emphases = narrativeTask ? parseSceneEmphasis(narrativeTask, n) : []
+  const hasEmphasis = emphases.length === n && emphases.some((e) => e === 'transition')
+  const budgets = hasEmphasis
+    ? splitWeightedTargetWords(
+        targetWords,
+        emphases.map((e) => (e === 'core' ? CORE_WEIGHT : TRANSITION_WEIGHT)),
+      )
+    : splitTargetWords(targetWords, n)
+  const lines = budgets
+    .map((w, i) => {
+      const tag = hasEmphasis ? `（${emphases[i] === 'core' ? '核心' : '过场'}）` : ''
+      return `场景 ${i + 1}${tag} ≈ ${w} 字`
+    })
+    .join(' / ')
+  return (
+    `逐场预算（写完一场就核对累计字数，超了立刻在下一场压缩）：${lines}。` +
+    '这不是建议值：任一场超出本场预算 20% 以上就必须就地删减，不能靠"后面写短一点"补回来。'
+  )
+}
+
 /**
  * NarrativeTask（章节级）→ ChapterScenePlan。
  * - 场景数：task.sceneCount ?? 1（Director 已限 1-5）

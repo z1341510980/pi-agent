@@ -413,6 +413,10 @@ describe('NovelOrchestrator request context', () => {
 
     expect(result.shouldRewrite).toBe(true)
     expect(result.reason).toBe('字数严重超标')
+    // details 数字口径自洽：天花板=3900（target×1.3），不再把 target 称为"天花板"
+    expect(result.details).toContain('超过硬上限 3900 字')
+    expect(result.details).toContain('达目标 3000 字的 150%')
+    expect(result.details).not.toContain('超过天花板 3000')
     // 115%-130% 区间仍为 advisory，不触发重写
     const nearCeiling = Array.from({ length: 3500 }, (_, index) =>
       String.fromCodePoint(0x4e00 + (index % 1800)),

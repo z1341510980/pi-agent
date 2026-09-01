@@ -93,7 +93,7 @@ import {
 import { isLengduWriterDisciplineEnabled, LENGDU_WRITER_DISCIPLINE } from './lengdu-writer-discipline.js'
 import { buildVoiceProfiles, formatVoiceContrastTable } from '../entities/character-voice.js'
 import { evaluateProseQuality } from '../quality/prose-quality-evaluator.js'
-import { WORD_COUNT_LIMITS } from '../quality/quality-policy.js'
+import { WORD_COUNT_LIMITS, PROSE_SHAPE_LIMITS } from '../quality/quality-policy.js'
 import { isNovelFeatureEnabled } from '../domain/novel-feature-flags.js'
 import { CHUNK_BY_ID, resolveChunkMode } from './context-chunk.js'
 import { buildStoryStateSummary, chooseEntityChunkMode } from './entity-summary.js'
@@ -101,6 +101,7 @@ import { estimateChunkTokens } from './context-budget.js'
 import { validateAgentIdentity } from '../domain/identity-contract.js'
 import type { LazyChunkBuilder } from './chunk-cache.js'
 import { baseTargetOf, resolveWordBudget } from '../chapters/word-budget-resolver.js'
+import { formatSceneBudgetGuidance } from '../chapters/chapter-scene-plan-adapter.js'
 import type { RelationshipGraph, GraphEdge } from '../analysis/novel-relationship-graph.js'
 import type {
   NovelProject,
@@ -297,10 +298,35 @@ function promptLabel(value: string): string {
   return PROMPT_VALUE_LABELS[value] ?? value
 }
 
+/**
+ * 把字面 `\n`（反斜杠 + n 两个字符）归一为真实换行。
+ *
+ * LLM 通过 novel_submit_narrative_task 提交叙事任务时，偶发把场景拆分写成
+ * `...推进。\n\n【场景一：...`（JSON 转义残留在字符串值里）。该文本会原样进
+ * Writer 的 chapter-info 与 chapter-instruction 两个注入点，渲染成一整段
+ * 无换行的文字墙（实测一章 16 处），大幅降低任务遵从度。在注入前归一，
+ * 同时兼容库里已污染的旧数据。
+ */
+export function normalizeLiteralNewlines(value: string): string {
+  if (!value.includes('\\n') && !value.includes('\\r')) return value
+  return value
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 function compactPromptText(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/g, ' ').trim()
   if (normalized.length <= maxLength) return normalized
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`
+}
+
+/** 必要事实引用里的性别段：未设定时不占字符预算 */
+function genderSegment(gender: NovelCharacter['gender']): string {
+  const labels: Record<string, string> = { male: '男', female: '女', other: '其他' }
+  return gender && labels[gender] ? `；性别：${labels[gender]}` : ''
 }
 
 /**
@@ -633,8 +659,8 @@ export class NovelPromptBuilder {
       ...characters.map(({ entity, hasBoundaryState }) => ({
         id: entity.id, name: entity.name, projectId: entity.projectId,
         detail: hasBoundaryState
-          ? `角色；身份：${entity.identity}；状态：${entity.currentState}；目标：${entity.currentGoal}；压力：${entity.currentPressure}；弧光：${entity.arcStage}`
-          : `角色；身份：${entity.identity}；性格：${entity.personality}；说话风格：${entity.speechStyle}；章前动态状态未知`,
+          ? `角色${genderSegment(entity.gender)}；身份：${entity.identity}；状态：${entity.currentState}；目标：${entity.currentGoal}；压力：${entity.currentPressure}；弧光：${entity.arcStage}`
+          : `角色${genderSegment(entity.gender)}；身份：${entity.identity}；性格：${entity.personality}；说话风格：${entity.speechStyle}；章前动态状态未知`,
       })),
       ...resolveCandidates(boundary?.entities.conflicts, this.stores.listConflicts(projectId)).map(({ entity, hasBoundaryState }) => ({
         id: entity.id, name: entity.description, projectId: entity.projectId,
@@ -1407,7 +1433,7 @@ export class NovelPromptBuilder {
     const boundary = this.getChapterBoundaryContext(projectId, chapterNumber)
 
     // ── 章节信息 ──
-    chunks.push({ chunkId: 'chapter-info', content: this.formatChapterInfo(projectId, chapterNumber, narrativeTask) })
+    chunks.push({ chunkId: 'chapter-info', content: this.formatChapterInfo(projectId, chapterNumber, narrativeTask, options?.agentType) })
 
     // ── 创作约束 ──
     chunks.push({ chunkId: 'chapter-constraints', content: this.formatConstraints(constraints) })
@@ -1551,7 +1577,7 @@ export class NovelPromptBuilder {
 
     const builders: LazyChunkBuilder[] = []
     if (enabled('chapter-info')) {
-      builders.push(builder('chapter-info', () => this.formatChapterInfo(projectId, chapterNumber, narrativeTask)))
+      builders.push(builder('chapter-info', () => this.formatChapterInfo(projectId, chapterNumber, narrativeTask, options?.agentType)))
     }
     if (enabled('chapter-constraints')) {
       builders.push(builder('chapter-constraints', () => this.formatConstraints(constraints)))
@@ -1948,7 +1974,12 @@ export class NovelPromptBuilder {
       })
       // ── P1-2：按本章主导场景类型分桶挑选文风样本 + 自池动态样本 ──
       // 注入点在 per-chapter 指令层（SEMI），不进静态身份，保住跨章缓存。
-      const sceneSampleSection = this.buildWriterSceneSamples(projectId, chapterNumber, narrativeTask.description)
+      const sceneSampleSection = this.buildWriterSceneSamples(
+        projectId,
+        chapterNumber,
+        narrativeTask.description,
+        constraints.positioning ?? narrativeTask.positioning,
+      )
       const positioningGuidance = sceneSampleSection
         ? `${styleDecisionPack}\n\n${sceneSampleSection}`
         : styleDecisionPack
@@ -1956,11 +1987,24 @@ export class NovelPromptBuilder {
         'chapter-instruction',
         {
           chapter_number: String(chapterNumber),
-          narrative_task: narrativeTask.description,
+          narrative_task: normalizeLiteralNewlines(narrativeTask.description),
           task_type: promptLabel(narrativeTask.type),
           target_words: String(targetWords),
           max_words: String(maxWords),
+          // 逐场字数预算：按 Director 提交的 sceneCount 与主次标注加权分配后写死到
+          // 指令里，替代"目标÷场数自己分配"——模型自计数不可靠，且三场全标核心时
+          // 均分等于没有主次（实测首稿 158%）。
+          scene_budgets: formatSceneBudgetGuidance(
+            narrativeTask.sceneCount,
+            targetWords,
+            narrativeTask.description,
+          ),
           positioning_guidance: positioningGuidance,
+          // 形态判定线与 prose-quality-evaluator 同口径（quality-policy 注释曾要求
+          // 数字不进 prompt，但模板早已手写死数值且与门禁不一致——改为从
+          // PROSE_SHAPE_LIMITS 插值，保证"与审稿门同口径"这句声明为真）
+          gate_consecutive_single: String(PROSE_SHAPE_LIMITS.maxConsecutiveSingleSentenceParagraphs),
+          gate_short_ratio: `${Math.round(PROSE_SHAPE_LIMITS.shortParagraphRatioError * 100)}%`,
         },
         projectId
       )
@@ -1984,6 +2028,7 @@ export class NovelPromptBuilder {
     projectId: string,
     chapterNumber: number,
     narrativeTaskText: string,
+    positioning?: string | null,
   ): string {
     const profile = this.stores.getWritingStyleProfile?.(projectId)
     // 静态身份保留第一条作锚定样本，分桶时跳过它避免重复注入
@@ -1994,7 +2039,7 @@ export class NovelPromptBuilder {
     return buildSceneSampleSection({
       positiveExamples: remainingExamples.length > 0 ? remainingExamples : undefined,
       selfPoolExcerpts: selfPoolExcerpts.length > 0 ? selfPoolExcerpts : undefined,
-      sceneType: inferSceneType(narrativeTaskText),
+      sceneType: inferSceneType(narrativeTaskText, positioning),
       maxSamples: 2,
       sampleMaxLength: 1600,
     })
@@ -2014,6 +2059,7 @@ export class NovelPromptBuilder {
     projectId: string,
     narrativeTaskText: string,
     styleExpertIds?: string[],
+    positioning?: string | null,
   ): string {
     const profile = this.stores.getWritingStyleProfile?.(projectId)
     if (!profile) return ''
@@ -2022,7 +2068,7 @@ export class NovelPromptBuilder {
     if (enabled.length === 0) return ''
     return buildSceneExpertFocus({
       experts: enabled,
-      sceneType: inferSceneType(narrativeTaskText),
+      sceneType: inferSceneType(narrativeTaskText, positioning),
     })
   }
 
@@ -2156,13 +2202,12 @@ export class NovelPromptBuilder {
    * 历史问题：b4f720b 之前只注入 narrativeTask（如"推进主线剧情"6 字标签），
    * 导致 LLM 看不到用户写的章纲，Director 只能自由发挥，正文偏离用户设定。
    */
-  private formatChapterInfo(
+   private formatChapterInfo(
     projectId: string,
     chapterNumber: number,
     task: NarrativeTask,
     agentType?: string
   ): string {
-    void agentType // 不再区分 agentType，保留参数仅为向后兼容
     const project = this.stores.getProject(projectId)
     const volume = project?.currentVolume ?? 1
     const chapter = this.stores.getChapter(projectId, chapterNumber)
@@ -2171,9 +2216,18 @@ export class NovelPromptBuilder {
     // 注入占位符会让 LLM 误以为任务类型真的未定，导致规划混乱。
     const isPlaceholderTask = (desc: string | undefined): boolean =>
       !desc || desc.trim() === '' || desc.trim() === '待补充' || desc.trim() === '待定'
+    // 字面 \n 归一：工具提交的任务文本可能带 JSON 转义残留（实测一章 16 处）
+    const taskText = normalizeLiteralNewlines(task.description ?? '')
+    // 去重：writer/reviewer 的 suffix（chapter-instruction 的「本章叙事任务」段）
+    // 已经带完整任务全文，shared 层再放一遍是逐字重复（实测占上下文 ~8%）。
+    // Director 的 shared 层保留全文（其 suffix 无任务段），但下面由调用方的
+    // 去锚定 prompt 承担"这是旧方案"的语义。
+    const isDuplicateForAgent = agentType === 'writer' || agentType === 'reviewer'
     const taskTypeLine = isPlaceholderTask(task.description)
       ? '当前任务尚待规划：先围绕用户章纲确定本章事件。'
-      : task.description.trim()
+      : isDuplicateForAgent
+        ? `（完整叙事任务见下方「本章叙事任务」，此处不再重复）任务类型：${task.type}`
+        : taskText
     const lines = [
       `## 本章写作核心`,
       ``,
@@ -2184,12 +2238,13 @@ export class NovelPromptBuilder {
       taskTypeLine
     ]
     // 注入用户编写的章纲（outline）作为创作统一起点
-    // 如果 outline 为空，回退使用 narrativeTask（保持向后兼容）
+    // 如果 outline 为空，回退使用 narrativeTask（保持向后兼容）；
+    // writer/reviewer 已在 suffix 拿到完整任务，回退同样跳过，避免第三次重复
     const outline = chapter?.outline?.trim()
     if (outline) {
       lines.push(``, `### 用户章纲（必须落实为本章事件）`, ``, outline)
-    } else if (!isPlaceholderTask(task.description)) {
-      lines.push(``, `### 章纲`, ``, task.description!)
+    } else if (!isPlaceholderTask(task.description) && !isDuplicateForAgent) {
+      lines.push(``, `### 章纲`, ``, taskText)
     }
     return lines.join('\n')
   }
@@ -2458,6 +2513,11 @@ export class NovelPromptBuilder {
       function: '功能角色：完成一个具体动作、信息或阻碍即可；不分配独立内心、弧光展示或 POV',
       background: '背景人物：只作为环境反应或群体的一部分，不单独展开'
     }
+    const genderLabel: Record<string, string> = {
+      male: '男',
+      female: '女',
+      other: '其他'
+    }
     // ── P2-1：冲突推进模式中文映射 ──
     const progressionModeLabel: Record<string, string> = {
       linear: '线性升级',
@@ -2509,6 +2569,7 @@ export class NovelPromptBuilder {
           const charLines = [`- **${c.name}**`]
           const roleLabel = plotRoleLabel[c.plotRole] ?? c.plotRole
           if (roleLabel) charLines.push(`  笔墨：${roleLabel}`)
+          if (c.gender && genderLabel[c.gender]) charLines.push(`  性别：${genderLabel[c.gender]}`)
           if (usableDetail(c.identity))
             charLines.push(
               `  身份：${compactPromptText(c.identity, CHARACTER_CARD_BUDGET.identity)}`

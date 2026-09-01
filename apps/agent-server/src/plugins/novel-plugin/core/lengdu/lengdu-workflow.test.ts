@@ -7,6 +7,7 @@ import type {
 } from '../../../../core/plugin/plugin-types.js'
 import {
   LengduWorkflow,
+  readerPassed,
   splitIntoReadingPackets,
   type LengduFlowEvent,
   type LengduStageLog
@@ -256,5 +257,23 @@ describe('LengduWorkflow', () => {
     expect(sessions[2].options.userMessage).toContain('## 作家人格档案')
     expect(sessions[3].options.trace?.runId).toMatch(/^lengdu:reader:/)
     expect(sessions[3].options.trace?.runId).not.toBe(sessions[1].options.trace?.runId)
+  })
+})
+
+describe('readerPassed 与质量报告口径一致', () => {
+  it('标准通过报告判通过', () => {
+    expect(readerPassed(READER_PASS)).toBe(true)
+  })
+
+  it('带括号补充的"通过"不再被宽松正则误判为通过（与 buildQualityReport 全等判定统一）', () => {
+    // 旧实现 /看懂：通过/ 宽松命中 → 循环判"通过"不修订；而报告解析用全等
+    // 判 needs_attention → 出现"不修订但拦发布"的矛盾态。统一后两者都判负。
+    const drifted = '## 最终读感\n- 看懂：通过（略需拼接）\n- 流畅：顺畅\n- 好看：想马上继续'
+    expect(readerPassed(drifted)).toBe(false)
+  })
+
+  it('任一项非满分即判负', () => {
+    const partial = '## 最终读感\n- 看懂：通过\n- 流畅：偶尔卡\n- 好看：想马上继续'
+    expect(readerPassed(partial)).toBe(false)
   })
 })

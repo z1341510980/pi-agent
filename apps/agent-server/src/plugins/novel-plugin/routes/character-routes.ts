@@ -33,6 +33,7 @@ export function createCharacterRoutes(services: NovelServices): RouteDefinition[
   const createCharacterSchema = z.object({
     name: z.string().min(1),
     description: z.string().default(''),
+    gender: z.enum(['male', 'female', 'other']).nullable().default(null),
     identity: z.string().default(''),
     personality: z.string().default(''),
     appearance: z.string().default(''),

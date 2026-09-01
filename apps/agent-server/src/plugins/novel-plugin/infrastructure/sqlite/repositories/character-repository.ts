@@ -32,6 +32,7 @@ export class CharacterRepository {
     return this.db.update(novelCharacters).set({
       name: row.name,
       description: row.description,
+      gender: row.gender,
       identity: row.identity,
       personality: row.personality,
       appearance: row.appearance,
@@ -96,6 +97,7 @@ function toCharacterInsert(row: CharacterRow): NovelCharactersInsert {
     projectId: row.project_id,
     name: row.name,
     description: row.description,
+    gender: row.gender,
     identity: row.identity,
     personality: row.personality,
     appearance: row.appearance,
@@ -121,6 +123,7 @@ function toCharacterRow(row: NovelCharactersRow): CharacterRow {
     project_id: row.projectId,
     name: row.name,
     description: row.description,
+    gender: row.gender ?? null,
     identity: row.identity,
     personality: row.personality,
     appearance: row.appearance,

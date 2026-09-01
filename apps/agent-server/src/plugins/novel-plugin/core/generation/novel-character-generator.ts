@@ -33,7 +33,7 @@ function ensureString(value: unknown, defaultValue: string): string {
 
 export type GeneratedCharacter = Pick<
   NovelCharacter,
-  | 'name' | 'description' | 'identity' | 'personality' | 'appearance'
+  | 'name' | 'description' | 'gender' | 'identity' | 'personality' | 'appearance'
   | 'currentState' | 'currentGoal' | 'currentPressure' | 'secret'
   | 'arcStage' | 'speechStyle'
   | 'longTermDesire' | 'plotRole' | 'removalImpact'
@@ -175,6 +175,7 @@ export class NovelCharacterGenerator {
       '请返回 JSON 格式，包含以下字段：',
       '- name: 角色姓名',
       '- description: 一句话概述',
+      '- gender: 性别，从以下枚举中选择一个：male=男 / female=女 / other=其他（跨性别、无性别、灵体等特殊设定）；无法判断时填 other',
       '- identity: 身份背景（出身/职业/社会地位）',
       '- personality: 性格特征（含优缺点）',
       '- appearance: 外貌描写',
@@ -268,6 +269,7 @@ export class NovelCharacterGenerator {
       return {
         name: ensureString(parsed.name, '未命名角色'),
         description: ensureString(parsed.description, ''),
+        gender: this.normalizeGender(parsed.gender),
         identity: ensureString(parsed.identity, ''),
         personality: ensureString(parsed.personality, ''),
         appearance: ensureString(parsed.appearance, ''),
@@ -312,6 +314,7 @@ export class NovelCharacterGenerator {
     return {
       name,
       description: `基于核心风格"${trimmed.slice(0, 30)}${trimmed.length > 30 ? '...' : ''}"生成的占位角色，待 LLM 集成后替换为真实生成内容。`,
+      gender: null,
       identity: '身份背景待补充（占位）',
       personality: `性格特征基于核心风格推断：${this.inferPersonality(trimmed)}`,
       appearance: '外貌描写待补充（占位）',
@@ -355,6 +358,16 @@ export class NovelCharacterGenerator {
       return value as NovelCharacter['plotRole']
     }
     return 'supporting'
+  }
+
+  /** 性别归一：模型可能返回中文或大小写漂移，白名单外一律视为未设定 */
+  private normalizeGender(value: unknown): NovelCharacter['gender'] {
+    if (typeof value !== 'string') return null
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'male' || normalized === '男') return 'male'
+    if (normalized === 'female' || normalized === '女') return 'female'
+    if (normalized === 'other' || normalized === '其他') return 'other'
+    return null
   }
 
   /** 基于核心风格关键词推断说话风格 */

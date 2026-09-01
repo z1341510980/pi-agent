@@ -428,6 +428,18 @@ export class ChapterStore {
       // novel_entity_appearances 对 chapter_id 无外键，删章必须手动清出场行，
       // 否则出现指向已删章节的 appearance（对账 orphan 行）。
       this.removeChapterAppearances?.(chapter.projectId, id)
+      // novel_author_intents.chapter_id 无外键 → 手动清理，防孤儿引用
+      this.db.prepare('DELETE FROM novel_author_intents WHERE chapter_id = ?').run(id)
+      // 画布上章节节点的坐标（deleteEdgesByEntity 只清边，节点本体在这里清）
+      this.db.prepare(
+        "DELETE FROM novel_node_positions WHERE node_type = 'chapter' AND entity_id = ?",
+      ).run(id)
+      // timeline_invalidations.start_chapter_id 是 RESTRICT 外键：不清掉锚定在
+      // 被删章的失效记录，DELETE 章节会直接 FK 报错、整个事务回滚。
+      // 失效标记随重排失去意义（被标 stale 的派生行已按章号删除/平移），删除即可。
+      this.db.prepare(
+        'DELETE FROM novel_timeline_invalidations WHERE start_chapter_id = ?',
+      ).run(id)
       const result = this.db.prepare('DELETE FROM novel_chapters WHERE id = ?').run(id)
       if (result.changes === 0) return false
       const spec = createChapterRenumberSpec(chapter.chapterNumber)

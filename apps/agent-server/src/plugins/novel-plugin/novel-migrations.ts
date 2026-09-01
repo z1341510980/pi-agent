@@ -2634,5 +2634,9 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
       CREATE INDEX IF NOT EXISTS idx_novel_discussion_events_run
         ON novel_discussion_events(run_id, seq);
     `
+  },
+  {
+    id: '122_add_gender_to_novel_characters',
+    sql: `ALTER TABLE novel_characters ADD COLUMN gender TEXT;`
   }
 ]

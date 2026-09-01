@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { hashChapterOutline, parseChapterOutlineDraft } from '../core/chapters/chapter-outline.js'
+import {
+  buildChapterOutlineDraftFromSubmit,
+  createChapterOutlineSubmitTool,
+  formatChapterOutlineSubmitAttempts,
+  hashChapterOutline,
+  parseChapterOutlineDraft,
+  type ChapterOutlineSubmitDraftHolder
+} from '../core/chapters/chapter-outline.js'
 
 function validDraft(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -162,5 +169,103 @@ describe('ChapterOutlineDraft 协议', () => {
   it('章纲 hash 对相同内容稳定，并区分不同内容', () => {
     expect(hashChapterOutline('章纲 A')).toBe(hashChapterOutline('章纲 A'))
     expect(hashChapterOutline('章纲 A')).not.toBe(hashChapterOutline('章纲 B'))
+  })
+})
+
+describe('submit_chapter_outline 工具提交路径', () => {
+  const references = {
+    characters: new Map([['char-1', '林默']]),
+    storylines: new Map([['line-1', '失踪案主线']])
+  }
+
+  /** 直连调用工具 execute（绕过 SDK 的 signal / onUpdate / ctx 形参） */
+  function invokeSubmit(
+    holder: ChapterOutlineSubmitDraftHolder,
+    payload: Record<string, unknown>,
+    toolCallId = 'call-1'
+  ): Promise<{ content: unknown }> {
+    const tool = createChapterOutlineSubmitTool(holder) as unknown as {
+      execute: (id: string, params: unknown) => Promise<{ content: unknown }>
+    }
+    return tool.execute(toolCallId, payload)
+  }
+
+  it('mode=single 但 characterId 为空串时降级为风险，不再打穿整次章纲', () => {
+    const draft = buildChapterOutlineDraftFromSubmit(
+      validDraft({ povSuggestions: [{ characterId: '', mode: 'single' }] }),
+      references
+    )
+
+    expect(draft.povSuggestions).toEqual([])
+    expect(draft.continuityRisks).toEqual([
+      expect.objectContaining({
+        type: 'unknown_entity',
+        description: expect.stringContaining('没有给出角色 ID')
+      })
+    ])
+    // 其余字段照常入库，作者仍拿到可编辑草稿
+    expect(draft.chapterGoal).toBe('确认失踪案的真正目标')
+  })
+
+  it('空白 characterId / 缺 storylineId / 大写 mode 都被归一', () => {
+    const draft = buildChapterOutlineDraftFromSubmit(
+      validDraft({
+        povSuggestions: [
+          { characterId: '   ', mode: 'OMNISCIENT' },
+          { characterId: ' char-1 ', mode: 'single' }
+        ],
+        storylines: [{ storylineId: '  ', intendedProgress: '推进' }]
+      }),
+      references
+    )
+
+    expect(draft.povSuggestions).toEqual([
+      { mode: 'omniscient', characterId: null, characterName: null },
+      { mode: 'single', characterId: 'char-1', characterName: '林默' }
+    ])
+    expect(draft.storylines).toEqual([])
+  })
+
+  it('协议校验失败时错误信息带上实际值', () => {
+    expect(() =>
+      buildChapterOutlineDraftFromSubmit(validDraft({ sceneCountEstimate: 99 }), references)
+    ).toThrow(/sceneCountEstimate.*（实际值 99）/)
+  })
+
+  it('工具 execute 拒绝非法提交、返回纠正提示，并记录每次原始入参', async () => {
+    const holder: ChapterOutlineSubmitDraftHolder = {}
+
+    const rejected = await invokeSubmit(holder, validDraft({ progression: [] }), 'call-1')
+    expect(holder.payload).toBeUndefined()
+    expect(JSON.stringify(rejected.content)).toContain('progression')
+    expect(JSON.stringify(rejected.content)).toContain('重新调用')
+
+    const accepted = await invokeSubmit(holder, validDraft(), 'call-2')
+    expect(JSON.stringify(accepted.content)).toContain('章纲已提交')
+    expect(holder.payload).toBeDefined()
+    expect(holder.attempts).toHaveLength(2)
+    expect(holder.attempts?.[0]).toMatchObject({ accepted: false })
+    expect(holder.attempts?.[0].payload).toMatchObject({ progression: [] })
+    expect(holder.attempts?.[1]).toMatchObject({ accepted: true })
+  })
+
+  it('提交审计文本包含被拒绝的原始入参，便于日志排查', () => {
+    const text = formatChapterOutlineSubmitAttempts([
+      { payload: { povSuggestions: [{ characterId: '', mode: 'single' }] }, accepted: false, reason: '空 ID' },
+      { payload: { chapterGoal: '确认' }, accepted: true }
+    ])
+
+    expect(text).toContain('attempt="1"')
+    expect(text).toContain('accepted="false"')
+    expect(text).toContain('"characterId": ""')
+    expect(text).toContain('attempt="2"')
+    expect(text).toContain('accepted="true"')
+  })
+
+  it('工具 execute 与 build 的判定一致：execute 放过的提交 build 不会再打回', async () => {
+    const holder: ChapterOutlineSubmitDraftHolder = {}
+    await invokeSubmit(holder, validDraft({ povSuggestions: [{ characterId: '', mode: 'single' }] }))
+    expect(holder.payload).toBeDefined()
+    expect(() => buildChapterOutlineDraftFromSubmit(holder.payload!, references)).not.toThrow()
   })
 })

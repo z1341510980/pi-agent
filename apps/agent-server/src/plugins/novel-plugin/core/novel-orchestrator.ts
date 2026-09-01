@@ -78,11 +78,12 @@ import { arbitrateQuality, WORD_COUNT_LIMITS, type QualitySignal } from './quali
 import { scanCliches, formatClicheReport, type ClicheHit } from './quality/cliche-scanner.js'
 import { isNovelFeatureEnabled } from './domain/novel-feature-flags.js'
 import { ChunkCache, buildWithChunkCacheLazy, buildChunkVersionSource } from './prompting/chunk-cache.js'
-import { baseTargetOf, resolveWordBudget } from './chapters/word-budget-resolver.js'
+import { baseTargetOf, resolveWordBudget, resolveWriterMaxTokens } from './chapters/word-budget-resolver.js'
 import { ON_DEMAND_LIMITS } from './prompting/entity-summary.js'
 import { degradeChunks, materializeDegradedChunks, type DegradableChunk } from './prompting/context-budget.js'
 import { buildScenePlanFromNarrativeTask } from './chapters/chapter-scene-plan-adapter.js'
 import { LengduWorkflow, LENGDU_STAGE_AGENT_NAMES } from './lengdu/lengdu-workflow.js'
+import { hashChapterContent } from './stores/chapter-store.js'
 import { persistNovelFailureAudit } from './observability/novel-error-audit.js'
 
 import { buildWriterRewritePlan } from './chapters/writer-rewrite-plan.js'
@@ -93,7 +94,8 @@ import {
   classifyDataQuality,
   resolveCacheProtocol,
 } from '../../../core/observability/model-call-telemetry.js'
-import { findModelBaseUrl } from '../../../core/plugin/cache-control-support.js'
+import { findModelBaseUrl, findModelMaxTokens } from '../../../core/plugin/cache-control-support.js'
+import { getAssistantTerminalError } from '../../../core/plugin/plugin-session-outcome.js'
 import {
   createChapterBudgetUsage,
   evaluateChapterBudget,
@@ -446,6 +448,27 @@ export class NovelOrchestrator {
     return ids
   }
 
+  /**
+   * 清理同项目/章节残留的未消费检查点指令：create-flow 启动路径调用。
+   *
+   * pendingUserMessages 的 key 无 runId 维度，且消费点在 LLM 调用成功之后——
+   * 上一轮流程存在「已 setUserMessages 但没有任何 Agent 成功调用」的窗口
+   * （用户决策后立刻取消、SSE 断开、成本闸门拒绝等）时，残留指令会被下一轮
+   * flow 的第一个 Agent 当成本轮指令注入（陈旧注入）。插话通道有
+   * clearStaleInterjectMessages 对等治理，这里补齐通道 A 的同一保障。
+   */
+  clearStalePendingUserMessages(projectId: string, chapterNumber: number): string[] {
+    const key = this.runKey(projectId, chapterNumber)
+    const stale = this.pendingUserMessages.get(key)
+    if (!stale || stale.length === 0) return []
+    this.pendingUserMessages.delete(key)
+    this.context.logger.info(
+      { projectId, chapterNumber, dropped: stale.length },
+      'create-flow 启动清理：上一流程竞态窗口残留的检查点指令',
+    )
+    return stale
+  }
+
   async createChapterWithFlow(
     projectId: string,
     chapterNumber: number,
@@ -454,6 +477,11 @@ export class NovelOrchestrator {
     guardRewriteCount = 0,
   ): Promise<CreationResult> {
     this.store.assertTimelineAllowsGeneration?.(projectId, chapterNumber)
+    // 全新（非内部递归）启动时清掉上一流程竞态窗口残留的检查点指令。
+    // 内部递归（验收/guard 检查点重写）里，决策端点刚写入的用户指令语义延续，不能清。
+    if (guardRewriteCount === 0 && !options.internalRewrite) {
+      this.clearStalePendingUserMessages(projectId, chapterNumber)
+    }
     if (this.runStorage.getStore()) {
       return this.createChapterWithFlowInContext(projectId, chapterNumber, options, guardRewriteCount)
     }
@@ -580,6 +608,11 @@ export class NovelOrchestrator {
       const MAX_DIRECTOR_TOOL_MISS = 2
       // narrativeDraft 提到 while 外：Director 成功调用工具后，循环退出仍需读取 draft.task
       let narrativeDraft: NarrativeTaskDraftHolder = {}
+      // 是否处于"按用户意见重新规划"轮次：上一轮方案已回写进章节表，
+      // 并以「本章要完成的事」的权威位置出现在 shared 上下文里——
+      // 不显式去锚定的话，Director 会把自己的旧答案当既定事实原样复述
+      //（实测三次重跑产出几乎相同的规划，用户指令被无视）。
+      let isReplan = false
       while (needRewrite) {
         this.emitProgress(options, 'directing', 'phase_change', { message: '导演 Agent 正在分析故事状态...' })
         // input 统一为字符串：避免 runAgent JSON.stringify 对象导致 LLM 收到 JSON 字符串
@@ -596,9 +629,14 @@ export class NovelOrchestrator {
         const submitNarrativeTaskTool = createNovelSubmitNarrativeTaskTool(narrativeDraft)
         // 纠正性重试带显式工具指令：空终答/漏工具更像模型抖动而非理解问题，
         // 直接点名工具比泛泛的"重新规划"更有效。
+        const replanGuard = isReplan
+          ? '\n\n注意：上下文「本章要完成的事」里是你上一轮提交的方案，仅作背景参考，不是既定结论。' +
+            '本次是重新规划：请先读「用户创作指令」，与旧方案冲突时以用户指令为准，' +
+            '必要时推翻旧方案的走向、场景编排和重点，不要原样复述旧方案。'
+          : ''
         const directorPrompt = directorToolMissedCount === 0
-          ? `请依据章节上下文中的章纲、故事状态和节奏约束，为第 ${chapterNumber} 章规划叙事任务。`
-          : `上一轮没有通过 novel_submit_narrative_task 工具提交叙事任务。请立即调用该工具，为第 ${chapterNumber} 章规划叙事任务（任务类型/POV/钩子/场景数等由工具参数承载），不要只输出文本说明。`
+          ? `请依据章节上下文中的章纲、故事状态和节奏约束，为第 ${chapterNumber} 章规划叙事任务。${replanGuard}`
+          : `上一轮没有通过 novel_submit_narrative_task 工具提交叙事任务。请立即调用该工具，为第 ${chapterNumber} 章规划叙事任务（任务类型/POV/钩子/场景数等由工具参数承载），不要只输出文本说明。${replanGuard}`
         try {
           directorResult = await this.runAgent('director', projectId, chapterNumber, directorPrompt, options,
             { extraTools: [submitNarrativeTaskTool] })
@@ -676,6 +714,7 @@ export class NovelOrchestrator {
           // userMessages 已由 setUserMessages 设置，runAgent 会注入 Director 输入
           this.emitProgress(options, 'directing', 'phase_change', { message: '按修改意见重新规划叙事任务...' })
           directorToolMissedCount = 0
+          isReplan = true
           continue
         }
 
@@ -930,7 +969,10 @@ export class NovelOrchestrator {
           const pushbackNarrativeDraft: NarrativeTaskDraftHolder = {}
           const pushbackSubmitTool = createNovelSubmitNarrativeTaskTool(pushbackNarrativeDraft)
           const rewriteDirectorResult = await this.runAgent('director', projectId, chapterNumber,
-            `写作 Agent 对之前的叙事任务提出了异议，请依据既有章纲和节奏约束重新规划第 ${chapterNumber} 章。\n\n## 推回原因\n\n${this.promptBuilder.stripEmDash(pushbackReason)}`,
+            `写作 Agent 对之前的叙事任务提出了异议，请依据既有章纲和节奏约束重新规划第 ${chapterNumber} 章。` +
+            '\n\n注意：上下文「本章要完成的事」里是你上一轮提交的方案，仅作背景参考；' +
+            '本次是重新规划，请针对推回原因调整走向和重点，不要原样复述旧方案。' +
+            `\n\n## 推回原因\n\n${this.promptBuilder.stripEmDash(pushbackReason)}`,
             options,
             { extraTools: [pushbackSubmitTool] },
           )
@@ -1129,7 +1171,7 @@ export class NovelOrchestrator {
               return this.createChapterWithFlow(
                 projectId,
                 chapterNumber,
-                { ...options, arrangedEntities: run.arrangedEntities, resume: undefined },
+                { ...options, arrangedEntities: run.arrangedEntities, resume: undefined, internalRewrite: true },
               )
             }
             requestedRevisionReason = '整章重写次数已达到本章上限，改为局部修订'
@@ -1182,6 +1224,8 @@ export class NovelOrchestrator {
 
       // reviewing 快照是在 lengdu 处理完成后保存的；续跑时绝不能让已读过
       // 该版本的工作流再执行一次，否则会伪造“新 Reader”独立性。
+      // lengdu 读感质量： hoist 到外层作用域，供下方质量门仲裁消费。
+      let lengduQuality: import('./lengdu/lengdu-workflow.js').LengduQualityReport | undefined
       if (!(resume?.entry === 'reviewing' && resume.writerDraft)) {
         const lengduModelId = options.modelId ?? parseNovelModelRef(run.projectModelId)
         const lengduSkillPath = this.promptBuilder.getLengduSkillPath?.()
@@ -1355,7 +1399,11 @@ export class NovelOrchestrator {
           'lengdu 独立读感工作流已完成',
         )
         const quality = lengduResult.quality
-        // P2-1：持久化最近一次读感质量报告（publish 门数据源）
+        lengduQuality = quality
+        // P2-1：持久化最近一次读感质量报告（publish 门数据源）。
+        // 记录读感对应的内容指纹：后续 Reviewer/Reviser 改稿会让结论失效，
+        // publish 门据此判断是拦截还是放行旧结论（与审稿门 contentHash 校验同思路）。
+        const lengduContentHash = hashChapterContent(writerResult)
         const lengduChapter = this.store.getChapter(projectId, chapterNumber)
         if (lengduChapter) {
           try {
@@ -1364,6 +1412,7 @@ export class NovelOrchestrator {
               usedIndependentCalibration: lengduResult.usedIndependentCalibration,
               usedIndependentReader: lengduResult.usedIndependentReader,
               revisionCount: lengduResult.revisionCount,
+              contentHash: lengduContentHash,
               savedAt: Date.now(),
             })
           } catch (persistErr) {
@@ -1487,6 +1536,18 @@ export class NovelOrchestrator {
           action: 'advisory',
           reason: finalPostWriteGuard.reason,
           details: finalPostWriteGuard.details,
+        })
+      }
+      // lengdu 读感门：独立 Reader 判 needs_attention 时与 prose-shape 等信号
+      // 同权仲裁——此前 quality.status 只发一条状态消息，负面读感在主流程
+      // 没有任何执行力（能触发返工的 revise 冷读在工作流内部，判通过即全程旁路）。
+      // degraded（自审降级）是验证强度不足而非负面证据，不产生信号。
+      if (lengduQuality?.status === 'needs_attention') {
+        qualitySignals.push({
+          gateId: 'lengdu-reader',
+          action: 'revise',
+          reason: '独立冷读未通过',
+          details: lengduQuality.summary || '看懂/流畅/好看存在待处理项',
         })
       }
       const qualityDecision = arbitrateQuality(qualitySignals)
@@ -1874,7 +1935,7 @@ export class NovelOrchestrator {
           return this.createChapterWithFlow(
             projectId,
             chapterNumber,
-            { ...options, arrangedEntities: run.arrangedEntities, resume: undefined },
+            { ...options, arrangedEntities: run.arrangedEntities, resume: undefined, internalRewrite: true },
           )
         }
         // 非强制质量门下，预算耗尽可以接受当前正文；强制质量门下在上面已把
@@ -2603,10 +2664,14 @@ export class NovelOrchestrator {
       // 超长天花板：>130% 触发「定向压缩重写」——保留情节节点删空转，
       // 不是整章推倒。P0-2 首版完全放行导致实测写到目标约 2 倍，恢复硬线。
       if (wordCount > targetWords * WORD_COUNT_LIMITS.bloatCeilingRatio) {
+        const maxWords = Math.round(targetWords * WORD_COUNT_LIMITS.bloatCeilingRatio)
         return {
           shouldRewrite: true,
           reason: '字数严重超标',
-          details: `实际 ${wordCount} 字，超过天花板 ${targetWords} 字的 ${Math.round(WORD_COUNT_LIMITS.bloatCeilingRatio * 100)}%（${Math.round((wordCount / targetWords) * 100)}%）`,
+          // 数字口径修正：旧文案把 target 说成「天花板」（"超过天花板 3000 字"），
+          // 与 Writer 首轮 prompt 的「硬上限 3900 字」直接矛盾，且 130%/166% 两个
+          // 百分数并列无标注。这句 details 会进重写 prompt 和检查点数据，必须自洽。
+          details: `实际 ${wordCount} 字，超过硬上限 ${maxWords} 字（目标的 ${Math.round(WORD_COUNT_LIMITS.bloatCeilingRatio * 100)}%），达目标 ${targetWords} 字的 ${Math.round((wordCount / targetWords) * 100)}%`,
         }
       }
 
@@ -3004,14 +3069,18 @@ export class NovelOrchestrator {
     // agentIdentity 是真实前缀，不再伪装成 taskInput 的一部分。
     const taskInputForLog = inputText
 
-    // 附加用户在检查点期间发送的创作指令（消费后清空）
-    // 保留副本用于日志记录
+    // 附加用户在检查点期间发送的创作指令。
+    // 保留副本用于日志记录；⚠️ 此处只读取不删除——旧实现先 delete 再调 LLM，
+    // 一次网关 502 重试就会让这轮指令静默消失且无法恢复。删除移到
+    // session.prompt() 成功返回之后（见下方 consumePendingUserMessages）。
     const pendingMessageKey = this.runKey(projectId, chapterNumber)
     const consumeUserMessages = overrides?.consumeUserMessages !== false
     const userMessages = consumeUserMessages
       ? this.pendingUserMessages.get(pendingMessageKey) ?? []
       : []
-    if (consumeUserMessages) this.pendingUserMessages.delete(pendingMessageKey)
+    const consumePendingUserMessages = (): void => {
+      if (consumeUserMessages) this.pendingUserMessages.delete(pendingMessageKey)
+    }
     const userInstructionsForLog = userMessages.slice()
     if (userMessages.length > 0) {
       // 注入前清洗破折号：用户指令可能含破折号，防止成为 LLM 的示范
@@ -3226,6 +3295,7 @@ export class NovelOrchestrator {
         projectId,
         suffixNarrativeTask.description,
         options.styleExpertIds,
+        constraints.positioning ?? suffixNarrativeTask.positioning,
       )
       if (sceneExpertFocus) {
         suffixContext += `${suffixContext ? '\n\n---\n\n' : ''}${sceneExpertFocus}`
@@ -3416,6 +3486,24 @@ export class NovelOrchestrator {
         // 透传 AgentPage 配置的 modelId（未配置则 undefined，走默认 Provider）
         modelId,
         timeoutMs,
+        // Writer 物理兜底：注册表默认 max_tokens 对硬上限毫无约束力，首稿惯性
+        // 超写（实测 166%）每章白吃一轮压缩。但这个闸不能拧太紧：
+        // 旧实现直接把 maxWords（3900）当 token 传，中文 3000 字已约 2000-3000
+        // token，推理模型的 thinking 块还与正文共享同一配额 —— 顶到上限返回
+        // stopReason='length' 会被 pi SDK 的 isRecoverableLength 判成可恢复截断，
+        // 触发一次 compact+retry，白烧一轮还可能压掉上下文。
+        // 改由 resolveWriterMaxTokens 统一换算（字→token 保守系数 + thinking 预留
+        // + 模型自身 maxTokens 夹紧）；字数纪律仍由 prompt 与 PostWriteGuard 负责。
+        ...(agentType === 'writer' && constraints.wordBudget?.target
+          ? {
+              maxTokens: resolveWriterMaxTokens({
+                maxWords: Math.round(constraints.wordBudget.target * WORD_COUNT_LIMITS.bloatCeilingRatio),
+                modelMaxTokens: modelId
+                  ? findModelMaxTokens(this.context.modelRegistry, modelId.provider, modelId.modelId)
+                  : undefined,
+              }),
+            }
+          : {}),
         emit: options.emit,
         emitRaw: false, // novel 不需要 RAW 事件（chat 才用于调试）
         onFirstText: () => {
@@ -3442,14 +3530,18 @@ export class NovelOrchestrator {
       // 同时捕获 provider 错误：PI SDK 的 prompt() 不抛错（见 plugin-session-outcome.ts），
       // assistant 终态 stopReason='error'（模型不存在/配额/网络）是故障的唯一信号；
       // 不捕获的话错误被吞成空串——编排误判"无产出"、审计日志 error 为空。
+      //
+      // ⚠️ 必须用 getAssistantTerminalError 的**覆盖赋值**语义，不能只在 error 时赋值：
+      // pi SDK 内部自带重试，实测序列为 error → error → stop（第 3 次写满 3868 字）。
+      // 只赋值不清空会让首次失败一直挂着，成功产出照样被判定失败、整章作废。
+      // 与 plugin-manager 的订阅同口径：成功终答返回空串即清除既有错误。
       capturedLlmError = ''
       unsubscribeUsage = session.subscribe((event: Record<string, unknown>) => {
         if (event.type !== 'message_end') return
         const msg = (event as { message?: Record<string, unknown> }).message
         if (!msg || msg.role !== 'assistant') return
-        if (msg.stopReason === 'error') {
-          capturedLlmError = (msg.errorMessage as string) || '未知 LLM 错误'
-        }
+        const terminalError = getAssistantTerminalError(msg)
+        if (terminalError !== null) capturedLlmError = terminalError
         const usage = extractLlmUsageFromMessage(msg)
         if (usage) capturedUsage = addLlmUsage(capturedUsage, usage)
       })
@@ -3477,10 +3569,26 @@ export class NovelOrchestrator {
       // 实时发射 TEXT_MESSAGE_CONTENT 增量事件，prompt() 只负责触发 LLM 调用。
       // 首 token 检测由 createAgUiSession 工厂的 onFirstText 回调完成（见上方调用）。
       const result = await session.prompt()
-      // provider 错误转真异常：让 catch 记录真实原因、流程错误对用户可见
-      if (capturedLlmError) {
+      // provider 错误转真异常：让 catch 记录真实原因、流程错误对用户可见。
+      //
+      // 但**有可用产出时不作废**：Pi Session 在终答之后仍会继续往返（自动压缩等
+      // 维护动作），那些往返的 stopReason='error' 也会被上面的订阅捕获。实测
+      // Writer 已写满 3868 字（trace llm_response=completed），却因产出之后一次
+      // "A server error occurred" 让整章 create-flow 报废、正文丢弃。
+      // 产出已经拿到就以产出为准，provider 错误降级为审计日志里的告警。
+      if (capturedLlmError && !result.trim()) {
         throw new Error(`LLM 调用失败: ${capturedLlmError}`)
       }
+      if (capturedLlmError) {
+        this.context.logger.warn(
+          { agentType, projectId, chapterNumber, providerError: capturedLlmError, resultLength: result.length },
+          'Agent 已拿到完整产出，但事件流后续报了 provider 错误：以产出为准，不作废本轮',
+        )
+      }
+      // LLM 已成功看到并处理本轮指令，此刻消费（删除）检查点指令才是安全的。
+      // prompt() 抛错时保留消息：runAgent 的重试外壳重进 runAgentOnce 仍能取到，
+      // 用户这轮修改意见不会因一次网关抖动而静默丢失。
+      consumePendingUserMessages()
       streamEmitter.finishTextMessage()
 
       this.context.logger.info(

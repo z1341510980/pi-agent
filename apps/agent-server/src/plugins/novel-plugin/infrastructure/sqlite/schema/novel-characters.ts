@@ -5,6 +5,7 @@ export const novelCharacters = sqliteTable('novel_characters', {
   projectId: text('project_id').notNull(),
   name: text('name').notNull(),
   description: text('description').notNull(),
+  gender: text('gender'),
   identity: text('identity').notNull(),
   personality: text('personality').notNull(),
   appearance: text('appearance').notNull(),

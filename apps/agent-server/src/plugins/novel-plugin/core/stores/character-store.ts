@@ -51,6 +51,7 @@ export class CharacterStore {
     this.repository.insertCharacter({
       id: full.id, project_id: full.projectId,
       name: bindString(full.name, '未命名'), description: bindString(full.description),
+      gender: full.gender ?? null,
       identity: bindString(full.identity), personality: bindString(full.personality), appearance: bindString(full.appearance),
       current_state: bindString(full.currentState), current_goal: bindString(full.currentGoal), current_pressure: bindString(full.currentPressure),
       secret: bindString(full.secret), arc_stage: bindString(full.arcStage, 'introduction'), arc_history: bindString(full.arcHistory, '[]'),
@@ -70,6 +71,7 @@ export class CharacterStore {
     const updated = { ...current, ...patch, id, updatedAt: now() }
     this.repository.updateCharacter(id, {
       id, project_id: current.projectId, name: bindString(updated.name, '未命名'), description: bindString(updated.description),
+      gender: updated.gender ?? null,
       identity: bindString(updated.identity), personality: bindString(updated.personality), appearance: bindString(updated.appearance),
       current_state: bindString(updated.currentState), current_goal: bindString(updated.currentGoal),
       current_pressure: bindString(updated.currentPressure), secret: bindString(updated.secret),
@@ -226,8 +228,11 @@ export class CharacterStore {
 
   private rowToCharacter(row: CharacterRow): NovelCharacter {
     const validPlotRoles = ['protagonist', 'main_opponent', 'supporting', 'function', 'background']
+    const validGenders = ['male', 'female', 'other']
     return {
       id: row.id, projectId: row.project_id, name: row.name, description: row.description,
+      // 旧数据无 gender 列值（迁移 122 前创建），白名单外一律视为未设定
+      gender: (row.gender && validGenders.includes(row.gender) ? row.gender : null) as NovelCharacter['gender'],
       identity: row.identity, personality: row.personality, appearance: row.appearance,
       currentState: row.current_state, currentGoal: row.current_goal,
       currentPressure: row.current_pressure, secret: row.secret,

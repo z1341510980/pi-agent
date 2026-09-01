@@ -52,6 +52,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
   const characters = useNovelDataStore((s) => s.characters)
   const chapters = useNovelDataStore((s) => s.chapters)
   const volumes = useNovelDataStore((s) => s.volumes)
+  const narratives = useNovelDataStore((s) => s.narratives)
   const conflicts = useNovelDataStore((s) => s.conflicts)
   const clues = useNovelDataStore((s) => s.clues)
   const foreshadows = useNovelDataStore((s) => s.foreshadows)
@@ -276,6 +277,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
                   characters={characters}
                   chapters={chapters}
                   volumes={volumes}
+                  narratives={narratives}
                   conflicts={conflicts}
                   clues={clues}
                   foreshadows={foreshadows}

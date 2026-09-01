@@ -216,6 +216,91 @@ describe('ChapterOutlineGenerator', () => {
     })
   })
 
+  it('工具入参落库：日志 tools 段保存模型实际提交的结构化参数', async () => {
+    const generator = createGenerator()
+    await generator.generate({
+      projectId,
+      chapterNumber: 2,
+      mode: 'rewrite',
+      currentOutline: '调查旧城区。',
+      expectedOutline: '调查旧城区。'
+    })
+
+    const log = store.listAgentLogsByProject(projectId, 10)[0]
+    const detail = store.getAgentLog(log.id)!
+    expect(detail.toolNames).toEqual(['submit_chapter_outline'])
+    expect(detail.tools).toHaveLength(1)
+    expect(detail.tools[0]).toMatchObject({
+      tool: 'submit_chapter_outline',
+      attempt: 1,
+      accepted: true
+    })
+    // 原始入参可回溯：模型填的 characterId 直接可见
+    expect(JSON.stringify(detail.tools[0])).toContain(characterId)
+    // result 段同时带可读文本副本（助手确认语只有一句话，看不出提交了什么）
+    expect(detail.result).toContain('<tool_submission name="submit_chapter_outline"')
+  })
+
+  it('提交被协议打回时报错带实际值，且被拒绝的入参仍然落库', async () => {
+    // 上下文没有角色的新项目最高频的漂移：mode=single + 空 characterId。
+    // 空 ID 已降级为风险，这里改用无法归一的越界值验证「报错带实际值 + 入参落库」。
+    modelResult = JSON.stringify({
+      ...JSON.parse(validModelResult(characterId, storylineId)),
+      sceneCountEstimate: 99
+    })
+    const generator = createGenerator()
+
+    await expect(
+      generator.generate({
+        projectId,
+        chapterNumber: 2,
+        mode: 'rewrite',
+        currentOutline: '调查旧城区。',
+        expectedOutline: '调查旧城区。'
+      })
+    ).rejects.toThrow(/sceneCountEstimate.*实际值 99/)
+
+    const detail = store.getAgentLog(store.listAgentLogsByProject(projectId, 10)[0].id)!
+    expect(detail.status).toBe('error')
+    expect(detail.tools[0]).toMatchObject({ accepted: false })
+    expect(JSON.stringify(detail.tools[0])).toContain('99')
+  })
+
+  it('mode=single 但 characterId 为空时降级为风险，章纲照常产出', async () => {
+    modelResult = JSON.stringify({
+      ...JSON.parse(validModelResult(characterId, storylineId)),
+      povSuggestions: [{ characterId: '', mode: 'single' }]
+    })
+    const generator = createGenerator()
+    const result = await generator.generate({
+      projectId,
+      chapterNumber: 2,
+      mode: 'rewrite',
+      currentOutline: '调查旧城区。',
+      expectedOutline: '调查旧城区。'
+    })
+
+    expect(result.draft.povSuggestions).toEqual([])
+    expect(result.draft.continuityRisks).toEqual([
+      expect.objectContaining({ type: 'unknown_entity' })
+    ])
+  })
+
+  it('上下文没有角色时任务指令显式禁止 mode=single', async () => {
+    // 删掉唯一角色 → characterNames 为空 → 提示词需封口，否则模型只能填空 ID
+    store.deleteCharacter(characterId)
+    const generator = createGenerator()
+    await generator.generate({
+      projectId,
+      chapterNumber: 2,
+      mode: 'rewrite',
+      currentOutline: '调查旧城区。',
+      expectedOutline: '调查旧城区。'
+    }).catch(() => undefined)
+
+    expect(capturedOptions?.userMessage).toContain('禁止 mode=single')
+  })
+
   it('模型返回非法结构时失败且不修改原章纲', async () => {
     modelResult = JSON.stringify({ version: 1, outlineText: '字段不足' })
     const generator = createGenerator()

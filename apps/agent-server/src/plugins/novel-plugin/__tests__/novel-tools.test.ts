@@ -109,6 +109,32 @@ describe('novel-tools - novel_submit_narrative_task tool', () => {
     const draft: NarrativeTaskDraftHolder = {}
     expect(draft.task).toBeUndefined()
   })
+
+  it('narrativeTask 超过 800 字硬上限：拒绝写入 draft 并返回纠正提示', async () => {
+    // 防御式字数闸：任务文本超限 = 一章塞了整条事件链，Writer 只能平均用力，
+    // 导致主次不分 + 惯性超写（2026-09-01 实测 narrativeTask 600+ 字平铺、6 个必须事件）。
+    const draft: NarrativeTaskDraftHolder = {}
+    const tool = createNovelSubmitNarrativeTaskTool(draft)
+
+    const result = await tool.execute('test-call-id', {
+      taskType: 'advance_mainline',
+      priority: 'high',
+      narrativeTask: '核心事件'.repeat(500),
+      secondaryTasks: [],
+      requiredReferences: [],
+      chapterEndingHook: { type: 'suspense', description: '钩子' },
+      povCharacters: ['叶明远'],
+      sceneCount: 3,
+      positioning: 'high_pressure',
+      timelineOffset: { days: 0, description: '同日' },
+    }, undefined, undefined, undefined as never)
+
+    expect(draft.task).toBeUndefined()
+    const text = (result.content[0] as { text: string }).text
+    expect(text).toContain('过长')
+    expect(text).toContain('800 字')
+    expect(text).toContain('核心事件')
+  })
 })
 
 // ── Reviewer 工具：novel_submit_review ──

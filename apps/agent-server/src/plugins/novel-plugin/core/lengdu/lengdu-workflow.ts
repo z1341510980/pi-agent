@@ -623,8 +623,22 @@ class LengduReferences {
 
 const BUNDLED_PROFILES_DIR = join(dirname(fileURLToPath(import.meta.url)), 'profiles')
 
-function readerPassed(report: string): boolean {
-  return /看懂：通过/.test(report) && /流畅：顺畅/.test(report) && /好看：想马上继续/.test(report)
+/**
+ * 循环控制与质量报告共用同一套判定。
+ *
+ * 旧实现两处口径不一致：这里用宽松正则（`看懂：通过（…）`也算过）判"不修订"，
+ * buildQualityReport 用严格全等判 needs_attention——出现"不修订但拦发布"的矛盾态。
+ * 统一走 parseGateVerdict：修订触发与报告结论永远一致。
+ */
+export function readerPassed(report: string): boolean {
+  const passing: Array<['看懂' | '流畅' | '好看', string]> = [
+    ['看懂', '通过'],
+    ['流畅', '顺畅'],
+    ['好看', '想马上继续'],
+  ]
+  return passing.every(([label, passingValue]) =>
+    parseGateVerdict(report, label, passingValue) === 'passed'
+  )
 }
 
 function buildQualityReport(input: {

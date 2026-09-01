@@ -50,6 +50,110 @@ export interface ChapterOutlineReferenceNames {
   storylines: ReadonlyMap<string, string>
 }
 
+/** 协议允许的最大风险条数（与 rawChapterOutlineDraftSchema 保持一致） */
+const MAX_CONTINUITY_RISKS = 20
+
+function readByPath(root: unknown, path: ReadonlyArray<PropertyKey>): unknown {
+  let node: unknown = root
+  for (const key of path) {
+    if (node === null || node === undefined) return undefined
+    if (typeof node !== 'object') return undefined
+    node = (node as Record<PropertyKey, unknown>)[key]
+  }
+  return node
+}
+
+/**
+ * 把 zod 校验失败翻译成带「实际值」的错误信息。
+ *
+ * 只报 `povSuggestions.0.characterId Too small` 时无法判断模型到底传了什么
+ * （空串？纯空格？数字？），只能靠猜。把实际值一并带出来，日志和界面都能直接定位。
+ */
+function describeSchemaFailure(prefix: string, error: z.ZodError, value: unknown): Error {
+  const issue = error.issues[0]
+  const path = issue?.path.join('.') || 'root'
+  const actual = issue ? readByPath(value, issue.path) : undefined
+  let actualText = ''
+  if (issue) {
+    let serialized: string
+    try {
+      serialized = JSON.stringify(actual)
+    } catch {
+      serialized = String(actual)
+    }
+    if (serialized === undefined) serialized = 'undefined'
+    if (serialized.length > 200) serialized = `${serialized.slice(0, 200)}…`
+    actualText = `（实际值 ${serialized}）`
+  }
+  return new Error(`${prefix}${path} ${issue?.message ?? '字段无效'}${actualText}`)
+}
+
+/** 协议版本只是标签：字符串数字、自增版本号、缺失都归一为当前版本。 */
+function normalizeProtocolVersion(record: Record<string, unknown>): void {
+  if (!('version' in record) || record.version === undefined || record.version === null) {
+    record.version = 1
+    return
+  }
+  const numeric =
+    typeof record.version === 'number'
+      ? record.version
+      : Number.parseInt(String(record.version), 10)
+  if (Number.isFinite(numeric) && numeric > 0) record.version = 1
+}
+
+/**
+ * POV / 故事线引用的漂移归一。
+ *
+ * 实测最高频的一类打穿：上下文里一个角色都没有（新项目、实体还没抽取），
+ * 模型仍按提示词给出 `{ mode: 'single' }`，characterId 只能填空串 —— 空串命中
+ * `z.string().min(1)`，整次章纲直接作废。ID 本身不可信（后续还要按引用表校验），
+ * 空引用没有任何信息量，丢弃并记一条风险即可，不该让整章重跑。
+ *
+ * @returns 需要追加到 continuityRisks 的说明（由调用方在解析后合并，避免撑爆 max(20)）
+ */
+function normalizeReferenceDrift(record: Record<string, unknown>): string[] {
+  const notes: string[] = []
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    !!value && typeof value === 'object' && !Array.isArray(value)
+  const trimId = (value: unknown): string | undefined => {
+    if (typeof value !== 'string') return undefined
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : undefined
+  }
+
+  if (Array.isArray(record.povSuggestions)) {
+    record.povSuggestions = record.povSuggestions.filter((item) => {
+      // 非对象项留给 zod 报错：这里只归一"结构对但值漂移"的情况
+      if (!isRecord(item)) return true
+      if (typeof item.mode === 'string') item.mode = item.mode.trim().toLowerCase()
+      // 空串 characterId 对 single 是缺引用，对 omniscient/none 也过不了 min(1)
+      const characterId = trimId(item.characterId)
+      if (characterId) item.characterId = characterId
+      else if ('characterId' in item) delete item.characterId
+      if (item.mode === 'single' && !characterId) {
+        notes.push('模型提交了 mode=single 的 POV 建议但没有给出角色 ID，该建议已忽略')
+        return false
+      }
+      return true
+    })
+  }
+
+  if (Array.isArray(record.storylines)) {
+    record.storylines = record.storylines.filter((item) => {
+      if (!isRecord(item)) return true
+      const storylineId = trimId(item.storylineId)
+      if (storylineId) {
+        item.storylineId = storylineId
+        return true
+      }
+      notes.push('模型提交了缺少故事线 ID 的推进建议，该建议已忽略')
+      return false
+    })
+  }
+
+  return notes
+}
+
 function stripJsonFence(text: string): string {
   const trimmed = text.trim()
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)
@@ -261,35 +365,31 @@ export function parseChapterOutlineDraft(
   // 结构漂移归一先执行：剥包装 / 别名补位 / 基元矫正；
   // 随后再做协议版本归一化（内层的 "1"/自增值也会随对象一起被归一）。
   let normalized = normalizeDraftContainer(json)
+  const driftNotes: string[] = []
   if (normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
     const record = normalized as Record<string, unknown>
-    if (!('version' in record) || record.version === undefined || record.version === null) {
-      record.version = 1
-    } else {
-      const numeric =
-        typeof record.version === 'number'
-          ? record.version
-          : Number.parseInt(String(record.version), 10)
-      if (Number.isFinite(numeric) && numeric > 0) record.version = 1
-    }
+    normalizeProtocolVersion(record)
+    driftNotes.push(...normalizeReferenceDrift(record))
   }
 
   const parsed = rawChapterOutlineDraftSchema.safeParse(normalized)
   if (!parsed.success) {
-    const issue = parsed.error.issues[0]
-    const path = issue?.path.join('.') || 'root'
-    throw new Error(`章纲模型返回不符合协议：${path} ${issue?.message ?? '字段无效'}`)
+    throw describeSchemaFailure('章纲模型返回不符合协议：', parsed.error, normalized)
   }
 
-  return resolveDraftReferences(parsed.data, references)
+  return resolveDraftReferences(parsed.data, references, driftNotes)
 }
 
 /** POV/故事线 ID 解析 + 风险合并 + 版本钉回（文本解析与工具提交共用） */
 function resolveDraftReferences(
   data: z.infer<typeof rawChapterOutlineDraftSchema>,
-  references: ChapterOutlineReferenceNames
+  references: ChapterOutlineReferenceNames,
+  driftNotes: readonly string[] = []
 ): ChapterOutlineDraft {
   const risks: ChapterOutlineContinuityRisk[] = [...data.continuityRisks]
+  for (const note of driftNotes) {
+    appendUniqueRisk(risks, { type: 'unknown_entity', severity: 'medium', description: note })
+  }
   const povSuggestions: ChapterOutlineDraft['povSuggestions'] = data.povSuggestions.flatMap<
     ChapterOutlineDraft['povSuggestions'][number]
   >(
@@ -327,7 +427,7 @@ function resolveDraftReferences(
     version: 1 as const,
     povSuggestions,
     storylines,
-    continuityRisks: risks.slice(0, 20)
+    continuityRisks: risks.slice(0, MAX_CONTINUITY_RISKS)
   }
 }
 
@@ -337,8 +437,24 @@ function resolveDraftReferences(
 // 包装、povSuggestions 字符串数组等漂移反复打穿校验。改为闭包捕获式提交工具：
 // 参数结构由 provider 约束、SDK 校验，文本解析降级为兜底路径。
 
+export interface ChapterOutlineSubmitAttempt {
+  /** 模型这次调用工具实际传入的原始参数（未经归一） */
+  payload: Record<string, unknown>
+  /** 是否通过协议校验（false 时已向模型返回纠正提示） */
+  accepted: boolean
+  /** 未通过时的具体原因（含实际值） */
+  reason?: string
+}
+
 export interface ChapterOutlineSubmitDraftHolder {
   payload?: Record<string, unknown>
+  /**
+   * 每次工具调用的原始参数快照（含被拒绝的）。
+   *
+   * 之前只保留最终 payload，模型提交被 schema 打回时日志里只剩一句
+   * "povSuggestions.0.characterId Too small"，看不到模型到底传了什么。
+   */
+  attempts?: ChapterOutlineSubmitAttempt[]
 }
 
 const ChapterOutlineSubmitParams = Type.Object({
@@ -354,7 +470,12 @@ const ChapterOutlineSubmitParams = Type.Object({
   sceneCountEstimate: Type.Integer({ minimum: 1, maximum: 20, description: '场景数估算' }),
   povSuggestions: Type.Array(
     Type.Object({
-      characterId: Type.Optional(Type.String({ description: 'mode=single 时必填的章节角色 ID' })),
+      characterId: Type.Optional(
+        Type.String({
+          description:
+            'mode=single 时必填的已有角色 ID；不得填空字符串或占位符。上下文里没有角色时改用 mode=omniscient 并省略本字段'
+        })
+      ),
       mode: Type.Union([
         Type.Literal('single'),
         Type.Literal('omniscient'),
@@ -385,6 +506,42 @@ const ChapterOutlineSubmitParams = Type.Object({
   )
 })
 
+type OutlineSubmitValidation =
+  | { ok: true; data: z.infer<typeof rawChapterOutlineDraftSchema>; driftNotes: string[] }
+  | { ok: false; error: Error }
+
+/**
+ * 工具提交与文本兜底共用的一次归一 + 校验。
+ *
+ * 归一化在校验之前发生，所以工具 execute 里的防御式检查与
+ * buildChapterOutlineDraftFromSubmit 的最终校验判定完全一致 ——
+ * 不会出现"execute 放过、build 再打回"的错位。
+ */
+function validateOutlineSubmitPayload(
+  payload: Record<string, unknown>,
+  errorPrefix: string
+): OutlineSubmitValidation {
+  const normalized: Record<string, unknown> = { ...payload }
+  if (Array.isArray(normalized.povSuggestions)) {
+    normalized.povSuggestions = normalized.povSuggestions.map((item) =>
+      item && typeof item === 'object' && !Array.isArray(item) ? { ...item } : item
+    )
+  }
+  if (Array.isArray(normalized.storylines)) {
+    normalized.storylines = normalized.storylines.map((item) =>
+      item && typeof item === 'object' && !Array.isArray(item) ? { ...item } : item
+    )
+  }
+  normalizeProtocolVersion(normalized)
+  const driftNotes = normalizeReferenceDrift(normalized)
+
+  const parsed = rawChapterOutlineDraftSchema.safeParse(normalized)
+  if (!parsed.success) {
+    return { ok: false, error: describeSchemaFailure(errorPrefix, parsed.error, normalized) }
+  }
+  return { ok: true, data: parsed.data, driftNotes }
+}
+
 export function createChapterOutlineSubmitTool(
   draft: ChapterOutlineSubmitDraftHolder
 ): ToolDefinition<typeof ChapterOutlineSubmitParams> {
@@ -396,10 +553,26 @@ export function createChapterOutlineSubmitTool(
       '不要在对话文本中输出 JSON 或 Markdown 围栏。',
     parameters: ChapterOutlineSubmitParams,
     async execute(_toolCallId, params) {
-      draft.payload = params as unknown as Record<string, unknown>
-      // 防御式摘要：SDK 校验正常时字段齐备，直连调用（测试/宽松 provider）缺字段也不崩
-      const outlineLength = typeof params.outlineText === 'string' ? params.outlineText.length : 0
-      const progressionCount = params.progression?.length ?? 0
+      const raw = params as unknown as Record<string, unknown>
+      const attempts = (draft.attempts ??= [])
+      // 防御式校验：不合法不写 draft，返回纠正提示让模型在同一会话内重调工具，
+      // 而不是等到会话结束才由 build 抛错、整章作废。
+      const validation = validateOutlineSubmitPayload(raw, '章纲提交参数不符合协议：')
+      if (!validation.ok) {
+        attempts.push({ payload: raw, accepted: false, reason: validation.error.message })
+        return {
+          content: [{
+            type: 'text',
+            text: `${validation.error.message}\n请修正后重新调用 submit_chapter_outline。`
+          }],
+          details: undefined
+        }
+      }
+
+      draft.payload = raw
+      attempts.push({ payload: raw, accepted: true })
+      const outlineLength = validation.data.outlineText.length
+      const progressionCount = validation.data.progression.length
       return {
         content: [{
           type: 'text',
@@ -419,24 +592,32 @@ export function buildChapterOutlineDraftFromSubmit(
   payload: Record<string, unknown>,
   references: ChapterOutlineReferenceNames
 ): ChapterOutlineDraft {
-  const normalized = { ...(payload as Record<string, unknown>) }
-  if (!('version' in normalized) || normalized.version === undefined || normalized.version === null) {
-    normalized.version = 1
-  } else {
-    const numeric =
-      typeof normalized.version === 'number'
-        ? normalized.version
-        : Number.parseInt(String(normalized.version), 10)
-    if (Number.isFinite(numeric) && numeric > 0) normalized.version = 1
-  }
+  const validation = validateOutlineSubmitPayload(payload, '章纲提交参数不符合协议：')
+  if (!validation.ok) throw validation.error
+  return resolveDraftReferences(validation.data, references, validation.driftNotes)
+}
 
-  const parsed = rawChapterOutlineDraftSchema.safeParse(normalized)
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0]
-    const path = issue?.path.join('.') || 'root'
-    throw new Error(`章纲提交参数不符合协议：${path} ${issue?.message ?? '字段无效'}`)
-  }
-  return resolveDraftReferences(parsed.data, references)
+/** 把工具提交记录渲染成可读审计文本（写入 agent 日志的 result 段）。 */
+export function formatChapterOutlineSubmitAttempts(
+  attempts: readonly ChapterOutlineSubmitAttempt[] | undefined
+): string {
+  if (!attempts || attempts.length === 0) return ''
+  return attempts
+    .map((attempt, index) => {
+      let body: string
+      try {
+        body = JSON.stringify(attempt.payload, null, 2)
+      } catch {
+        body = String(attempt.payload)
+      }
+      const head =
+        `<tool_submission name="submit_chapter_outline" attempt="${index + 1}" ` +
+        `accepted="${attempt.accepted}"` +
+        (attempt.reason ? ` reason="${attempt.reason.replace(/"/g, "'")}"` : '') +
+        '>'
+      return `${head}\n${body}\n</tool_submission>`
+    })
+    .join('\n\n')
 }
 
 export function hashChapterOutline(outline: string | null | undefined): string {

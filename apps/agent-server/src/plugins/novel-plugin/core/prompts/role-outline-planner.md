@@ -47,4 +47,4 @@
   ]
 }
 
-mode 只能是 single、omniscient 或 none。single 必须携带已有角色的 characterId；omniscient 或 none 不得携带 characterId。风险 type 只能是 continuity、unknown_entity、timeline 或 requires_confirmation，severity 只能是 low、medium 或 high。
+mode 只能是 single、omniscient 或 none。single 必须携带已有角色的 characterId；omniscient 或 none 不得携带 characterId。characterId 和 storylineId 只能是输入上下文里真实出现过的 ID，禁止填空字符串、占位符或自造 ID：上下文里没有任何角色时用 mode 为 omniscient 的建议，没有任何故事线时 storylines 留空数组。风险 type 只能是 continuity、unknown_entity、timeline 或 requires_confirmation，severity 只能是 low、medium 或 high。

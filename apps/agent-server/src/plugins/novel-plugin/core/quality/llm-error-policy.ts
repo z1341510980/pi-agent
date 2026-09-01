@@ -93,6 +93,8 @@ const TRANSIENT_PATTERNS: readonly RegExp[] = [
   // 流被掐断：拿到了部分内容但没有终止原因
   /stream ended without finish_reason/i,
   /premature close/i,
+  // undici 在响应体被上游/代理中途销毁时抛 `TypeError: terminated`（实测 Writer 111s 后失败整章作废）
+  /\bterminated\b/i,
   // 连接层
   /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE/,
   /socket hang up/i,

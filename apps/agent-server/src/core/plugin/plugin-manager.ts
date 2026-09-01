@@ -2039,6 +2039,16 @@ export class PluginManager {
         // Pi SDK 在 LLM 调用失败时不抛异常，而是产生 stopReason="error" 的 message_end 事件。
         // 这里捕获错误信息，供 prompt/promptStream 在调用后检查并抛出，避免"空响应+success"的假象。
         let lastErrorMessage = ''
+        /**
+         * 本轮是否已收到成功的终答 assistant 消息（stopReason=stop/length）。
+         *
+         * 终答之后 Pi Session 仍会继续往返（自动压缩等维护动作），这些往返同样会
+         * emit `message_end`。若把其中的 `stopReason='error'` 计入 `lastErrorMessage`，
+         * 已经完整产出的正文会被判定为失败 —— 实测 Writer 写满 3868 字（trace 里
+         * llm_response 已记 completed），却因产出后一次 "A server error occurred"
+         * 让整章 create-flow 作废。终答落地后的失败只记日志，不污染本轮结果。
+         */
+        let sawFinalAssistantSuccess = false
         let resolveFinalAssistant: (() => void) | undefined
         // ── 临时诊断（2026-08-26 群聊 Director 空响应）：统计全部 assistant 事件类型
         //    与 reasoning/text 各自的字符量。排查完删除。
@@ -2113,21 +2123,25 @@ export class PluginManager {
               diagTextChars = 0
               diagReasoningChars = 0
             }
-            if (terminalError !== null) {
+            if (terminalError !== null && !sawFinalAssistantSuccess) {
               lastErrorMessage = terminalError
             }
             if (terminalError) {
               logger.error(
                 {
                   threadId,
-                  errorMessage: lastErrorMessage,
+                  errorMessage: terminalError,
                   provider: message?.provider,
-                  model: message?.model
+                  model: message?.model,
+                  afterFinalAssistant: sawFinalAssistantSuccess
                 },
-                'Pi Session LLM 调用失败（message_end stopReason=error）'
+                sawFinalAssistantSuccess
+                  ? 'Pi Session 终答之后的维护往返失败（不影响本轮结果）'
+                  : 'Pi Session LLM 调用失败（message_end stopReason=error）'
               )
             }
             if (isFinalAssistantSuccess(message)) {
+              sawFinalAssistantSuccess = true
               resolveFinalAssistant?.()
             }
             return
@@ -2678,6 +2692,7 @@ export class PluginManager {
 
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
+            sawFinalAssistantSuccess = false // 重置：本轮终答标记不跨轮沿用
             const promptTurnStartedAt = Date.now()
             // message_end(stop/length) 已代表正文完成。Pi SDK 随后的自动压缩
             // 属于 Session 维护，不应阻塞一次性的 create-flow Agent。
@@ -2765,6 +2780,7 @@ export class PluginManager {
 
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
+            sawFinalAssistantSuccess = false // 重置：本轮终答标记不跨轮沿用
             const promptStreamTurnStartedAt = Date.now()
             // 临时订阅 text_delta 事件，在 prompt 执行期间推送 delta 给调用方。
             const streamUnsubscribe = threadSession.session.subscribe(
@@ -2774,7 +2790,8 @@ export class PluginManager {
                   const terminalError = getAssistantTerminalError(message, {
                     requireComplete: options.responseFormat === 'json'
                   })
-                  if (terminalError !== null) {
+                  // 与外层订阅同口径：终答成功后的维护往返失败不污染本轮结果
+                  if (terminalError !== null && !sawFinalAssistantSuccess) {
                     lastErrorMessage = terminalError
                   }
                   return

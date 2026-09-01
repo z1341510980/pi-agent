@@ -141,6 +141,12 @@ export interface CreationOptions {
    */
   resume?: import('./workflow-run-store.js').WorkflowResumeState
   /**
+   * 内部递归标记（验收/guard 检查点选择整章重写时由 orchestrator 自己传入）。
+   * 递归不是全新流程：用户刚通过决策端点写入的检查点指令语义延续，
+   * 不能被启动清理（clearStalePendingUserMessages）误删。
+   */
+  internalRewrite?: boolean
+  /**
    * 阶段边界快照回调：Director 批准后 / Writer 草稿成稿后 / 正文定稿后触发，
    * 由路由层落库到 WorkflowRunStore（进程崩溃也能保住最后边界）。
    */

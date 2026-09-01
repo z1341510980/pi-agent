@@ -151,7 +151,8 @@ const SubmitNarrativeTaskParams = Type.Object({
   priority: Type.Union([Type.Literal('high'), Type.Literal('medium'), Type.Literal('low')]),
   narrativeTask: Type.String({
     minLength: 10,
-    description: '给 Writer 看的完整叙事任务文本。包含本章核心目标、情节点、约束说明等，Writer 会基于此创作正文。',
+    maxLength: 800,
+    description: '给 Writer 看的完整叙事任务文本，按场景分段并标注每场核心/过场（核心场景合计占一半以上笔墨）。包含本章核心目标、情节点、约束说明等，Writer 会基于此创作正文。',
   }),
   secondaryTasks: Type.Array(NarrativeTaskTypeEnum, {
     maxItems: 2,
@@ -212,8 +213,29 @@ export function createNovelSubmitNarrativeTaskTool(
     promptSnippet: '提交结构化叙事任务（任务类型/优先级/POV/钩子/时间线等）',
     parameters: SubmitNarrativeTaskParams,
     async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      // 防御式字数闸（宽松 provider 直连时 schema maxLength 可能不生效）：
+      // 任务文本超限=一章塞了整条事件链，Writer 只能平均用力导致主次不分+惯性超写。
+      // 不写 draft，返回纠正提示让模型精简后重调。
+      if (params.narrativeTask.length > 800) {
+        return {
+          content: [{
+            type: 'text',
+            text: `narrativeTask 过长（${params.narrativeTask.length} 字，硬上限 800 字）：一章装不下整条事件链。` +
+              '请只保留不超过 3 个核心事件，按场景分段（标注核心/过场），过场用一句话带过，精简后重新提交；装不下就在任务里指出并建议拆章。'
+          }],
+          details: undefined,
+        }
+      }
       const task: NarrativeTask = {
-        description: params.narrativeTask,
+        // 字面 \n 归一：模型偶发把 JSON 转义残留在字符串值里（\n\n【场景一：…），
+        // 原样落库会让 Writer 看到一整段无换行的文字墙（实测一章 16 处）。
+        description: params.narrativeTask.includes('\\n')
+          ? params.narrativeTask
+              .replace(/\\r\\n/g, '\n')
+              .replace(/\\n/g, '\n')
+              .replace(/\n{3,}/g, '\n\n')
+              .trim()
+          : params.narrativeTask,
         type: params.taskType,
         targetEntity: null,
         priority: params.priority,

@@ -142,6 +142,34 @@ describe('T03-2 等价拆块', () => {
     expect(anchorIds).toContain('recent-recaps')
   })
 
+  it('chapter-info 去重：writer/reviewer 只拿任务指引，director 保留全文', () => {
+    // 实测问题：Director 任务回写章节表后，shared 层（读 DB）与 writer suffix
+    // （读内存 directorTask）各渲染一遍完整任务，逐字重复占上下文 ~8%。
+    const fullChunks = builder.buildChapterContextChunks('p1', 3, NARRATIVE_TASK as never, CONSTRAINTS as never)
+    const fullInfo = fullChunks.find((c) => c.chunkId === 'chapter-info')!
+    expect(fullInfo.content).toContain('继续调查')
+
+    const writerInfo = builder
+      .buildChapterContextChunks('p1', 3, NARRATIVE_TASK as never, CONSTRAINTS as never, undefined, { agentType: 'writer', askStoryEnabled: true })
+      .find((c) => c.chunkId === 'chapter-info')!
+    expect(writerInfo.content).not.toContain('继续调查')
+    expect(writerInfo.content).toContain('本章叙事任务')
+
+    const directorInfo = builder
+      .buildChapterContextChunks('p1', 3, NARRATIVE_TASK as never, CONSTRAINTS as never, undefined, { agentType: 'director', askStoryEnabled: true })
+      .find((c) => c.chunkId === 'chapter-info')!
+    expect(directorInfo.content).toContain('继续调查')
+  })
+
+  it('chapter-info 把任务文本里的字面 \\n 归一为真实换行', () => {
+    const task = { ...NARRATIVE_TASK, description: '承接上文。\\n\\n【场景一】记录。' }
+    const info = builder
+      .buildChapterContextChunks('p1', 3, task as never, CONSTRAINTS as never)
+      .find((c) => c.chunkId === 'chapter-info')!
+    expect(info.content).toContain('承接上文。\n\n【场景一】记录。')
+    expect(info.content).not.toContain('\\n')
+  })
+
   it('有编排时：arranged-entities 替代 story-state（目录切换逻辑保留）', () => {
     const arranged = {
       characterIds: ['c1'],

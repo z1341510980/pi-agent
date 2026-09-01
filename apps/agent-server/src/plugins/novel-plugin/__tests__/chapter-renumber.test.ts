@@ -555,3 +555,143 @@ describe('NovelStore.deleteChapter 事务原子性', () => {
     expect(after.map((c) => c.chapterNumber)).toEqual([1, 2, 3])
   })
 })
+
+describe('NovelStore.deleteChapter 缺口修复（2026-09 审查）', () => {
+  let db: Database.Database
+  let store: NovelStore
+  let projectId: string
+  let chapterIds: Record<number, string>
+
+  beforeEach(() => {
+    db = createTestDb()
+    store = new NovelStore(db)
+    const project = store.createProject({
+      id: randomUUID(),
+      title: '测试项目',
+      genre: 'test',
+      synopsis: '',
+      targetWords: 0,
+      currentVolume: 1,
+      currentChapter: 0,
+      currentStage: 'setup',
+      status: 'active',
+    })
+    projectId = project.id
+    chapterIds = {}
+    for (let i = 1; i <= 4; i++) {
+      const id = randomUUID()
+      chapterIds[i] = id
+      store.createChapter({
+        id,
+        projectId,
+        volume: 1,
+        chapterNumber: i,
+        title: `第${i}章`,
+        content: '',
+        wordCount: 0,
+        status: 'planned',
+        narrativeTask: '',
+        acceptanceResult: null,
+      })
+    }
+  })
+
+  afterEach(() => db.close())
+
+  it('工作流运行快照：被删章的 run 行删除，其余前移（断点不再挂错章）', () => {
+    const insertRun = db.prepare(
+      `INSERT INTO novel_workflow_runs (id, project_id, chapter_number, status, phase, created_at, updated_at)
+       VALUES (?, ?, ?, 'error', 'writing', unixepoch(), unixepoch())`,
+    )
+    insertRun.run(randomUUID(), projectId, 3)
+    const keepId = randomUUID()
+    insertRun.run(keepId, projectId, 4)
+
+    store.deleteChapter(chapterIds[3]!)
+
+    const rows = db.prepare(
+      'SELECT chapter_number FROM novel_workflow_runs WHERE project_id = ? ORDER BY chapter_number',
+    ).all(projectId) as Array<{ chapter_number: number }>
+    expect(rows.map((r) => r.chapter_number)).toEqual([3])
+    // 保留下来的那条确实是被删章之后那条（第 4 章的 run）
+    const kept = db.prepare('SELECT id FROM novel_workflow_runs WHERE project_id = ?').get(projectId) as { id: string }
+    expect(kept.id).toBe(keepId)
+  })
+
+  it('信息层 reveal_chapter：命中被删章置 NULL，其余前移', () => {
+    const insertLayer = db.prepare(
+      `INSERT INTO novel_information_layers (id, project_id, info_description, reveal_chapter, created_at, updated_at)
+       VALUES (?, ?, '信息', ?, unixepoch(), unixepoch())`,
+    )
+    insertLayer.run(randomUUID(), projectId, 3) // 命中被删章
+    insertLayer.run(randomUUID(), projectId, 4)
+
+    store.deleteChapter(chapterIds[3]!)
+
+    const reveals = db.prepare(
+      'SELECT reveal_chapter FROM novel_information_layers WHERE project_id = ? ORDER BY reveal_chapter IS NULL DESC, reveal_chapter',
+    ).all(projectId) as Array<{ reveal_chapter: number | null }>
+    expect(reveals).toHaveLength(2)
+    expect(reveals[0].reveal_chapter).toBeNull() // 命中被删章 → 置 NULL 保留本体
+    expect(reveals[1].reveal_chapter).toBe(3) // 4 → 3
+  })
+
+  it('实体候选 chapter_number：命中被删章置 NULL，其余前移', () => {
+    const insertCandidate = db.prepare(
+      `INSERT INTO novel_entity_candidates (id, project_id, chapter_number, entity_type, payload, status, created_at)
+       VALUES (?, ?, ?, 'character', '{}', 'needs_review', unixepoch())`,
+    )
+    insertCandidate.run(randomUUID(), projectId, 3)
+    insertCandidate.run(randomUUID(), projectId, 4)
+
+    store.deleteChapter(chapterIds[3]!)
+
+    const rows = db.prepare(
+      'SELECT chapter_number FROM novel_entity_candidates WHERE project_id = ? ORDER BY chapter_number IS NULL DESC, chapter_number',
+    ).all(projectId) as Array<{ chapter_number: number | null }>
+    expect(rows[0].chapter_number).toBeNull()
+    expect(rows[1].chapter_number).toBe(3)
+  })
+
+  it('作者意图（chapter_id 无外键）与章节画布节点坐标随章节删除清理', () => {
+    store.createAuthorIntent({
+      id: randomUUID(), projectId, chapterId: chapterIds[3]!, intentType: 'plot',
+      description: '挂在被删章的意图', targetEntityId: null,
+    })
+    store.createAuthorIntent({
+      id: randomUUID(), projectId, chapterId: chapterIds[4]!, intentType: 'plot',
+      description: '挂在保留章的意图', targetEntityId: null,
+    })
+    store.upsertNodePosition(projectId, 'chapter', chapterIds[3]!, 10, 20)
+    store.upsertNodePosition(projectId, 'chapter', chapterIds[4]!, 30, 40)
+
+    store.deleteChapter(chapterIds[3]!)
+
+    const intents = db.prepare(
+      'SELECT description FROM novel_author_intents WHERE project_id = ?',
+    ).all(projectId) as Array<{ description: string }>
+    expect(intents.map((r) => r.description)).toEqual(['挂在保留章的意图'])
+
+    const positions = store.listNodePositions(projectId)
+    expect(positions).toHaveLength(1)
+    expect(positions[0].entityId).toBe(chapterIds[4])
+  })
+
+  it('timeline_invalidations 锚定在被删章时删除成功（RESTRICT 不再卡死事务）', () => {
+    // 旧行为：start_chapter_id 是 ON DELETE RESTRICT，此场景 deleteChapter 直接 FK 报错
+    db.prepare(
+      `INSERT INTO novel_timeline_invalidations
+         (id, project_id, start_chapter_id, start_chapter_number, status, reason, affected_chapters, stale_counts, created_at, updated_at)
+       VALUES (?, ?, ?, 3, 'pending', 'chapter_rewrite', '[3]', '{}', unixepoch(), unixepoch())`,
+    ).run(randomUUID(), projectId, chapterIds[3]!)
+
+    expect(() => store.deleteChapter(chapterIds[3]!)).not.toThrow()
+
+    const remaining = db.prepare(
+      'SELECT COUNT(*) AS n FROM novel_timeline_invalidations WHERE project_id = ?',
+    ).get(projectId) as { n: number }
+    expect(remaining.n).toBe(0)
+    // 章节删除本身成功
+    expect(store.listChapters(projectId)).toHaveLength(3)
+  })
+})

@@ -25,6 +25,7 @@ import {
   type ConflictType,
   type ForeshadowStatus,
   type NovelCharacterPlotRole,
+  type NovelCharacterGender,
   type NovelForeshadowCategory,
   type NovelFactionStatus,
   type NovelFactionStrength,
@@ -546,21 +547,40 @@ export function DebouncedOutlineField({
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isSavingRef = useRef(false)
-  // 用 ref 存最新的 value 和 onSave，避免闭包陷阱
+  // 用 ref 存最新的 value / onSave / draft，避免闭包陷阱；
+  // dirtyRef 标记「存在未保存的本地修改」，用于两处保护（见下）。
   const valueRef = useRef(value)
   const onSaveRef = useRef(onSave)
+  const draftRef = useRef(value)
+  const dirtyRef = useRef(false)
   valueRef.current = value
   onSaveRef.current = onSave
 
-  // value 变化时同步 draft，但保存期间不覆盖
+  const updateDraft = (text: string): void => {
+    draftRef.current = text
+    setDraft(text)
+  }
+
+  // value 变化时同步 draft，但保存期间不覆盖；用户有未保存修改时也不覆盖 ——
+  // 否则后台对账（5 分钟 refetch / data_changed 全量替换 store）会把
+  // 正在输入、尚未触发保存的草稿静默改掉，表现为「改了但树里是旧内容」。
   useEffect(() => {
-    if (!isSavingRef.current) setDraft(value)
+    if (!isSavingRef.current && !dirtyRef.current) updateDraft(value)
   }, [value])
 
-  // 卸载时清理定时器
+  // 卸载时清理定时器，并 flush 防抖窗口内尚未保存的输入。
+  // 旧实现只 clearTimeout：最后 1.5 秒内输入的内容在卸载（切换选中节点等）
+  // 时被静默丢弃，用户视角就是「我改了卷纲/章纲，大纲树没有同步」。
   useEffect(() => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
+      if (dirtyRef.current && !isSavingRef.current) {
+        const pending = draftRef.current
+        if (pending.trim() !== valueRef.current.trim()) {
+          // 卸载后的 setState 是无害 no-op（React 18），保存请求本身继续送达后端
+          void doSaveRef.current(pending)
+        }
+      }
     }
   }, [])
 
@@ -568,6 +588,7 @@ export function DebouncedOutlineField({
   const doSave = async (text: string) => {
     if (text.trim() === valueRef.current.trim()) {
       setSaveState('saved')
+      dirtyRef.current = false
       return
     }
     isSavingRef.current = true
@@ -576,6 +597,7 @@ export function DebouncedOutlineField({
     try {
       await onSaveRef.current(text)
       setSaveState('saved')
+      dirtyRef.current = false
     } catch (err) {
       // 不再只写 console：失败必须让用户看见，否则等于静默丢数据
       setSaveState('error')
@@ -584,6 +606,9 @@ export function DebouncedOutlineField({
       isSavingRef.current = false
     }
   }
+  // 卸载 flush 用：effect 闭包在 mount 时固定，经 ref 转发最新的 doSave
+  const doSaveRef = useRef(doSave)
+  doSaveRef.current = doSave
 
   const scheduleSave = (text: string) => {
     if (timerRef.current) clearTimeout(timerRef.current)
@@ -601,13 +626,14 @@ export function DebouncedOutlineField({
         value={draft}
         placeholder={placeholder}
         onChange={(e) => {
-          setDraft(e.target.value)
+          updateDraft(e.target.value)
           setSaveState('dirty')
+          dirtyRef.current = true
           scheduleSave(e.target.value)
         }}
         onBlur={() => {
           if (timerRef.current) clearTimeout(timerRef.current)
-          void doSave(draft)
+          void doSave(draftRef.current)
         }}
       />
       {/* 已保存时不占视觉空间：稳态无需反复告知 */}
@@ -721,6 +747,13 @@ export const CHARACTER_PLOT_ROLE_OPTIONS: { value: NovelCharacterPlotRole; label
   { value: 'supporting', label: '配角' },
   { value: 'function', label: '功能性' },
   { value: 'background', label: '背景' }
+]
+
+// ── 角色性别（迁移 122；null = 未设定）──
+export const CHARACTER_GENDER_OPTIONS: { value: NovelCharacterGender; label: string }[] = [
+  { value: 'male', label: '男' },
+  { value: 'female', label: '女' },
+  { value: 'other', label: '其他' }
 ]
 
 export const CHAPTER_RHYTHM_OPTIONS: { value: ChapterRhythm; label: string }[] = [

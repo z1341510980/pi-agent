@@ -26,6 +26,7 @@ import {
   deleteCharacter,
   type NovelCharacter,
   type NovelCharacterPlotRole,
+  type NovelCharacterGender,
   type CreateCharacterInput,
 } from '@/api/novel-client'
 import { ModelPicker, type ModelRef } from './model-picker'
@@ -63,6 +64,7 @@ type Step = 'input' | 'review'
 interface EditableForm {
   name: string
   description: string
+  gender: NovelCharacterGender | null
   identity: string
   personality: string
   appearance: string
@@ -78,10 +80,18 @@ interface EditableForm {
   removalImpact: string
 }
 
+/** 性别选项（与 detail-forms/shared 的 CHARACTER_GENDER_OPTIONS 同源） */
+const GENDER_OPTIONS: Array<{ value: NovelCharacterGender; label: string }> = [
+  { value: 'male', label: '男' },
+  { value: 'female', label: '女' },
+  { value: 'other', label: '其他' },
+]
+
 function toForm(c: NovelCharacter): EditableForm {
   return {
     name: c.name,
     description: c.description,
+    gender: c.gender ?? null,
     identity: c.identity,
     personality: c.personality,
     appearance: c.appearance,
@@ -212,6 +222,7 @@ export function CharacterCreateDialog({
       const payload: CreateCharacterInput = {
         name: form.name,
         description: form.description,
+        gender: form.gender ?? null,
         identity: form.identity,
         personality: form.personality,
         appearance: form.appearance,
@@ -440,6 +451,25 @@ export function CharacterCreateDialog({
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">性别</Label>
+                  <Select
+                    value={form.gender ?? '__none__'}
+                    onValueChange={(v) =>
+                      setForm((f) => (f ? { ...f, gender: v === '__none__' ? null : (v as NovelCharacterGender) } : f))
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="未设置" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">未设置</SelectItem>
+                      {GENDER_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">角色层级</Label>
                   <Select
                     value={form.plotRole}
@@ -462,14 +492,14 @@ export function CharacterCreateDialog({
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">删掉影响</Label>
-                  <Input
-                    value={form.removalImpact}
-                    onChange={(e) => setForm((f) => (f ? { ...f, removalImpact: e.target.value } : f))}
-                    placeholder="例如：第二卷的师徒线将断裂"
-                  />
-                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">删掉影响</Label>
+                <Input
+                  value={form.removalImpact}
+                  onChange={(e) => setForm((f) => (f ? { ...f, removalImpact: e.target.value } : f))}
+                  placeholder="例如：第二卷的师徒线将断裂"
+                />
               </div>
               {error && (
                 <p className="flex items-center gap-1 text-xs text-destructive">

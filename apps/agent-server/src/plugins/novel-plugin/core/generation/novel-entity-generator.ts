@@ -188,7 +188,7 @@ function mergePayloadStats(target: PayloadStatsAggregate, source: PayloadStatsAg
 /** character 生成结果（与 NovelCharacterGenerator.GeneratedCharacter 一致） */
 export type GeneratedCharacter = Pick<
   NovelCharacter,
-  'name' | 'description' | 'identity' | 'personality' | 'appearance'
+  'name' | 'description' | 'gender' | 'identity' | 'personality' | 'appearance'
   | 'currentState' | 'currentGoal' | 'currentPressure' | 'secret'
   | 'arcStage' | 'speechStyle'
   | 'longTermDesire' | 'plotRole' | 'removalImpact'
@@ -2046,10 +2046,12 @@ export class NovelEntityGenerator {
       '',
       '【剧情编排（重要，剧情轨道/矩阵「剧情」行的数据来源）】',
       '- narratives 返回本章实际发生的关键剧情事件（本章在讲什么事），每条一句话，主谓宾完整，能让读者不看正文也知道发生了什么。',
-      '- 一章通常 1-4 条：按"本章发生了几件值得记的事"拆分，不要把整章内容压缩成一句，也不要把每个动作都列成一条。',
-      '- narrativeType 从以下枚举选一：advance（剧情推进）/ turn（转折）/ reversal（反转）/ suspense（悬念）/ resolve（收束）/ setup（铺垫）/ reveal（揭示）/ misc（其他）。',
-      '- 本章事件与已有剧情条目延续同一事件线时，写 "已有：<描述开头一段文字>" 复用（后端会追加本章到该条剧情的跨度）。',
-      '- 事件线已完结的旧剧情不要复用；新章的新事件写一句话描述直接新增。',
+      '- 粒度按「事件线」而不是「动作步骤」：同一件事的起承转合（如准备→实施→意外→结果）属于同一条剧情，合并成一句话描述整件事；只有彼此独立、单独值得记的事件才各占一条。禁止把一个连续事件的多个步骤拆成多条。',
+      '- 一章通常 1-3 条：宁可合并成更粗的一条，也不要碎片化。判断标准：这两条放进矩阵会不会被读者当成同一件事？会就合并。',
+      '- narrativeType 从以下枚举选一：advance（剧情推进）/ turn（转折）/ reversal（反转）/ suspense（悬念）/ resolve（收束）/ setup（铺垫）/ reveal（揭示）/ misc（其他）。一条剧情只标一个类型，取本章在该事件线里的主要进展。',
+      '- 跨章延续（重要）：本章事件是「已有剧情」清单中某条的直接延续（同一事件线还在进行，无论进展多少）时，必须写 "已有：" 复用，禁止新建。',
+      '  "已有：" 后面的文字必须从「已有剧情」清单里逐字复制该条 description 的开头（至少前 20 字），禁止凭记忆改写措辞——后端靠描述前缀匹配定位条目，改写会误建成重复剧情。',
+      '- 事件线已完结（已收束/已解决）的旧剧情不要复用；确属新事件线才新增一条。',
       '',
       '【角色功能位编排（重要，避免工具人化）】',
       '每个返回的角色（无论已有/新增）必须指定 plotFunction（从以下 7 个枚举选一）：',

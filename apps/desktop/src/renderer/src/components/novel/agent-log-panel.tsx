@@ -125,6 +125,15 @@ function cacheHitRate(log: NovelAgentLogSummary): number | null {
   return (log.cacheReadTokens / promptTokens) * 100
 }
 
+/** 工具入参可能含循环引用或不可序列化值，序列化失败时退化为字符串。 */
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value)
+  } catch {
+    return String(value)
+  }
+}
+
 // ── 详情展开行 ──
 
 interface LogDetailProps {
@@ -192,6 +201,14 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
       content: log.result,
       length: log.resultLength,
     },
+    ...(log.tools.length > 0 ? [{
+      key: 'tool-args',
+      label: '工具入参（模型实际提交的结构化参数）',
+      icon: Wrench,
+      color: 'text-violet-600 dark:text-violet-400',
+      content: safeStringify(log.tools),
+      length: safeStringify(log.tools).length,
+    }] : []),
     ...(log.error ? [{
       key: 'error',
       label: '错误审计（信息、堆栈与代码位置）',

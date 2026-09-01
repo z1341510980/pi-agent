@@ -26,6 +26,7 @@ import type { AgUiSessionHandle } from '../../../../../core/plugin/plugin-types.
 import type { PluginSessionOptions } from '../../../../../core/plugin/plugin-types.js'
 import type { AgUiEventSink } from '@repo/protocol/events'
 import { AgentChannel } from '../../../../../core/agent/agent-channel.js'
+import { getAssistantTerminalError } from '../../../../../core/plugin/plugin-session-outcome.js'
 import { runToolPayloadStep, throwIfAborted } from './step-executor.js'
 import {
   ACTING_POLICY,
@@ -1676,6 +1677,10 @@ export class TeamDiscussionEngine {
     // stopReason='error' 是模型不存在/配额/网络等故障的唯一信号，prompt() 仍正常
     // resolve。不捕获的话错误被吞成空串——planning 误判"无产出"、日志 error 为空、
     // 用户只见"模型可能异常"而看不到真实原因。
+    //
+    // ⚠️ 用 getAssistantTerminalError 的覆盖赋值语义（成功终答返回空串即清除）：
+    // pi SDK 自带重试，error → error → stop 是常见序列，只赋值不清空会让重试成功
+    // 的产出照样被判失败。与 plugin-manager / novel-orchestrator 同口径。
     let capturedLlmError = ''
     const usageSession = session as unknown as {
       subscribe?: (listener: (event: Record<string, unknown>) => void) => () => void
@@ -1684,9 +1689,8 @@ export class TeamDiscussionEngine {
       if (event.type !== 'message_end') return
       const message = event.message as Record<string, unknown> | undefined
       if (!message || message.role !== 'assistant') return
-      if (message.stopReason === 'error') {
-        capturedLlmError = (message.errorMessage as string) || '未知 LLM 错误'
-      }
+      const terminalError = getAssistantTerminalError(message)
+      if (terminalError !== null) capturedLlmError = terminalError
       const usage = extractDiscussionUsage(message)
       if (usage) capturedUsage = addDiscussionUsage(capturedUsage, usage)
     })
@@ -1710,11 +1714,18 @@ export class TeamDiscussionEngine {
 
     try {
       result = await session.prompt()
-      // 工具已提交 payload 时以 payload 为准（错误可能发生在工具结果之后的往返）；
-      // 既无 payload 又有 provider 错误 → 转真异常，让重试/降级/日志都拿到原因。
+      // 工具已提交 payload 或已拿到文本产出时以产出为准（错误可能发生在产出之后的
+      // 维护往返，Pi Session 终答后仍会继续 emit message_end）；
+      // 既无产出又有 provider 错误 → 转真异常，让重试/降级/日志都拿到原因。
       const extractedPayload = member.type === 'character' ? characterTurnToolset?.extractResult() : undefined
-      if (capturedLlmError && !extractedPayload) {
+      if (capturedLlmError && !extractedPayload && !result.trim()) {
         throw new Error(`LLM 调用失败: ${capturedLlmError}`)
+      }
+      if (capturedLlmError) {
+        this.context.logger.warn(
+          { memberId: member.id, providerError: capturedLlmError, resultLength: result.length, hasPayload: !!extractedPayload },
+          '成员已拿到产出，但事件流后续报了 provider 错误：以产出为准，不作废本轮',
+        )
       }
       if (member.type === 'character' && extractedPayload) {
         // 工具主路径的终答可能为空；调用方读取闭包 payload，不能再触发一次 legacy 解析。

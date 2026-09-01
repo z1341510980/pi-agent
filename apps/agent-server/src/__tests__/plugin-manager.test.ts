@@ -210,6 +210,115 @@ describe('PluginManager', () => {
     handle.dispose()
   })
 
+  /**
+   * 模拟「终答成功之后维护往返失败」：Pi Session 在 stopReason='stop' 之后仍会
+   * 继续 emit message_end（自动压缩等维护动作），实测出现过其中一次报
+   * "A server error occurred"。旧实现无条件把它计入 lastErrorMessage，
+   * 已写满的正文被判定为失败，整章 create-flow 作废。
+   */
+  function createPostSuccessErrorSession() {
+    const handlers = new Set<(event: Record<string, unknown>) => void>()
+    const emit = (event: Record<string, unknown>): void => {
+      for (const handler of handlers) handler(event)
+    }
+    return {
+      session: {
+        subscribe: (handler: (event: Record<string, unknown>) => void) => {
+          handlers.add(handler)
+          return () => handlers.delete(handler)
+        },
+        async prompt(): Promise<string> {
+          emit({
+            type: 'message_update',
+            assistantMessageEvent: { type: 'text_delta', delta: '完整正文' }
+          })
+          emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } })
+          // 终答之后的维护往返失败
+          emit({
+            type: 'message_end',
+            message: {
+              role: 'assistant',
+              stopReason: 'error',
+              errorMessage: 'A server error occurred. Please try again.'
+            }
+          })
+          return 'sdk-result'
+        }
+      }
+    }
+  }
+
+  it('keeps the completed response when a post-success maintenance turn fails', async () => {
+    let context: PluginContext | undefined
+    const fake = createPostSuccessErrorSession()
+    manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+      builtinPlugins: [
+        {
+          plugin: createTestPlugin({
+            name: 'post-success-error-test',
+            setupFn: (pluginContext) => {
+              context = pluginContext
+            }
+          })
+        }
+      ]
+    })
+    manager.setSessionStore({
+      getOrCreate: vi.fn().mockResolvedValue({ session: fake.session })
+    } as any)
+    await manager.init()
+    await manager.start()
+
+    const handle = await context!.createSession({ systemPrompt: 'sys', userMessage: 'write' })
+    await expect(handle.prompt()).resolves.toBe('完整正文')
+    handle.dispose()
+  })
+
+  it('still fails when the error arrives before any final assistant success', async () => {
+    let context: PluginContext | undefined
+    const handlers = new Set<(event: Record<string, unknown>) => void>()
+    const session = {
+      subscribe: (handler: (event: Record<string, unknown>) => void) => {
+        handlers.add(handler)
+        return () => handlers.delete(handler)
+      },
+      async prompt(): Promise<string> {
+        for (const handler of handlers) {
+          handler({
+            type: 'message_end',
+            message: {
+              role: 'assistant',
+              stopReason: 'error',
+              errorMessage: 'A server error occurred. Please try again.'
+            }
+          })
+        }
+        return ''
+      }
+    }
+    manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+      builtinPlugins: [
+        {
+          plugin: createTestPlugin({
+            name: 'pre-success-error-test',
+            setupFn: (pluginContext) => {
+              context = pluginContext
+            }
+          })
+        }
+      ]
+    })
+    manager.setSessionStore({
+      getOrCreate: vi.fn().mockResolvedValue({ session })
+    } as any)
+    await manager.init()
+    await manager.start()
+
+    const handle = await context!.createSession({ systemPrompt: 'sys', userMessage: 'write' })
+    await expect(handle.prompt()).rejects.toThrow('A server error occurred')
+    handle.dispose()
+  })
+
   let eventBus: EventBus
   let manager: PluginManager
 

@@ -9,6 +9,7 @@ import { ConsistencyAuditor } from '../core/analysis/consistency-auditor.js'
 import { RelationshipGraph } from '../core/analysis/novel-relationship-graph.js'
 import { createNovelRoutes } from '../novel-routes.js'
 import { novelMigrations } from '../novel-migrations.js'
+import { chapterCreationLocks } from '../utils/chapter-task-registry.js'
 import { CostReportService } from '../core/analysis/cost-report-service.js'
 import { ObservabilityService } from '../core/analysis/observability-service.js'
 import { SharedOverlapAnalyzer } from '../core/analysis/shared-overlap-analyzer.js'
@@ -46,6 +47,8 @@ function makeMockServices(): NovelServices {
       once: vi.fn(),
       emit: vi.fn(),
       clearStaleInterjectMessages: vi.fn(() => []),
+      clearStalePendingUserMessages: vi.fn(() => []),
+      chunkCache: { clearProject: vi.fn() },
     } as any,
     characterGenerator: {
       generate: vi.fn(async (_projectId: string, _coreStyle: string, _onProgress?: (event: unknown) => void) => ({
@@ -544,6 +547,54 @@ describe('Novel API 路由 - 章节删除', () => {
     expect(response.statusCode).toBe(409)
     expect(response.json().error.message).toMatch(/已发布章节不能删除/)
     expect(store.getChapterById(chapter.id)).toBeDefined()
+  })
+
+  it('DELETE /chapters/:id 该章创作流程运行中时返回 409 且不删除', async () => {
+    const project = store.createProject({
+      id: 'lock-delete-project', title: '运行锁保护', genre: 'x', synopsis: '',
+      targetWords: 0, currentVolume: 1, currentChapter: 1, currentStage: 'setup', status: 'active',
+    })
+    const chapter = store.createChapter({
+      id: 'lock-delete-chapter', projectId: project.id, volume: 1, chapterNumber: 1,
+      title: '第一章', content: '', wordCount: 0, status: 'planned',
+      narrativeTask: '{}', acceptanceResult: null,
+    })
+    chapterCreationLocks.add(`${project.id}:1`)
+    try {
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `${PLUGIN_PREFIX}/chapters/${chapter.id}`,
+      })
+
+      expect(response.statusCode).toBe(409)
+      expect(response.json().error.message).toMatch(/正在创作流程中运行/)
+      expect(store.getChapterById(chapter.id)).toBeDefined()
+    } finally {
+      chapterCreationLocks.delete(`${project.id}:1`)
+    }
+  })
+
+  it('DELETE /chapters/:id 成功后触发进程内清理（检查点指令 + chunk 缓存）', async () => {
+    const project = store.createProject({
+      id: 'cleanup-delete-project', title: '清理验证', genre: 'x', synopsis: '',
+      targetWords: 0, currentVolume: 1, currentChapter: 1, currentStage: 'setup', status: 'active',
+    })
+    const chapter = store.createChapter({
+      id: 'cleanup-delete-chapter', projectId: project.id, volume: 1, chapterNumber: 1,
+      title: '第一章', content: '', wordCount: 0, status: 'planned',
+      narrativeTask: '{}', acceptanceResult: null,
+    })
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `${PLUGIN_PREFIX}/chapters/${chapter.id}`,
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json().data.deleted).toBe(true)
+    expect(store.getChapterById(chapter.id)).toBeUndefined()
+    expect(services.orchestrator.clearStalePendingUserMessages).toHaveBeenCalledWith(project.id, 1)
+    expect(services.orchestrator.chunkCache.clearProject).toHaveBeenCalledWith(project.id)
   })
 })
 

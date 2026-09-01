@@ -122,6 +122,7 @@ export interface CharacterRow {
   project_id: string
   name: string
   description: string
+  gender: string | null
   identity: string
   personality: string
   appearance: string

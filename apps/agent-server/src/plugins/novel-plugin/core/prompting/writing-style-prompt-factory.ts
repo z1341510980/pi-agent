@@ -51,19 +51,55 @@ function cleanText(value: string, maxLength: number): string {
  * 文风样本常见于用户从别处粘贴的正文，会夹带防爬虫水印乱码
  * （例如 `*如.闻_枉_ ^冕￠废.越^读+`、`+丸′ ! \鰰?占+`）。
  * 这类字符会被模型当成正文特征学习，必须在进 prompt 前清掉。
+ *
+ * 2026-09 实测水印码位修正：水印用 ′(U+2032)/￠(U+FFE0)/·(U+00B7) 和
+ * 半角标点夹汉字（`如.闻枉`、`耕?鑫`），旧字符类只收了 ´(U+00B4)/￥(U+FFE5)，
+ * 且罕见 CJK 只查扩展区而水印字（鰰/嶵/暁）全在基本区——四串样本原样穿透。
  */
-const SAMPLE_NOISE_RUN = /[\\^~`_|+*/<>=@#$%&\u00a0\u00b4\u00a8\uffe5]{1,}/g
+const SAMPLE_NOISE_RUN = /[\\^~`_|+*/<>=@#$%&\u00a0\u00a8\u00b4\u2032\u2033\u2022\u00b7\uffe0\uffe1\uffe5]{1,}/g
 const SAMPLE_RARE_CJK = /[\u3400-\u4dbf\uf900-\ufaff\u{20000}-\u{2ffff}]/gu
+/** 域名式碎片：≥2 个符号分隔的短字母数字组（如 `x,i·nw,anb·en!.or·g`，去噪点即盗版站域名）。
+ * 分隔符允许 1-2 连用（`!.`），否则 `en!.or·g` 会残留 `.org` 尾巴。 */
+const SAMPLE_LATIN_FRAGMENT = /[a-z0-9]{1,4}(?:[.,·•!?'′￠]{1,2}[a-z0-9]{1,4}){2,}/gi
+/** 半角标点夹在汉字之间：正常中文用全角标点，`如.闻枉`、`耕?鑫` 这类是水印 */
+const SAMPLE_HALF_PUNCT_IN_CJK = /(?<=[\u4e00-\u9fff])\s*[.,!?;:\-]+\s*(?=[\u4e00-\u9fff])/g
+/** 汉字后跟孤立的半角标点簇（`筷,` 结尾、`丸 !` 中缀） */
+const SAMPLE_STRAY_HALF_PUNCT = /(?<=[\u4e00-\u9fff])\s*[.,!?;:·′￠\-]{1,}(?=\s|$)/g
+/** 与字母数字不相邻的残留半角标点（域名碎片清掉后剩下的孤立 `?`） */
+const SAMPLE_LEFTOVER_HALF_PUNCT = /(?<![a-zA-Z0-9])[!?;:]+(?![a-zA-Z0-9])/g
 
 function stripSampleNoise(value: string): string {
   return value
     .replace(SAMPLE_RARE_CJK, '')
+    // 顺序关键：LATIN_FRAGMENT 依赖 ·′￠ 等分隔符，必须在 NOISE_RUN 删掉它们之前跑
+    .replace(SAMPLE_LATIN_FRAGMENT, '')
     .replace(SAMPLE_NOISE_RUN, '')
+    .replace(SAMPLE_HALF_PUNCT_IN_CJK, '')
+    .replace(SAMPLE_STRAY_HALF_PUNCT, '')
+    .replace(SAMPLE_LEFTOVER_HALF_PUNCT, '')
     // 乱码清掉后常留下孤立的标点串
     .replace(/[，、。；：]{2,}/g, (run) => run[0])
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+}
+
+/** 判定文本是否以完整句收尾（防抓样本常被裸切在半句，模型会学到"断句"） */
+const SAMPLE_TAIL_TERMINATORS = new Set(['。', '！', '？', '…', '”', '’', '"', '』', '」'])
+
+/** 样本以半句结尾时退到最近的句末边界；保不住一半内容就原样保留（避免毁掉短样本） */
+function trimIncompleteTail(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return trimmed
+  const last = trimmed[trimmed.length - 1] ?? ''
+  if (SAMPLE_TAIL_TERMINATORS.has(last)) return trimmed
+  const floor = Math.floor(trimmed.length / 2)
+  for (let index = trimmed.length - 1; index > floor; index -= 1) {
+    if (SAMPLE_TAIL_TERMINATORS.has(trimmed[index] ?? '')) {
+      return trimmed.slice(0, index + 1).trim()
+    }
+  }
+  return trimmed
 }
 
 /**
@@ -90,7 +126,7 @@ function truncateAtBoundary(value: string, maxLength: number): string {
 
 function cleanSample(value: string, maxLength: number): string {
   const cleaned = stripSampleNoise(cleanText(value, maxLength * 3))
-  return truncateAtBoundary(cleaned, maxLength)
+  return trimIncompleteTail(truncateAtBoundary(cleaned, maxLength))
 }
 
 /**
@@ -425,16 +461,28 @@ const SCENE_TYPE_HINTS: Record<StyleSceneType, string> = {
 
 /** 场景类型关键词（命中即归类；顺序为 dialogue > action > quiet 兜底） */
 const DIALOGUE_HINT_PATTERN = /对话|谈判|审讯|质问|逼问|争辩|对峙|交谈|盘问|说服|摊牌|密谈/
-const ACTION_HINT_PATTERN = /战斗|打斗|追逐|逃|追杀|突袭|爆炸|厮杀|交火|搏|袭击|突围|追捕|行动开始/
+// 不收单字「逃」「搏」：信息章里「无处可逃」「脉搏」会把纯信息章误判成动作场
+const ACTION_HINT_PATTERN = /战斗|打斗|追逐|追杀|突袭|爆炸|厮杀|交火|搏斗|搏杀|搏命|搏击|袭击|突围|追捕|逃走|逃离|逃脱|逃窜|逃亡|溃逃|追逃|行动开始/
+
+/**
+ * Director 提交的定位。information / relationship / low_pressure 章里
+ * 「不追逐」「脉搏」这类词只是叙述需要，不足以支撑动作场样本。
+ */
+const NON_ACTION_POSITIONING = new Set(['information', 'relationship', 'low_pressure'])
 
 /**
  * 从叙事任务文本推断本章主导场景类型。
  * 纯启发式：只用于挑选更贴切的文风样本，不改变任何硬约束；
  * 无法判断时归入 quiet（最通用的默认桶）。
+ *
+ * positioning 来自 Director 的结构化提交，与文本关键词是两条独立链路；
+ * 两者冲突时信任 positioning——它表达了作者对本章性质的真实判断。
  */
-export function inferSceneType(text: string): StyleSceneType {
+export function inferSceneType(text: string, positioning?: string | null): StyleSceneType {
   if (DIALOGUE_HINT_PATTERN.test(text)) return 'dialogue'
-  if (ACTION_HINT_PATTERN.test(text)) return 'action'
+  if (ACTION_HINT_PATTERN.test(text) && !NON_ACTION_POSITIONING.has(positioning ?? '')) {
+    return 'action'
+  }
   return 'quiet'
 }
 
@@ -504,6 +552,10 @@ export function buildSceneSampleSection(input: SceneStyleSampleInput): string {
     `### 本章场景文风样本（主导场景：${SCENE_TYPE_LABELS[input.sceneType]}）`,
     SCENE_TYPE_HINTS[input.sceneType],
     '只学习这些写法，不复用人物、情节或专有名词；与静态档案冲突时以档案为准。',
+    // 样本里大量单句短段曾把 Writer 带成提纲式碎片节奏（实测单句段 47-58%，
+    // 远超形态与节奏目标的 30% 线），而"优先保留样本节奏"的条款会放大这个倾向。
+    // 在样本头部显式声明：学声音，不学排版。
+    '样本中的单句短段与急促断行只说明当时的场景压力，不是要复刻的排版；段落组织仍须满足下方「形态与节奏目标」。',
     ...unique.map((candidate, index) =>
       `\n【场景样本 ${index + 1}｜来源：${candidate.sourceLabel}】\n${candidate.text}`
     ),

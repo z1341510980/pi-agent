@@ -67,6 +67,22 @@ export function findModelBaseUrl(
   return model?.baseUrl
 }
 
+/**
+ * 从 modelRegistry 解析模型的输出上限（maxTokens）。
+ *
+ * 与 findModelBaseUrl 同源同字段：调用方要给 `PluginSessionOptions.maxTokens`
+ * 算一个「不超过模型自身上限」的值时，必须读注册表里的真值，
+ * 而不是各处硬编码 8192 之类的猜测。未注册 / 无该字段时返回 undefined。
+ */
+export function findModelMaxTokens(
+  registry: ModelRegistryLike | undefined,
+  provider: string,
+  modelId: string,
+): number | undefined {
+  const model = registry?.find?.(provider, modelId) as { maxTokens?: number } | undefined
+  return typeof model?.maxTokens === 'number' && model.maxTokens > 0 ? model.maxTokens : undefined
+}
+
 /** Anthropic 原生 provider 标识 */
 const ANTHROPIC_PROVIDERS = new Set(['anthropic', 'anthropic-vertex', 'anthropic-bedrock'])
 
