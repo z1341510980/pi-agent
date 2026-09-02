@@ -63,13 +63,23 @@ describe('resolveWordBudget 字数唯一解析', () => {
 })
 
 describe('resolveWriterMaxTokens：Writer 物理兜底不能拧到误伤合规稿件', () => {
+  /** 与实现同源的口径：ceil(maxWords × 1.1) + （推理模型再 +1200） */
+  const expectTokens = (maxWords: number, reasoning = true): number =>
+    Math.ceil(maxWords * 1.1) + (reasoning ? 1200 : 0)
+
   it('硬上限 3900 字 → 字数保守换算 + thinking 预留，明显高于旧的 3900 直传', () => {
     // 旧实现直接把 3900（字）当 token 传：中文 3000 字已约 2000-3000 token，
     // 推理模型 thinking 块共享同一配额，很容易顶到 stopReason='length'，
     // 被 pi SDK 的 isRecoverableLength 判成可恢复截断 → 白烧一轮 compact+retry。
     const tokens = resolveWriterMaxTokens({ maxWords: 3900 })
-    expect(tokens).toBe(3900 + 4000)
+    expect(tokens).toBe(expectTokens(3900))
     expect(tokens).toBeGreaterThan(3900)
+  })
+
+  it('物理闸只防无限膨胀，不贴着硬上限：余量控制在硬上限的 1.5 倍以内', () => {
+    // thinking 预留从 4000 收到 1200 的意图：4000 等于把闸整体抬到 2 倍字数，
+    // 闸门形同虚设（实测首稿 4740 字仍畅通）。这条守住"别再放大"。
+    expect(resolveWriterMaxTokens({ maxWords: 3900 })).toBeLessThan(3900 * 1.5)
   })
 
   it('模型自身 maxTokens 更小时按模型上限夹紧（不发出模型不接受的值）', () => {
@@ -77,15 +87,19 @@ describe('resolveWriterMaxTokens：Writer 物理兜底不能拧到误伤合规�
   })
 
   it('模型 maxTokens 足够大时不夹紧', () => {
-    expect(resolveWriterMaxTokens({ maxWords: 3900, modelMaxTokens: 64000 })).toBe(7900)
+    expect(resolveWriterMaxTokens({ maxWords: 3900, modelMaxTokens: 64000 })).toBe(
+      expectTokens(3900),
+    )
   })
 
   it('非推理模型不预留 thinking 配额', () => {
-    expect(resolveWriterMaxTokens({ maxWords: 3900, reasoning: false })).toBe(3900)
+    expect(resolveWriterMaxTokens({ maxWords: 3900, reasoning: false })).toBe(
+      expectTokens(3900, false),
+    )
   })
 
   it('modelMaxTokens 缺失/为 0 时不夹紧（视为未知）', () => {
-    expect(resolveWriterMaxTokens({ maxWords: 2600, modelMaxTokens: 0 })).toBe(6600)
-    expect(resolveWriterMaxTokens({ maxWords: 2600 })).toBe(6600)
+    expect(resolveWriterMaxTokens({ maxWords: 2600, modelMaxTokens: 0 })).toBe(expectTokens(2600))
+    expect(resolveWriterMaxTokens({ maxWords: 2600 })).toBe(expectTokens(2600))
   })
 })

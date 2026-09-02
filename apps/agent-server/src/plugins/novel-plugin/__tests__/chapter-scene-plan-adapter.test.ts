@@ -35,12 +35,22 @@ describe('splitTargetWords 字数拆分', () => {
 })
 
 describe('formatSceneBudgetGuidance 逐场预算提示', () => {
-  it('sceneCount>=2：逐场写死均分预算，并要求笔墨向核心场景倾斜', () => {
+  it('sceneCount>=2 且无主次标注：逐场写死均分预算 + 单场超支的就地删减指令', () => {
     const text = formatSceneBudgetGuidance(3, 3000)
     expect(text).toContain('场景 1 ≈ 1000 字')
     expect(text).toContain('场景 3 ≈ 1000 字')
-    expect(text).toContain('核心场景')
-    expect(text).toContain('硬上限')
+    expect(text).toContain('就地删减')
+  })
+
+  it('narrativeTask 带主次标注：按核心 2 : 过场 1 加权，并把标注写进提示', () => {
+    const text = formatSceneBudgetGuidance(
+      3,
+      3000,
+      '场景 1【核心】主角摊牌。场景 2（过场）赶路。场景 3【核心】反噬落地。',
+    )
+    expect(text).toContain('场景 1（核心） ≈ 1200 字')
+    expect(text).toContain('场景 2（过场） ≈ 600 字')
+    expect(text).toContain('场景 3（核心） ≈ 1200 字')
   })
 
   it('sceneCount=1：单场景写透，不拆分', () => {
