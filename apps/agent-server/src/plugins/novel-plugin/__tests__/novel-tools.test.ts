@@ -135,6 +135,131 @@ describe('novel-tools - novel_submit_narrative_task tool', () => {
     expect(text).toContain('800 字')
     expect(text).toContain('核心事件')
   })
+
+  // ── scene-wise-writing T1：结构化场景计划校验 ──
+
+  /** baseTarget 3000 → resolveWordBudget resolvedTarget 3000（定位不调字数） */
+  const BASE_TARGET = 3000
+
+  function validScenes(): Array<{
+    order: number
+    title: string
+    emphasis: 'core' | 'transition'
+    targetWords: number
+    goal: string
+    entry: string
+    pressure: string
+    choice: string
+    consequence: string
+  }> {
+    return [
+      { order: 1, title: '审讯室对峙', emphasis: 'core', targetWords: 1400, goal: '逼出玉佩下落', entry: '带着录音笔入场', pressure: '工头反咬', choice: '交出证据保人还是保证据', consequence: '证据曝光，身份暴露' },
+      { order: 2, title: '赶路', emphasis: 'transition', targetWords: 400, goal: '转移证据', entry: '脱离工棚', pressure: '盯梢者尾随', choice: '走大路还是小巷', consequence: '甩掉盯梢但延误一夜' },
+      { order: 3, title: '反噬落地', emphasis: 'core', targetWords: 1200, goal: '承受身份暴露的代价', entry: '回到住处', pressure: '同伴质问', choice: '坦白还是隐瞒', consequence: '关系破裂，孤身应对' },
+    ]
+  }
+
+  function baseTaskParams(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      taskType: 'advance_mainline',
+      priority: 'high',
+      narrativeTask: '叶明远拿到证据并承受身份暴露的代价，上一章钩子（被盯梢）回收。',
+      secondaryTasks: [],
+      requiredReferences: [],
+      chapterEndingHook: { type: 'suspense', description: '同伴拿着证据复印件站在门口' },
+      povCharacters: ['叶明远'],
+      sceneCount: 3,
+      positioning: 'high_pressure',
+      timelineOffset: { days: 3, description: '3 天后' },
+      ...overrides,
+    }
+  }
+
+  it('合法 scenes[]：写入 draft.task.scenes（按 order 排序）并在摘要中回显预算', async () => {
+    const draft: NarrativeTaskDraftHolder = {}
+    const tool = createNovelSubmitNarrativeTaskTool(draft, { baseTarget: BASE_TARGET })
+
+    const result = await tool.execute('test-call-id', {
+      ...baseTaskParams({ scenes: [...validScenes()].reverse() }),
+    } as never, undefined, undefined, undefined as never)
+
+    expect(draft.task).toBeDefined()
+    expect(draft.task!.scenes).toHaveLength(3)
+    // 乱序提交按 order 归一
+    expect(draft.task!.scenes!.map((s) => s.order)).toEqual([1, 2, 3])
+    expect(draft.task!.scenes![0].targetWords).toBe(1400)
+    expect(draft.task!.scenes![0].title).toBe('审讯室对峙')
+    const text = (result.content[0] as { text: string }).text
+    expect(text).toContain('结构化场景计划：3 场（核心 2 个，预算 1400 + 400 + 1200 = 3000 字）')
+  })
+
+  it('scenes 总和不等于目标字数：拒绝并返回纠正提示，不写 draft', async () => {
+    const draft: NarrativeTaskDraftHolder = {}
+    const tool = createNovelSubmitNarrativeTaskTool(draft, { baseTarget: BASE_TARGET })
+
+    const scenes = validScenes()
+    scenes[2].targetWords = 1100 // 总和 2900 ≠ 3000
+    const result = await tool.execute('test-call-id', {
+      ...baseTaskParams({ scenes }),
+    } as never, undefined, undefined, undefined as never)
+
+    expect(draft.task).toBeUndefined()
+    const text = (result.content[0] as { text: string }).text
+    expect(text).toContain('场景计划未通过校验')
+    expect(text).toContain('2900')
+    expect(text).toContain('3000')
+  })
+
+  it('核心场景超过 2 个：拒绝并要求降级', async () => {
+    const draft: NarrativeTaskDraftHolder = {}
+    const tool = createNovelSubmitNarrativeTaskTool(draft, { baseTarget: BASE_TARGET })
+
+    const scenes = validScenes()
+    scenes[1].emphasis = 'core' // 3 个核心
+    const result = await tool.execute('test-call-id', {
+      ...baseTaskParams({ scenes }),
+    } as never, undefined, undefined, undefined as never)
+
+    expect(draft.task).toBeUndefined()
+    const text = (result.content[0] as { text: string }).text
+    expect(text).toContain('核心场景 3 个超过上限')
+  })
+
+  it('order 不连续 / 数量与 sceneCount 不一致：拒绝并要求修正', async () => {
+    const draft: NarrativeTaskDraftHolder = {}
+    const tool = createNovelSubmitNarrativeTaskTool(draft, { baseTarget: BASE_TARGET })
+
+    // order 跳号：1, 3, 4
+    const skipped = validScenes()
+    skipped[1].order = 3
+    skipped[2].order = 4
+    const skippedResult = await tool.execute('test-call-id', {
+      ...baseTaskParams({ scenes: skipped }),
+    } as never, undefined, undefined, undefined as never)
+    expect(draft.task).toBeUndefined()
+    expect((skippedResult.content[0] as { text: string }).text).toContain('order 必须从 1 开始连续编号')
+
+    // 数量与 sceneCount 不一致：只传 2 场
+    const mismatched = await tool.execute('test-call-id', {
+      ...baseTaskParams({ scenes: validScenes().slice(0, 2) }),
+    } as never, undefined, undefined, undefined as never)
+    expect(draft.task).toBeUndefined()
+    expect((mismatched.content[0] as { text: string }).text).toContain('与 sceneCount')
+  })
+
+  it('未传 baseTarget（旁路调用）：跳过总和校验，只校验结构', async () => {
+    const draft: NarrativeTaskDraftHolder = {}
+    const tool = createNovelSubmitNarrativeTaskTool(draft)
+
+    const scenes = validScenes()
+    scenes[2].targetWords = 1100 // 总和 2900，无 baseTarget 时不拦截
+    await tool.execute('test-call-id', {
+      ...baseTaskParams({ scenes }),
+    } as never, undefined, undefined, undefined as never)
+
+    expect(draft.task).toBeDefined()
+    expect(draft.task!.scenes).toHaveLength(3)
+  })
 })
 
 // ── Reviewer 工具：novel_submit_review ──

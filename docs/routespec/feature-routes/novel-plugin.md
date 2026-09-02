@@ -18,13 +18,13 @@
 
 ### 章节创作流程（SSE）
 
-- 描述：三条触发路径——`create-flow`（手动编排矩阵）、`ai-arrange`（AI 编排后确认再创作）、`create-team`（同步兼容入口）；Director → Writer → 质量门 → 盲审/Reviewer → 检查点 → Reviser/Memory。群聊路径（`create-discussion`，后台运行 + 事件 tail）另见「群聊共创演绎链路」。
+- 描述：三条触发路径——`create-flow`（手动编排矩阵）、`ai-arrange`（AI 编排后确认再创作）、`create-team`（同步兼容入口）；Director（经 `novel_submit_narrative_task` 提交结构化任务 + **结构化 scenes[]**（scene-wise-writing T1：逐场 order/title/emphasis/targetWords/goal/entry/pressure/choice/consequence，工具内校验总和=本章目标 ±1、核心 ≤2、order 连续；2026-09-02 起正则解析场景结构已退役）→ 检查点1 → Writer（单次整章调用，逐场预算提示读 `task.scenes` 的 Director 分配，无 scenes 回退均分）→ 质量门 → 盲审/Reviewer → 检查点 → Reviser/Memory。场景计划经 `writeDirectorScenePlan`（原 shadowWriteDirectorPlan）落库为 approved V2 计划（生成依据，非影子）。群聊路径（`create-discussion`，后台运行 + 事件 tail）另见「群聊共创演绎链路」。
 - 入口：HTTP `POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/create-flow` 等
-- 核心：`routes/creation-flow-routes.ts`（SSE 与检查点决策）、`core/novel-orchestrator.ts`（createChapterWithFlow）
-- 测试：`apps/agent-server/src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts`
-- 备注：检查点决策经 `POST .../checkpoint/:type/decision` + EventEmitter 传递；群聊（create-discussion）自 2026-08-28 起为后台运行 + 事件 tail，与其余路径的一次性 SSE 不同。诊断见 `docs/novel/2026-08-24-群聊演绎链路诊断与修复方案.md`。
-- 覆盖：partial
-- last-updated: 2026-08-28
+- 核心：`routes/creation-flow-routes.ts`（SSE 与检查点决策）、`core/novel-orchestrator.ts`（createChapterWithFlow）、`core/tools/submit.ts`（scenes[] schema 与校验）、`core/chapters/chapter-scene-plan-adapter.ts`（scenes 消费与逐场预算提示）
+- 测试：`apps/agent-server/src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts`、`__tests__/novel-tools.test.ts`（scenes 校验用例）、`__tests__/chapter-scene-plan-adapter.test.ts`
+- 备注：检查点决策经 `POST .../checkpoint/:type/decision` + EventEmitter 传递；群聊（create-discussion）自 2026-08-28 起为后台运行 + 事件 tail，与其余路径的一次性 SSE 不同。诊断见 `docs/novel/2026-08-24-群聊演绎链路诊断与修复方案.md`。lengdu 读感链路已于 2026-09-02 整体移除。方案与进度见 `docs/routespec/2026-09-01-scene-wise-writing/spec.md`（T1/T2 已完成，T3-T6 待定）。
+- 覆盖：sufficient
+- last-updated: 2026-09-02
 
 ### 群聊共创演绎链路（确定性调度器 + 事件溯源 + 自主 mention）
 

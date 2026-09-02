@@ -7,8 +7,10 @@
 import { Type } from 'typebox'
 import { defineTool, type ToolDefinition, type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import type { CharacterTurn, SubmittedSceneInput } from '../discussion/engine/discussion-types.js'
+import { resolveWordBudget } from '../chapters/word-budget-resolver.js'
 import type {
   NarrativeTask,
+  NarrativeTaskScene,
   ChapterPositioning,
   NovelChapterReview
 } from '@repo/shared/novel'
@@ -146,14 +148,37 @@ const ChapterPositioningEnum = Type.Union([
   Type.Literal('information'),
 ])
 
+/**
+ * 结构化场景计划（scene-wise-writing T1）：每场 = 因果契约 + 主次标注 + 字数预算。
+ * 总和/核心数/order 连续性由 execute 内二次校验（宽松 provider 直连时 schema 约束可能不生效）。
+ */
+const NarrativeSceneParams = Type.Object({
+  order: Type.Integer({ minimum: 1, maximum: 5, description: '场景序号，从 1 开始连续编号' }),
+  title: Type.String({ minLength: 1, maxLength: 30, description: '场景标题（如"审讯室对峙"）' }),
+  emphasis: Type.Union([Type.Literal('core'), Type.Literal('transition')], {
+    description: 'core=承载主任务/转折/高潮（一章最多 2 个）；transition=承接与过渡',
+  }),
+  targetWords: Type.Integer({ minimum: 100, description: '本场目标字数；所有场之和必须等于本章目标字数（±1 容差）' }),
+  goal: Type.String({ minLength: 2, maxLength: 200, description: '本场景必须完成的推进' }),
+  entry: Type.String({ minLength: 2, maxLength: 200, description: '人物带着什么目的入场，如何承接上一章结尾' }),
+  pressure: Type.String({ minLength: 2, maxLength: 200, description: '本场具体阻力（谁或什么阻止他）' }),
+  choice: Type.String({ minLength: 2, maxLength: 200, description: '角色必须面对的选择（必须有代价）' }),
+  consequence: Type.String({ minLength: 2, maxLength: 200, description: '选择造成的即时后果（不可逆变化）' }),
+})
+
 const SubmitNarrativeTaskParams = Type.Object({
   taskType: NarrativeTaskTypeEnum,
   priority: Type.Union([Type.Literal('high'), Type.Literal('medium'), Type.Literal('low')]),
   narrativeTask: Type.String({
     minLength: 10,
     maxLength: 800,
-    description: '给 Writer 看的完整叙事任务文本，按场景分段并标注每场核心/过场（核心场景合计占一半以上笔墨）。包含本章核心目标、情节点、约束说明等，Writer 会基于此创作正文。',
+    description: '给 Writer 看的整章级任务说明（核心目标、情节点、约束说明，建议 180-400 字）。逐场的入口/阻力/选择/后果与字数预算由 scenes[] 承载，narrativeTask 只写跨场景的整章契约。',
   }),
+  scenes: Type.Optional(Type.Array(NarrativeSceneParams, {
+    minItems: 1,
+    maxItems: 5,
+    description: '结构化场景计划：每场含序号/标题/主次/字数预算与因果契约。提交后系统逐场核对字数；未提交时回退系统均分预算（不推荐——均分等于没有主次）。',
+  })),
   secondaryTasks: Type.Array(NarrativeTaskTypeEnum, {
     maxItems: 2,
     description: '次要任务类型（最多 2 个，允许一章兼顾多个任务）。无次要任务时传空数组。',
@@ -200,8 +225,47 @@ const SubmitNarrativeTaskParams = Type.Object({
  * 3. 工具不在 STATIC 层 schema 中出现，不影响跨 Agent 的 prompt cache 命中率
  */
 
+export interface NarrativeTaskToolOptions {
+  /**
+   * 本章基础目标字数（调用方用 baseTargetOf(project.targetWords) 计算）。
+   * 传入后启用 scenes 总和校验（scene-wise-writing T1）；未传（旧测试/旁路调用）
+   * 只校验结构（数量/order/核心数），不校验总和。
+   */
+  baseTarget?: number
+}
+
+/** scenes 结构与预算校验；合法返回 undefined，非法返回纠正提示文本（不写 draft） */
+function validateNarrativeScenes(
+  scenes: NarrativeTaskScene[],
+  sceneCount: number,
+  baseTarget: number | undefined,
+): string | undefined {
+  if (scenes.length !== sceneCount) {
+    return `scenes 数量（${scenes.length}）与 sceneCount（${sceneCount}）不一致：两者必须相等。请补齐或删减场景后重新提交。`
+  }
+  const sorted = [...scenes].sort((a, b) => a.order - b.order)
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (sorted[i].order !== i + 1) {
+      return `场景 order 必须从 1 开始连续编号（当前顺序：${sorted.map((s) => s.order).join('、')}）。请修正编号后重新提交。`
+    }
+  }
+  const coreCount = scenes.filter((s) => s.emphasis === 'core').length
+  if (coreCount > 2) {
+    return `核心场景 ${coreCount} 个超过上限：一章最多 2 个核心场景（承载主任务/转折/高潮），其余标注为 transition（承接与过渡）。请降级多余的核心场景后重新提交。`
+  }
+  if (baseTarget !== undefined) {
+    const resolvedTarget = resolveWordBudget({ baseTarget }).resolvedTarget
+    const total = scenes.reduce((acc, s) => acc + s.targetWords, 0)
+    if (Math.abs(total - resolvedTarget) > 1) {
+      return `各场 targetWords 之和（${total}）必须等于本章目标字数 ${resolvedTarget}（±1 容差）。当前差 ${total - resolvedTarget}。请把预算差额分配到合适的场景后重新提交（核心场景优先吃余量，过场从简）。`
+    }
+  }
+  return undefined
+}
+
 export function createNovelSubmitNarrativeTaskTool(
   draft: NarrativeTaskDraftHolder,
+  options: NarrativeTaskToolOptions = {},
 ): ToolDefinition<typeof SubmitNarrativeTaskParams> {
   return defineTool({
     name: 'novel_submit_narrative_task',
@@ -224,6 +288,18 @@ export function createNovelSubmitNarrativeTaskTool(
               '请只保留不超过 3 个核心事件，按场景分段（标注核心/过场），过场用一句话带过，精简后重新提交；装不下就在任务里指出并建议拆章。'
           }],
           details: undefined,
+        }
+      }
+      // scene-wise-writing T1：结构化场景计划校验（防御式，宽松 provider 直连时
+      // schema 的 minItems/uniqueItems 可能不生效）。不合法 → 不写 draft，
+      // 返回纠正提示让模型按同一会话修正后重调。
+      if (params.scenes && params.scenes.length > 0) {
+        const scenesError = validateNarrativeScenes(params.scenes, params.sceneCount, options.baseTarget)
+        if (scenesError) {
+          return {
+            content: [{ type: 'text', text: `场景计划未通过校验，未提交：${scenesError}` }],
+            details: undefined,
+          }
         }
       }
       const task: NarrativeTask = {
@@ -264,6 +340,24 @@ export function createNovelSubmitNarrativeTaskTool(
         task.sceneCount = params.sceneCount
       }
 
+      // scene-wise-writing T1：结构化场景计划转正为生成依据（Writer 逐场预算、
+      // V2 计划落库都从这里取）。按 order 排序后存入，字段文本做防御式裁剪。
+      if (params.scenes && params.scenes.length > 0) {
+        task.scenes = [...params.scenes]
+          .sort((a, b) => a.order - b.order)
+          .map((scene) => ({
+            order: scene.order,
+            title: scene.title.slice(0, 30),
+            emphasis: scene.emphasis,
+            targetWords: scene.targetWords,
+            goal: scene.goal.slice(0, 200),
+            entry: scene.entry.slice(0, 200),
+            pressure: scene.pressure.slice(0, 200),
+            choice: scene.choice.slice(0, 200),
+            consequence: scene.consequence.slice(0, 200),
+          }))
+      }
+
       if (params.positioning) {
         task.positioning = params.positioning as ChapterPositioning
       }
@@ -292,7 +386,10 @@ export function createNovelSubmitNarrativeTaskTool(
         `- 章节定位：${task.positioning ?? '（未指定）'}\n` +
         `- 章尾钩子：${task.chapterEndingHook ?? '（未指定）'}\n` +
         `- 时间线偏移：${task.timeOffset ?? 0} 天\n` +
-        (task.secondaryTasks?.length ? `- 次要任务：${task.secondaryTasks.join('、')}\n` : '')
+        (task.scenes?.length
+          ? `- 结构化场景计划：${task.scenes.length} 场（核心 ${task.scenes.filter((s) => s.emphasis === 'core').length} 个，预算 ${task.scenes.map((s) => s.targetWords).join(' + ')} = ${task.scenes.reduce((acc, s) => acc + s.targetWords, 0)} 字）\n`
+          : '')
+        + (task.secondaryTasks?.length ? `- 次要任务：${task.secondaryTasks.join('、')}\n` : '')
 
       return {
         content: [{ type: 'text', text: summary }],

@@ -1764,6 +1764,37 @@ export interface NarrativeTask {
   timeOffset?: number | null
   /** Existing story entity IDs or exact names needed beyond the arranged chapter context. */
   requiredReferences?: string[]
+  /**
+   * Director 提交的结构化场景计划（scene-wise-writing T1）。
+   * 存在时 Writer 的逐场字数预算直接取每场 targetWords（系统校验总和=本章目标 ±1）；
+   * 缺失时回退系统均分（群聊/旧数据兼容）。场景数与 sceneCount 一致、order 从 1 连续编号、核心场景 ≤2。
+   */
+  scenes?: NarrativeTaskScene[]
+}
+
+/**
+ * Director 提交的结构化场景（scene-wise-writing T1）。
+ * 每场是「欲望→阻力→选择→后果」的因果契约；emphasis 决定笔墨倾斜，targetWords 由 Director 分配。
+ */
+export interface NarrativeTaskScene {
+  /** 场景序号，从 1 开始连续编号 */
+  order: number
+  /** 场景标题（如"审讯室对峙"） */
+  title: string
+  /** 核心=承载主任务/转折/高潮（一章最多 2 个）；过场=承接与过渡 */
+  emphasis: 'core' | 'transition'
+  /** 本场目标字数；所有场之和必须等于本章目标字数（±1 容差） */
+  targetWords: number
+  /** 本场景必须完成的推进 */
+  goal: string
+  /** 人物带着什么目的入场，如何承接上一章结尾 */
+  entry: string
+  /** 本场具体阻力（谁或什么阻止他） */
+  pressure: string
+  /** 角色必须面对的选择（必须有代价） */
+  choice: string
+  /** 选择造成的即时后果（不可逆变化） */
+  consequence: string
 }
 
 /** 章尾钩子类型 */

@@ -134,16 +134,16 @@
 
 ## 任务
 
-- [ ] T1：Director 提交结构化 `scenes[]` + 工具硬校验
+- [x] T1：Director 提交结构化 `scenes[]` + 工具硬校验（2026-09-02 完成）
   - 文件：`core/tools/submit.ts`、`core/prompts/role-director.md`、`__tests__/novel-tools.test.ts`
-  - 改动：`SubmitNarrativeTaskParams` 增可选 `scenes` 数组（order/title/emphasis/targetWords/goal/entry/pressure/choice/consequence）；execute 内校验总和（需传入 resolvedTarget，经闭包注入）、核心场景 ≤2、order 连续唯一；不合法返回纠正提示。role-director.md 的「主次笔墨」改为描述结构化字段与预算分配规则
-  - 验证：`vitest run novel-tools.test.ts`（新增 4 个校验用例）+ 真实跑一次 Director 看是否首轮就能提交合法 scenes
-  - 依赖：无
+  - 改动：`SubmitNarrativeTaskParams` 增可选 `scenes` 数组（order/title/emphasis/targetWords/goal/entry/pressure/choice/consequence）；execute 内校验总和（经 `options.baseTarget` 闭包注入，orchestrator 两处调用点均已传）、核心场景 ≤2、order 连续唯一、数量=sceneCount；不合法返回纠正提示。role-director.md 的「主次笔墨」改为结构化字段与预算分配规则（身份预算上限 8000→9000，已同步去重压缩）
+  - 验证：`novel-tools.test.ts` 新增 5 个校验用例（合法提交/总和不符/核心>2/order 与数量不一致/无 baseTarget 旁路）；`golden-prompt` director 身份快照更新
+  - 实测状态：待真实跑一次 Director 验证首轮合法提交率
 
-- [ ] T2：场景计划从影子写转正
-  - 文件：`core/novel-orchestrator.ts`（`shadowWriteDirectorPlan`）、`core/chapters/chapter-scene-plan-adapter.ts`
-  - 改动：`buildScenePlanFromNarrativeTask` 改为直接消费 `task.scenes`（无 scenes 时保留均分兼容，供群聊与旧数据）；删 `parseSceneEmphasis` / `splitWeightedTargetWords`；方法与日志文案从「影子写」改为「批准的场景计划」
-  - 验证：`vitest run chapter-scene-plan-adapter.test.ts`（改造既有用例 + 新增消费 scenes 的用例）
+- [x] T2：场景计划从影子写转正（2026-09-02 完成）
+  - 文件：`core/novel-orchestrator.ts`（`shadowWriteDirectorPlan` → `writeDirectorScenePlan`）、`core/chapters/chapter-scene-plan-adapter.ts`
+  - 改动：`buildScenePlanFromNarrativeTask` 直接消费 `task.scenes`（title/goal/逐场 targetWords 取 Director 分配；无 scenes 保留均分兼容）；`formatSceneBudgetGuidance` 改读结构化 scenes 并删除 `parseSceneEmphasis` / `splitWeightedTargetWords` 正则解析与 2:1 加权；方法与日志文案改为「批准的场景计划写入」
+  - 验证：`chapter-scene-plan-adapter.test.ts` 重写 formatSceneBudgetGuidance 用例（均分回退/结构化分配/数量不一致防御）+ 新增 scenes 消费用例；store 链路集成用例随方法改名
   - 依赖：T1
 
 - [ ] T3：单场创作指令与单场字数核验
@@ -181,7 +181,13 @@
 
 若 T6 实测显示 token 总量反而升高（缓存命中不足），保留 T1/T2 的结构化契约（它们本身消除了正则解析、且让 Director 显式分配预算），把 T4 的循环退化为「一次调用但 prompt 内带结构化逐场预算」——即当前形态，但预算来自 Director 结构化分配而非系统均分。这条回退不需要撤销 T1-T3。
 
+> **2026-09-02 执行注记**：当前按「回退路径」形态落地——T1/T2 已完成（结构化 scenes[] 契约
+> + 计划转正 + 正则解析退役），Writer 仍为单次整章调用，但逐场预算来自 Director 结构化
+> 分配（`formatSceneBudgetGuidance` 读 `task.scenes`）而非系统均分。T3-T6 未实施，
+> 待本轮实测字数分布后再决定是否继续推进分场循环。
+
 ## RouteSync
 
-- 需要 route-sync：是
-- 预期更新：`docs/routespec/feature-routes/novel-plugin.md` 的「章节创作流程（SSE）」条目改写 Writer 阶段描述；新增结构化场景计划条目（入口/核心/测试/备注）；chapters 分域补 scene-word-check
+- 需要 route-sync：是（T1/T2 部分已完成同步；T3-T6 落地时需补 scene-word-check 等条目）
+- 预期更新：`docs/routespec/feature-routes/novel-plugin.md` 的「章节创作流程（SSE）」条目已补
+  scenes[] 提交契约与结构化预算描述；「领域子模块」chapters 分域已说明正则解析退役

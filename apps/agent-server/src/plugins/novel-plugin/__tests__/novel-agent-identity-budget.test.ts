@@ -16,8 +16,9 @@ describe('小说 Agent 身份预算与契约', () => {
 
     // 工具化方案后，Director/Reviewer 提示词需包含工具调用说明、字段说明和禁止事项，
     // 预算上限相应放宽。8 月 4-6 日去 AI 味优化后 Writer 增加写前四问/红线/声音对照，
-    // 预算同步上调；上限仍作为防膨胀护栏（当前长度见下，余量约 13%）。
-    expect(director.length).toBeLessThan(8000)
+    // 预算同步上调；scene-wise-writing T1 为 Director 新增结构化 scenes[] 契约
+    //（主次笔墨/逐场预算分配/校验规则），Director 上限 8000→9000（已同步去重压缩）。
+    expect(director.length).toBeLessThan(9000)
     expect(writer.length).toBeLessThan(5500)
     expect(reviewer.length).toBeLessThan(4500)
     expect(director.length + writer.length + reviewer.length).toBeLessThan(18000)

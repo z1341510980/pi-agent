@@ -23,5 +23,5 @@
 
 ---
 
-last-updated: 2026-08-28（novel-plugin 补入群聊共创演绎链路条目）
+last-updated: 2026-09-02（novel-plugin 章节创作流程条目补 scene-wise-writing T1/T2：结构化 scenes[] 契约、场景计划转正、lengdu 移除）
 覆盖状态：partial —— 仅记录首次扫描确认的定位信息，各条目待后续任务触碰时回填。

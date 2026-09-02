@@ -1970,13 +1970,13 @@ export class NovelPromptBuilder {
           task_type: promptLabel(narrativeTask.type),
           target_words: String(targetWords),
           max_words: String(maxWords),
-          // 逐场字数预算：按 Director 提交的 sceneCount 与主次标注加权分配后写死到
-          // 指令里，替代"目标÷场数自己分配"——模型自计数不可靠，且三场全标核心时
-          // 均分等于没有主次（实测首稿 158%）。
+          // 逐场字数预算（scene-wise-writing T1/T2）：优先取 Director 结构化 scenes[]
+          // 的逐场 targetWords（工具已校验总和=本章目标），无 scenes 时回退均分。
+          // 写死到指令里替代"目标÷场数自己分配"——模型自计数不可靠。
           scene_budgets: formatSceneBudgetGuidance(
             narrativeTask.sceneCount,
             targetWords,
-            narrativeTask.description,
+            narrativeTask.scenes,
           ),
           positioning_guidance: positioningGuidance,
           // 形态判定线与 prose-quality-evaluator 同口径（quality-policy 注释曾要求

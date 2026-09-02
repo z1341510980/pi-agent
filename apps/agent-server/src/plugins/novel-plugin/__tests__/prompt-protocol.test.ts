@@ -31,8 +31,9 @@ describe('小说提示词协议', () => {
   it('Director 交付场景动力（5 元素因果链），而不是只有任务字段', async () => {
     const text = await prompt('role-director')
     expect(text).toContain(SCENE_DRIVE_CAUSAL_CHAIN)
-    expect(text).toContain('场景入口')
-    expect(text).toContain('不可逆后果')
+    // scene-wise-writing T1：入口/后果契约落在 scenes[] 字段说明与主次笔墨一节
+    expect(text).toContain('入场')
+    expect(text).toContain('后果不可逆')
     expect(text).toContain('如果删掉本章任意一个重要角色')
   })
 

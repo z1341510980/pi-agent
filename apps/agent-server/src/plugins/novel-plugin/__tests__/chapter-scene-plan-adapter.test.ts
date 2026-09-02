@@ -11,7 +11,7 @@ import {
   type PlanBudget,
 } from '../core/chapters/chapter-scene-plan-adapter.js'
 import { validateChapterScenePlan } from '../core/chapters/chapter-scene-plan.js'
-import type { NarrativeTask } from '../core/types.js'
+import type { NarrativeTask, NarrativeTaskScene } from '../core/types.js'
 import type { SceneDefinition } from '../core/discussion/engine/discussion-types.js'
 
 const BUDGET: PlanBudget = { baseTarget: 3000, adjustmentPct: 0, resolvedTarget: 3000, min: 2550, max: 3450 }
@@ -26,6 +26,21 @@ function task(overrides: Partial<NarrativeTask> = {}): NarrativeTask {
   }
 }
 
+function scene(i: number, overrides: Partial<NarrativeTaskScene> = {}): NarrativeTaskScene {
+  return {
+    order: i,
+    title: `场景${i}`,
+    emphasis: 'transition',
+    targetWords: 1000,
+    goal: `第 ${i} 场推进`,
+    entry: `第 ${i} 场入场`,
+    pressure: `第 ${i} 场阻力`,
+    choice: `第 ${i} 场选择`,
+    consequence: `第 ${i} 场后果`,
+    ...overrides,
+  }
+}
+
 describe('splitTargetWords 字数拆分', () => {
   it('均分，余数给最后一份', () => {
     expect(splitTargetWords(3000, 3)).toEqual([1000, 1000, 1000])
@@ -34,23 +49,34 @@ describe('splitTargetWords 字数拆分', () => {
   })
 })
 
-describe('formatSceneBudgetGuidance 逐场预算提示', () => {
-  it('sceneCount>=2 且无主次标注：逐场写死均分预算 + 单场超支的就地删减指令', () => {
+describe('formatSceneBudgetGuidance 逐场预算提示（scene-wise-writing T1/T2）', () => {
+  it('无 scenes：逐场写死均分预算 + 单场超支的就地删减指令（旧数据回退）', () => {
     const text = formatSceneBudgetGuidance(3, 3000)
     expect(text).toContain('场景 1 ≈ 1000 字')
     expect(text).toContain('场景 3 ≈ 1000 字')
     expect(text).toContain('就地删减')
   })
 
-  it('narrativeTask 带主次标注：按核心 2 : 过场 1 加权，并把标注写进提示', () => {
+  it('结构化 scenes：直接采用 Director 分配的逐场预算并带上主次标注', () => {
     const text = formatSceneBudgetGuidance(
       3,
       3000,
-      '场景 1【核心】主角摊牌。场景 2（过场）赶路。场景 3【核心】反噬落地。',
+      [
+        scene(1, { emphasis: 'core', targetWords: 1400, title: '审讯室对峙' }),
+        scene(2, { emphasis: 'transition', targetWords: 400, title: '赶路' }),
+        scene(3, { emphasis: 'core', targetWords: 1200, title: '反噬落地' }),
+      ],
     )
-    expect(text).toContain('场景 1（核心） ≈ 1200 字')
-    expect(text).toContain('场景 2（过场） ≈ 600 字')
+    expect(text).toContain('场景 1（核心） ≈ 1400 字')
+    expect(text).toContain('场景 2（过场） ≈ 400 字')
     expect(text).toContain('场景 3（核心） ≈ 1200 字')
+    expect(text).toContain('就地删减')
+  })
+
+  it('scenes 数量与 sceneCount 不一致：忽略结构化数据回退均分（防御）', () => {
+    const text = formatSceneBudgetGuidance(3, 3000, [scene(1), scene(2)])
+    expect(text).toContain('场景 1 ≈ 1000 字')
+    expect(text).not.toContain('（核心）')
   })
 
   it('sceneCount=1：单场景写透，不拆分', () => {
@@ -115,6 +141,29 @@ describe('buildScenePlanFromNarrativeTask', () => {
     expect(plan.scenes[0].presentCharacterIds).toEqual(ids)
     expect(plan.scenes[0].focusCharacterIds).toEqual(['c1', 'c2', 'c3', 'c4', 'c5'])
   })
+
+  it('结构化 scenes：逐场 title/goal/targetWords 直接取 Director 分配（生成依据）', () => {
+    const plan = buildScenePlanFromNarrativeTask({
+      ...base,
+      task: task({
+        sceneCount: 3,
+        povCharacters: ['叶明远'],
+        scenes: [
+          scene(1, { title: '审讯室对峙', emphasis: 'core', targetWords: 1400, goal: '逼出玉佩下落' }),
+          scene(2, { title: '赶路', emphasis: 'transition', targetWords: 400, goal: '转移证据' }),
+          scene(3, { title: '反噬落地', emphasis: 'core', targetWords: 1200, goal: '身份暴露的代价' }),
+        ],
+      }),
+      characterIdByName: new Map([['叶明远', 'c1']]),
+    })
+    expect(plan.scenes).toHaveLength(3)
+    expect(plan.scenes.map((s) => s.targetWords)).toEqual([1400, 400, 1200])
+    expect(plan.scenes[0].title).toBe('审讯室对峙')
+    expect(plan.scenes[0].goal).toBe('逼出玉佩下落')
+    expect(plan.scenes[1].goal).toBe('转移证据')
+    // 逐场预算总和 = resolvedTarget，validateChapterScenePlan 的 scene_budget_mismatch 通过
+    expect(validateChapterScenePlan(plan)).toEqual([])
+  })
 })
 
 describe('buildScenePlanFromSceneDefinitions', () => {
@@ -143,7 +192,7 @@ describe('buildScenePlanFromSceneDefinitions', () => {
   })
 })
 
-describe('T03 影子写集成（flag 开启的 store 链路）', () => {
+describe('scene-wise-writing T2：V2 场景计划写入集成（approved 计划的 store 链路）', () => {
   function createDb(): Database.Database {
     const db = new Database(':memory:')
     for (const migration of novelMigrations) db.exec(migration.sql)
@@ -166,8 +215,8 @@ describe('T03 影子写集成（flag 开启的 store 链路）', () => {
       timeOffset: null, chapterEndingHook: null, recap: null,
     })
 
-    // 模拟 orchestrator.shadowWriteDirectorPlan 的完整链路
-    const shadowWrite = (t: NarrativeTask) => {
+    // 模拟 orchestrator.writeDirectorScenePlan 的完整链路
+    const writePlan = (t: NarrativeTask) => {
       const budget = { baseTarget: 3000, adjustmentPct: 0, resolvedTarget: 3000, min: 2550, max: 3450 }
       store.supersedeActivePlans(chapter.id)
       const plan = store.createPlanRevision({ chapterId: chapter.id, projectId, budget })
@@ -180,14 +229,14 @@ describe('T03 影子写集成（flag 开启的 store 链路）', () => {
       return plan
     }
 
-    const p1 = shadowWrite(task({ sceneCount: 2, povCharacters: ['叶明远'] }))
+    const p1 = writePlan(task({ sceneCount: 2, povCharacters: ['叶明远'] }))
     // createPlanRevision 返回的是创建时 draft 快照；状态以库为准
     expect(store.getPlanRevision(p1.id)!.status).toBe('approved')
     expect(store.listSceneRevisionsByPlan(p1.id)).toHaveLength(2)
     expect(store.getCurrentPlan(chapter.id)!.id).toBe(p1.id)
 
     // Director 重跑 → 旧 approved 变 superseded，新计划接管
-    const p2 = shadowWrite(task({ sceneCount: 3, povCharacters: ['叶明远'] }))
+    const p2 = writePlan(task({ sceneCount: 3, povCharacters: ['叶明远'] }))
     expect(store.getPlanRevision(p1.id)!.status).toBe('superseded')
     expect(store.getCurrentPlan(chapter.id)!.id).toBe(p2.id)
     // 旧计划场景全部 superseded，新计划场景 planned

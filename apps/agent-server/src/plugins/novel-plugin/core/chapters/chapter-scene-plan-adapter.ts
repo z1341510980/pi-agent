@@ -1,18 +1,20 @@
 /**
- * ChapterScenePlanAdapter：从现有规划产物派生 V2 场景计划（T03 影子写）。
+ * ChapterScenePlanAdapter：从 Director 规划产物派生 V2 场景计划（scene-wise-writing T2）。
  *
- * 迁移期（§10 第 1 步：建表与影子写）把两条旧规划路径映射为统一 ChapterScenePlan，
- * 落库后不改变任何生成行为，只让 V2 存储拿到可对账的影子数据：
- * - 普通工作流：Director 的 NarrativeTask（章节级）→ 按 sceneCount 拆场；
+ * 两条映射路径统一为 ChapterScenePlan 落库：
+ * - 普通工作流：Director 的 NarrativeTask。scene-wise-writing T1 起 Director 通过
+ *   `novel_submit_narrative_task` 提交结构化 `scenes[]`（含逐场 targetWords/emphasis/
+ *   因果契约），本模块**直接消费结构化字段**——场景计划是 Writer 逐场预算的生成依据，
+ *   不再是仅供对账的影子数据。无 scenes（旧数据/工具未提交）时回退均分。
  * - 群聊：SceneDefinition[] → 逐场映射。
  *
  * 映射原则（与已确认决策一致）：
  * - 无法确定单 POV 的章节/场景 → povMode='omniscient'（povCharacterId=null），
  *   绝不从角色名瞎猜 POV id；单 POV 且能解析到角色 id 时才用 'single'。
  * - functional cast 无信息 → 空数组（不伪造功能位）。
- * - 场景字数均分 resolvedTarget，余数给最后一场（文档 §5 校验规则）。
+ * - 回退路径的场景字数均分 resolvedTarget，余数给最后一场（文档 §5 校验规则）。
  */
-import type { NarrativeTask, ArrangedEntity } from '../types.js'
+import type { NarrativeTask, ArrangedEntity, NarrativeTaskScene } from '../types.js'
 import type { SceneDefinition } from '../discussion/engine/discussion-types.js'
 import type { ChapterScenePlan, ChapterScenePlanScene } from './chapter-scene-plan.js'
 import type { ChapterPlanRevision } from '../types.js'
@@ -49,69 +51,25 @@ export function splitTargetWords(total: number, count: number): number[] {
   return Array.from({ length: count }, (_, i) => base + (i === count - 1 ? remainder : 0))
 }
 
-/** 场景笔墨等级：核心承载主任务/高潮，过场只做承接与过渡 */
+/** 场景笔墨等级：核心承载主任务/高潮，过场只做承接与过渡（scene-wise-writing T1 结构化字段） */
 export type SceneEmphasis = 'core' | 'transition'
-
-/** 核心场景相对过场的笔墨权重 */
-const CORE_WEIGHT = 2
-const TRANSITION_WEIGHT = 1
-
-/**
- * 从 narrativeTask 文本解析每场的主次标注。
- *
- * Director 契约要求按「场景N【核心】/（过场）」分段书写（见 role-director.md
- * 「主次笔墨」）。这里只做宽松匹配：识别到几场就返回几场，未标注的按过场处理，
- * 完全没有标注时返回空数组，由调用方回落到均分。
- *
- * 不做严格解析：标注格式的强制校验在 submit 工具（拒绝并要求重提），
- * 这里只负责"能读到多少就用多少"，读不到不影响出稿。
- */
-export function parseSceneEmphasis(narrativeTask: string, sceneCount: number): SceneEmphasis[] {
-  if (!narrativeTask || sceneCount < 1) return []
-  const emphases: SceneEmphasis[] = []
-  // 场景 1【核心】 / 场景1（核心高潮） / 场景 2【过场】 —— 括号类型与空格都放宽
-  const pattern = /场景\s*(\d+)\s*[【（(\[]([^】）)\]]{0,12})[】）)\]]/g
-  for (const match of narrativeTask.matchAll(pattern)) {
-    const index = Number.parseInt(match[1], 10)
-    if (!Number.isFinite(index) || index < 1 || index > sceneCount) continue
-    emphases[index - 1] = match[2].includes('核心') ? 'core' : 'transition'
-  }
-  if (emphases.length === 0) return []
-  return Array.from({ length: sceneCount }, (_, i) => emphases[i] ?? 'transition')
-}
-
-/** 按权重拆字数，舍入差额给权重最大的那一场（核心场景吃余量） */
-export function splitWeightedTargetWords(total: number, weights: number[]): number[] {
-  const sum = weights.reduce((acc, w) => acc + w, 0)
-  if (sum <= 0) return splitTargetWords(total, weights.length)
-  const raw = weights.map((w) => Math.floor((total * w) / sum))
-  const remainder = total - raw.reduce((acc, v) => acc + v, 0)
-  if (remainder !== 0) {
-    let heaviest = 0
-    for (let i = 1; i < weights.length; i += 1) {
-      if (weights[i] > weights[heaviest]) heaviest = i
-    }
-    raw[heaviest] += remainder
-  }
-  return raw
-}
 
 /**
  * 逐场字数预算提示（注入 Writer 创作指令的 {{scene_budgets}} 占位符）。
  *
- * 2026-09-01：此前只让 Writer「目标÷场数自己分配」，模型自计数不可靠，
- * 首稿惯性超写且前场写满、核心剧情没展开就爆字数。这里把结果逐场写死，
- * Writer 只需按行核对。
+ * scene-wise-writing T1/T2：优先读取 Director 结构化 `scenes[]` 的逐场 targetWords
+ * （工具已校验总和=本章目标），主次标注与预算都来自 Director 的显式分配。
+ * 无 scenes 时回退均分（旧数据/工具未提交；群聊路径不经此函数）。
  *
- * 均分同样不够：实测 Director 把三场全标成【核心】，均分 1000/1000/1000 等于
- * 没有主次，Writer 每场都按"核心"的密度写，首稿 4740 字（158%）。
- * 因此按主次标注加权（核心 2 : 过场 1），并把每场标注一并写进提示里 ——
- * 模型看到"场景 2（过场）≈ 600 字"比看到"过场从简"这种形容词有效得多。
+ * 背景（2026-09-01）：此前只让 Writer「目标÷场数自己分配」，模型自计数不可靠，
+ * 首稿惯性超写且前场写满、核心剧情没展开就爆字数。这里把结果逐场写死，
+ * Writer 只需按行核对；历史版本曾按文本正则解析主次标注再加权（核心 2 : 过场 1），
+ * scene-wise-writing 起正则解析整体退役（违反 AGENTS.md 方案 D 约定）。
  */
 export function formatSceneBudgetGuidance(
   sceneCount: number | undefined,
   targetWords: number,
-  narrativeTask?: string,
+  scenes?: NarrativeTaskScene[],
 ): string {
   if (sceneCount == null || sceneCount < 1) {
     return '叙事任务未标注场景数：按叙事任务的自然分段拆场，给每场分配预算（约等于目标字数 ÷ 场数）。'
@@ -120,17 +78,15 @@ export function formatSceneBudgetGuidance(
   if (n === 1) {
     return `本章单场景写透：全场预算 ${targetWords} 字，写到该收就收，不要为了填满而加戏。`
   }
-  const emphases = narrativeTask ? parseSceneEmphasis(narrativeTask, n) : []
-  const hasEmphasis = emphases.length === n && emphases.some((e) => e === 'transition')
-  const budgets = hasEmphasis
-    ? splitWeightedTargetWords(
-        targetWords,
-        emphases.map((e) => (e === 'core' ? CORE_WEIGHT : TRANSITION_WEIGHT)),
-      )
+  const structured = scenes && scenes.length === n ? scenes : undefined
+  const budgets = structured
+    ? structured.map((scene) => scene.targetWords)
     : splitTargetWords(targetWords, n)
   const lines = budgets
     .map((w, i) => {
-      const tag = hasEmphasis ? `（${emphases[i] === 'core' ? '核心' : '过场'}）` : ''
+      const tag = structured
+        ? `（${structured[i].emphasis === 'core' ? '核心' : '过场'}）`
+        : ''
       return `场景 ${i + 1}${tag} ≈ ${w} 字`
     })
     .join(' / ')
@@ -142,35 +98,39 @@ export function formatSceneBudgetGuidance(
 
 /**
  * NarrativeTask（章节级）→ ChapterScenePlan。
- * - 场景数：task.sceneCount ?? 1（Director 已限 1-5）
+ * - 有结构化 scenes[]：逐场 goal/title/targetWords 直接取 Director 分配（生成依据）
+ * - 无 scenes（旧数据/未提交）：按 sceneCount 均分，每场 goal 复用任务描述（不臆造）
  * - POV：恰好 1 个且能解析为角色 id → single；否则 omniscient（不猜）
  * - focus/present：arrangedEntities.characterIds（有编排时），否则 []
- * - 每场 goal 复用任务描述（影子写不臆造逐场目标）
  */
 export function buildScenePlanFromNarrativeTask(input: NarrativeTaskPlanInput): ChapterScenePlan {
   const { task, budget } = input
-  const sceneCount = Math.min(Math.max(task.sceneCount ?? 1, 1), 5)
+  const structured = task.scenes && task.scenes.length > 0 ? task.scenes : undefined
+  const sceneCount = Math.min(Math.max(task.sceneCount ?? structured?.length ?? 1, 1), 5)
   const splits = splitTargetWords(budget.resolvedTarget, sceneCount)
 
   const singlePovId = resolveSinglePovCharacterId(task, input.characterIdByName)
   const arrangedIds = input.arrangedEntities?.characterIds ?? []
   const presentIds = arrangedIds.length > 0 ? arrangedIds : []
 
-  const scenes: ChapterScenePlanScene[] = Array.from({ length: sceneCount }, (_, i) => ({
-    sceneKey: `s${i + 1}`,
-    order: i + 1,
-    title: `场景${i + 1}`,
-    goal: task.description,
-    locationText: '',
-    timeText: '',
-    povMode: singlePovId ? 'single' : 'omniscient',
-    povCharacterId: singlePovId,
-    focusCharacterIds: presentIds.slice(0, 5),
-    presentCharacterIds: presentIds,
-    functionalCast: [],
-    targetWords: splits[i],
-    progresses: [],
-  }))
+  const scenes: ChapterScenePlanScene[] = Array.from({ length: sceneCount }, (_, i) => {
+    const source: NarrativeTaskScene | undefined = structured?.[i]
+    return {
+      sceneKey: `s${i + 1}`,
+      order: i + 1,
+      title: source?.title ?? `场景${i + 1}`,
+      goal: source?.goal ?? task.description,
+      locationText: '',
+      timeText: '',
+      povMode: singlePovId ? 'single' : 'omniscient',
+      povCharacterId: singlePovId,
+      focusCharacterIds: presentIds.slice(0, 5),
+      presentCharacterIds: presentIds,
+      functionalCast: [],
+      targetWords: source?.targetWords ?? splits[i],
+      progresses: [],
+    }
+  })
 
   return {
     planRevisionId: input.planRevisionId,

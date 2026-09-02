@@ -623,7 +623,12 @@ export class NovelOrchestrator {
         // draft 通过闭包传递，Director 结束后 orchestrator 直接读取 draft.task。
         // 每次循环重置 draft：保留对外部 narrativeDraft 引用，避免重试时旧 task 残留
         narrativeDraft = {}
-        const submitNarrativeTaskTool = createNovelSubmitNarrativeTaskTool(narrativeDraft)
+        // scene-wise-writing T1：传入基础目标字数，启用 scenes[] 总和校验
+        //（与 buildChapterConstraints 同口径：定位不调字数，baseTarget 即解析基准）。
+        const directorBaseTarget = baseTargetOf(this.store.getProject(projectId)?.targetWords)
+        const submitNarrativeTaskTool = createNovelSubmitNarrativeTaskTool(narrativeDraft, {
+          baseTarget: directorBaseTarget,
+        })
         // 纠正性重试带显式工具指令：空终答/漏工具更像模型抖动而非理解问题，
         // 直接点名工具比泛泛的"重新规划"更有效。
         const replanGuard = isReplan
@@ -750,9 +755,9 @@ export class NovelOrchestrator {
         if (directorTask.type === 'escalate_conflict' && directorTask.expectedIntensityDelta === undefined) {
           directorTask.expectedIntensityDelta = 1
         }
-        // T03 V2 计划写（2026-08-12 逻辑统一：scenePlanV2Write 转正，恒写 V2 plan + scenes）。
-        // 续跑跳过：首跑已写过，重写会重复追加场景计划。
-        this.shadowWriteDirectorPlan(
+        // scene-wise-writing T2：Director 批准的场景计划写入 V2（结构化 scenes
+        // 转正为生成依据，恒写 plan + scenes）。续跑跳过：首跑已写过，重写会重复追加场景计划。
+        this.writeDirectorScenePlan(
           projectId, chapter, chapterNumber, directorTask, run.arrangedEntities, rhythmSuggestion,
         )
       }
@@ -962,7 +967,10 @@ export class NovelOrchestrator {
           run.directorOutput = undefined
           // ⚠️ 工具化方案：重跑 Director 时也要创建新的 draft 并注入工具
           const pushbackNarrativeDraft: NarrativeTaskDraftHolder = {}
-          const pushbackSubmitTool = createNovelSubmitNarrativeTaskTool(pushbackNarrativeDraft)
+          // 与首轮同一 baseTarget，保证推回重跑的 scenes 总和校验口径一致
+          const pushbackSubmitTool = createNovelSubmitNarrativeTaskTool(pushbackNarrativeDraft, {
+            baseTarget: baseTargetOf(this.store.getProject(projectId)?.targetWords),
+          })
           const rewriteDirectorResult = await this.runAgent('director', projectId, chapterNumber,
             `写作 Agent 对之前的叙事任务提出了异议，请依据既有章纲和节奏约束重新规划第 ${chapterNumber} 章。` +
             '\n\n注意：上下文「本章要完成的事」里是你上一轮提交的方案，仅作背景参考；' +
@@ -1000,7 +1008,7 @@ export class NovelOrchestrator {
           run.directorTask = pushbackNarrativeDraft.task
           // 推回重跑 Director 也必须补 V2 计划写，否则首次规划有 ScenePlan、
           // 修订后的最终规划没有，双写对账会把重写误报为缺失。
-          this.shadowWriteDirectorPlan(
+          this.writeDirectorScenePlan(
             projectId, chapter, chapterNumber, run.directorTask, run.arrangedEntities, rhythmSuggestion,
           )
           this.emitProgress(options, 'directing', 'phase_change', {
@@ -2270,10 +2278,15 @@ export class NovelOrchestrator {
   }
 
   /**
-   * T03 影子写（V2）：Director 计划 → V2 plan + scenes（flag scenePlanV2Write 开启时调用）。
-   * 只落库、不改行为；失败仅告警不影响主流程。同一章重跑时旧 draft/approved 计划 superseded。
+   * V2 场景计划写入（scene-wise-writing T2：从影子写转正）。
+   *
+   * Director 的结构化 scenes[]（含逐场 targetWords/emphasis/因果契约）落库为
+   * approved 计划 + 场景行。Writer 的逐场字数预算提示读取同一份 scenes
+   * （formatSceneBudgetGuidance），因此这里写入的不再只是对账用影子数据，
+   * 而是**生成依据的持久化形态**。失败仅告警不影响主流程（预算提示已直接
+   * 来自 task.scenes，不依赖库表往返）。同一章重跑时旧 draft/approved 计划 superseded。
    */
-  private shadowWriteDirectorPlan(
+  private writeDirectorScenePlan(
     projectId: string,
     chapter: NovelChapter | undefined,
     chapterNumber: number,
@@ -2311,10 +2324,10 @@ export class NovelOrchestrator {
       this.store.transitionPlan(plan.id, 'approved', 'draft')
       this.context.logger.info(
         { projectId, chapterNumber, planId: plan.id, sceneCount: scenePlan.scenes.length },
-        'T03: Director 计划已影子写入 V2',
+        'scene-wise-writing T2: Director 结构化场景计划已写入 V2（approved）',
       )
     } catch (err) {
-      this.context.logger.warn({ projectId, chapterNumber, err }, 'T03: 影子写入 V2 计划失败，不影响主流程')
+      this.context.logger.warn({ projectId, chapterNumber, err }, 'scene-wise-writing T2: V2 场景计划写入失败，不影响主流程（逐场预算提示直接来自 task.scenes）')
     }
   }
 
