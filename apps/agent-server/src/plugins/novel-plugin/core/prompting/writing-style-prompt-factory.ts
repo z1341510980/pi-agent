@@ -159,10 +159,16 @@ function listSection(title: string, values: string[], limit: number, itemMaxLeng
 type StyleExpertCard = NonNullable<NovelWritingStyleProfile['styleExperts']>[number]
 
 /**
- * 单个文风专家的完整卡片：身份段简版与场景聚焦展开版共用同一渲染，
- * 差别只在预算——预算截断时牺牲的是"参考样本"，而不是防抄袭与防跑偏的护栏。
+ * 单个文风专家的完整卡片：身份段简版与场景聚焦展开版共用同一渲染。
+ * 差异有二：预算（截断时牺牲的是"参考样本"，而不是防抄袭与防跑偏的护栏）
+ * 与范例段——身份段保留手法样本（参考小说原文片段），suffix 展开版跳过：
+ * 同一批原文片段在上下文里出现两遍等于给修辞示范双倍权重。
  */
-function renderStyleExpertCard(expert: StyleExpertCard, perExpertBudget: number): string {
+function renderStyleExpertCard(
+  expert: StyleExpertCard,
+  perExpertBudget: number,
+  options: { includeExemplars?: boolean } = {},
+): string {
   return cleanText([
     `- **${cleanText(expert.name, 20)}**（${cleanText(expert.sourceTitle, 35)}）`,
     cleanText(expert.description, 80),
@@ -191,7 +197,9 @@ function renderStyleExpertCard(expert: StyleExpertCard, perExpertBudget: number)
     ...(expert.boundaries ?? []).slice(0, 2).map((item) => `  - 能力边界：${cleanText(item, 60)}`),
     ...(expert.exclusions ?? []).slice(0, 4).map((item) => `  - 不得迁移：${cleanText(item, 60)}`),
     // 范例段放最后：预算截断时牺牲的是"参考样本"，而不是防抄袭与防跑偏的护栏
-    ...(expert.exemplarPassages ?? []).slice(0, 2).map((passage) => `  - 手法样本（只学机制）：${cleanText(passage.text, 180)}`),
+    ...(options.includeExemplars === false
+      ? []
+      : (expert.exemplarPassages ?? []).slice(0, 2).map((passage) => `  - 手法样本（只学机制）：${cleanText(passage.text, 180)}`)),
   ].join('\n  '), perExpertBudget)
 }
 
@@ -207,7 +215,11 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
       `- 语言语域：${REGISTER_LABELS[profile.vocabularyRegister]}`,
       `- 对话参考中心：约 ${Math.round(profile.dialogueRatio)}%（这是跨场景倾向，不是逐章配额）`,
       `- 情感温度：${profile.emotionalTemperature}/10（跨章中心值，允许 ±2 随场景压力浮动：高压段可更高，余波段可更低）`,
-      `- 意象与比喻密度：${profile.imageryDensity}/10（跨章中心值，允许 ±2 浮动；动作段少修辞，静场可更密）`,
+      // 意象密度数值只在用户明确要求高密度（>=6）时作为目标注入；
+      // 低档位注入数值反而把"密度"变成达标指标（模型会主动凑比喻）。
+      ...(profile.imageryDensity >= 6
+        ? [`- 意象与比喻密度：${profile.imageryDensity}/10（跨章中心值，允许 ±2 浮动；动作段少修辞）`]
+        : ['- 意象与比喻：密度不作为目标；比喻只在直接服务现场感官落点时出现，宁少勿多']),
     ].join('\n'),
     // 文风档案属于 Agent identity，必须有明确体积预算。优先保留靠前规则，
     // 避免用户粘贴大量说明后让每次 Writer/Reviewer 调用膨胀数千字符。
@@ -609,8 +621,8 @@ export function buildSceneExpertFocus(input: SceneExpertFocusInput): string {
     .slice(0, maxExperts)
   return [
     `### 本章优先文风能力（主导场景：${SCENE_TYPE_LABELS[input.sceneType]}）`,
-    '以下是身份段专家卡的展开版：只放大与本章主导场景最相关的维度，手法卡更完整。',
+    '以下是身份段专家卡的展开版：只放大与本章主导场景最相关的维度，手法卡更完整（手法样本不在此重复，见身份段）。',
     '其余维度仍以身份段简版存在；未列出的维度不要求在本章体现，也不算风格缺失。',
-    ...ordered.map((expert) => renderStyleExpertCard(expert, perExpertBudget)),
+    ...ordered.map((expert) => renderStyleExpertCard(expert, perExpertBudget, { includeExemplars: false })),
   ].join('\n')
 }
