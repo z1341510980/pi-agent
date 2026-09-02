@@ -90,7 +90,6 @@ import {
   buildSceneExpertFocus,
   type WritingStylePromptTarget
 } from './writing-style-prompt-factory.js'
-import { isLengduWriterDisciplineEnabled, LENGDU_WRITER_DISCIPLINE } from './lengdu-writer-discipline.js'
 import { buildVoiceProfiles, formatVoiceContrastTable } from '../entities/character-voice.js'
 import { evaluateProseQuality } from '../quality/prose-quality-evaluator.js'
 import { WORD_COUNT_LIMITS, PROSE_SHAPE_LIMITS } from '../quality/quality-policy.js'
@@ -976,13 +975,8 @@ export class NovelPromptBuilder {
       styleExpertIds,
     )
     const withStyle = compiledStyle ? `${result}\n\n---\n\n${compiledStyle.content}` : result
-    // lengdu 写作纪律只给 Writer（非 Skill 路径与 Skill 路径行为对齐）
-    const final =
-      agentType === 'writer' && isLengduWriterDisciplineEnabled()
-        ? `${withStyle}\n\n---\n\n${LENGDU_WRITER_DISCIPLINE}`
-        : withStyle
-    this.guardAgentIdentity(agentType, final)
-    return final
+    this.guardAgentIdentity(agentType, withStyle)
+    return withStyle
   }
 
   /**
@@ -1056,17 +1050,7 @@ export class NovelPromptBuilder {
     const rules = this.promptManager.getTemplate('system-base-rules', projectId)
     const withRules = rules ? `${identity}\n\n---\n\n${rules}` : identity
     const compiledStyle = this.buildWritingStylePrompt(projectId, 'writer', styleExpertIds)
-    // lengdu 写作纪律（方案：写作侧接入）：与读感验收共用同一套标准，
-    // 注入静态身份层（跨章稳定，命中 prompt 缓存）。PI_LENGDU_WRITER_DISCIPLINE=off 可关。
-    const disciplineParts: string[] = []
-    if (isLengduWriterDisciplineEnabled()) {
-      disciplineParts.push(LENGDU_WRITER_DISCIPLINE)
-    }
-    const discipline = disciplineParts.join('\n\n')
-    const base = compiledStyle
-      ? `${withRules}\n\n---\n\n${compiledStyle.content}`
-      : withRules
-    return discipline ? `${base}\n\n---\n\n${discipline}` : base
+    return compiledStyle ? `${withRules}\n\n---\n\n${compiledStyle.content}` : withRules
   }
 
   /**
@@ -1233,11 +1217,6 @@ export class NovelPromptBuilder {
    */
   getNovelCreationSkillPath(projectId: string): string | undefined {
     return this.promptManager.getDefaultTemplatePath('novel-creation', projectId)
-  }
-
-  /** 项目级 lengdu Skill：供独立校准与 Reader 工作流按路径加载，不参与默认 Skill 扫描。 */
-  getLengduSkillPath(): string | undefined {
-    return this.promptManager.getExternalSkillPath('lengdu', 'PI_LENGDU_SKILL_PATH')
   }
 
   buildNovelCreationSkillIdentity(projectId: string): string {

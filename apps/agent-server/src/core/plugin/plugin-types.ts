@@ -642,7 +642,7 @@ export interface PluginSessionHandle {
    * 触发 LLM 推理，返回完整 assistant 文本。
    *
    * 传入 message 时会向同一 Session 追加一条用户消息再推理，
-   * 用于需要保持零继承、多轮上下文隔离的插件工作流（如 lengdu Reader）。
+   * 用于需要保持零继承、多轮上下文隔离的插件工作流（如协议解析失败后的同会话修复轮）。
    * 不传参数时保持创建 Session 时首条 userMessage 的既有语义。
    */
   prompt(message?: string): Promise<string>

@@ -66,45 +66,6 @@ afterEach(() => {
 })
 
 describe('useNovelCreationFlow progress', () => {
-  it('formats the persisted lengdu quality report with all reader gates and isolation status', async () => {
-    const { formatDetailBubble } = await import('../use-novel-creation-flow')
-
-    const result = formatDetailBubble({
-      kind: 'lengdu_quality_report',
-      status: 'degraded',
-      calibration: 'independent',
-      reader: 'self_review',
-      comprehension: 'passed',
-      fluency: 'needs_attention',
-      appeal: 'unverified',
-      revisionCount: 1,
-      summary: '中段有些卡，未完成独立 Reader 复核。',
-    })
-
-    expect(result).toMatchObject({ agentType: 'lengdu', agentName: 'lengdu 读感' })
-    expect(result.content).toContain('看懂：通过')
-    expect(result.content).toContain('流畅：待关注')
-    expect(result.content).toContain('好看：未验证')
-    expect(result.content).toContain('独立校准完成；Reader 自审降级')
-    expect(result.content).toContain('中段有些卡')
-  })
-
-  it('formats the lengdu reader packet report as a cold-read bubble', async () => {
-    const { formatDetailBubble } = await import('../use-novel-creation-flow')
-
-    const result = formatDetailBubble({
-      kind: 'lengdu_reader_packet',
-      round: 0,
-      packetIndex: 2,
-      packetCount: 5,
-      report: '## 这段读感\n- 看懂：一眼懂\n- 流畅：卡了一下',
-    })
-
-    expect(result).toMatchObject({ agentType: 'lengdu', agentName: 'lengdu Reader' })
-    expect(result.content).toContain('第 1 轮 事件包 2/5')
-    expect(result.content).toContain('流畅：卡了一下')
-  })
-
   it('create-flow 的 phase_change 只覆盖单条进度，不追加对话', async () => {
     const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
     const { result } = renderHook(() => useNovelCreationFlow())

@@ -812,10 +812,10 @@ interface NovelCharacter {
 | P1-2 文风样本分桶+自池 | 静态身份预算 7199→11999、锚定样本收敛 1 条；`inferSceneType` + `buildSceneSampleSection` 按本章主导场景类型分桶注入 Writer 指令层；自池=高分已发布章结尾摘段 | `prompting/writing-style-prompt-factory.ts`、`prompting/prompt-builder.ts` |
 | P1-3 修订按严重度路由 | issues 含 S2 时向 Reviser 首轮注入结构性修订指令（整段组重写+重建因果链）；S3/S4 维持最小补丁 | `buildRevisionSeverityDirective`（novel-orchestrator.ts） |
 | P1-4 Memory 补提取回路 | 主提取解析后确定性核对（正文出场但清单未提及的实体）→ 定向补提取一次 → 轨道拼接合并 | `generation/novel-memory-generator.ts` |
-| P2-1 Reader 门联动 publish | 迁移 117 `novel_chapters.lengdu_quality`；lengdu 完成后持久化报告；publish 门拦截 `needs_attention`；Reader 修订轮 1→2 | `novel-store.ts`、`novel-engine.publishChapter`、`lengdu/lengdu-workflow.ts` |
+| P2-1 Reader 门联动 publish | ~~迁移 117 `novel_chapters.lengdu_quality`；lengdu 完成后持久化报告；publish 门拦截 `needs_attention`~~ **已移除（2026-09-02）**：lengdu 链路实测无效果，整链删除（工作流/存储方法/publish 门/质量门信号/前端展示），迁移 117 列保留并标注停用 | `novel-migrations.ts`（迁移 117 注释） |
 | P2-2 审稿异源入口 | GET/PUT `/agent-config` 暴露 per-Agent `model`（null=回退项目主模型），reviewer/reviser 可切异源模型档位 | `domain/novel-agents.ts`、`routes/creation-flow-routes.ts` |
 | P2-3 修订形态指标差异 | `buildStyleMetricsDiff` 八项 L1 对比表；修订循环起止测量并经 `style_metrics_diff` 事件输出 | `analysis/style-measurement.ts`、`runTargetedRevisionLoop` |
-| P2-4 lengdu 通电与 AG-UI 接入（2026-08-24） | 底座修复：plugin-session 相邻 prompt 按完整生命周期串行化（此前 Reader 分包第二轮必撞 Pi "Agent is already processing"，恒降级，见 plugin-manager.ts 栅栏说明）。lengdu 三阶段改走 `createAgUiSession`：agent_start/流式正文/包级读感（`kind:'lengdu_reader_packet'`）直达前端；阶段调用统一落 AgentLog（agentType `lengdu`）并计入单章预算 `recordLlmCall`；档案解析改为外部 Skill 优先、缺失回退插件内置 `core/lengdu/profiles`（随 bytenode 构建分发），不再静默跳过 | `../../src/core/plugin/plugin-manager.ts`、`lengdu/lengdu-workflow.ts`、`novel-orchestrator.ts`、`desktop use-novel-creation-flow.ts` |
+| P2-4 lengdu 通电与 AG-UI 接入（2026-08-24） | ~~底座修复：plugin-session 相邻 prompt 按完整生命周期串行化（此前 Reader 分包第二轮必撞 Pi "Agent is already processing"，恒降级，见 plugin-manager.ts 栅栏说明）。lengdu 三阶段改走 `createAgUiSession`……~~ **已移除（2026-09-02）**：lengdu 整链删除后仅存两点遗产——① plugin-manager 的多轮 prompt 串行化栅栏保留（reference-analysis / beat-plan / chapter-outline 的同会话修复轮仍依赖）；② 迁移 117 列保留标注停用 | `plugin-manager.ts`（串行化栅栏）、`novel-migrations.ts` |
 
 前端配套：`desktop/src/renderer/src/api/novel-client.ts` 新增 beat-plan 四个 API 函数；`novel-agent-config-client.ts` 支持 `model` 字段；侧栏新增「节拍表」分组（`sidebar/beat-plan-group.tsx`，位于大纲树之下）——支持选卷生成、节拍列表展示与点击行内编辑（戏剧功能/情绪债务/爽点/走向）。
 

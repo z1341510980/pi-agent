@@ -20,7 +20,7 @@
   - 单场超标的就地处置（压缩重写该场 / 把超出量从后续场预算扣除）。
 - 外：
   - 群聊路径（`create-discussion`）：已有自己的场景计划与 Writer 编织链路，本次不改其行为，只保证共享类型与工具不破坏。
-  - lengdu 工作流、Reviewer / Reviser 的评分与修订逻辑。
+  - Reviewer / Reviser 的评分与修订逻辑（lengdu 工作流已于 2026-09-02 整体移除）。
   - 前端创作面板的 UI 重构（仅需接住既有 `progress` 事件，逐场进度复用现有 `phase_change`）。
   - 卷级节拍表（beat-plan）、矩阵编排（arranger）逻辑。
 

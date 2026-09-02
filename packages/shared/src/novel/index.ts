@@ -2313,8 +2313,6 @@ export interface AgentOutput {
     | 'context'
     | 'character'
     | 'moderator'
-    /** lengdu 读感校验（校准者 / Reader / 主作家共用同一气泡类型） */
-    | 'lengdu'
   /** Agent 名称（中文） */
   agentName: string
   /** Agent 的完整输出文本 */
@@ -2536,9 +2534,8 @@ export interface ChapterChatMetadata {
     | 'decision'
     | 'memory'
     | 'style_technique_checks'
-    | 'lengdu_quality_report'
     | 'run_end'
-  /** 工作流中的结构化展示信息（例如 lengdu 的读感质量报告）。 */
+  /** 工作流中的结构化展示信息（例如 Reviewer 的文风手法核对结果）。 */
   detail?: Record<string, unknown>
   /** 检查点类型 */
   checkpointType?: CheckpointType

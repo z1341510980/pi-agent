@@ -168,15 +168,6 @@ export const GATE_REGISTRY: QualityGate[] = [
     maxAction: 'revise',
     source: 'novel-orchestrator（novel_submit_review 工具）',
   },
-  {
-    id: 'lengdu-reader',
-    name: 'lengdu 独立冷读（看懂/流畅/好看三项，零继承首读）',
-    kind: 'llm-judgement',
-    // 冷读是 LLM 判断、可能误判，不给 rewrite；needs_attention 时与
-    // Reviewer 结论同权——此前该结论在主流程没有任何执行力。
-    maxAction: 'revise',
-    source: 'novel-orchestrator（LengduWorkflow.quality）',
-  },
 ]
 
 /**

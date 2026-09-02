@@ -437,50 +437,11 @@ const CHAPTER_ENDING_HOOK_LABELS: Record<string, string> = {
  * 因此本函数需要 export，避免在 CheckpointMessage 中重复格式化逻辑。
  */
 export function formatDetailBubble(detail: Record<string, unknown>): {
-  agentType: 'director' | 'context' | 'memory' | 'arranger' | 'reviser' | 'lengdu'
+  agentType: 'director' | 'context' | 'memory' | 'arranger' | 'reviser'
   agentName: string
   content: string
 } {
   const kind = detail.kind as string
-  if (kind === 'lengdu_reader_packet') {
-    const round = Number(detail.round ?? 0) + 1
-    const packetIndex = Number(detail.packetIndex ?? 0)
-    const packetCount = Number(detail.packetCount ?? 0)
-    const report = String(detail.report ?? '').trim() || '（Reader 未返回本包读感）'
-    const md = [
-      `## 冷读 · 第 ${round} 轮 事件包 ${packetIndex}/${packetCount}`,
-      '',
-      report,
-    ].join('\n')
-    return { agentType: 'lengdu', agentName: 'lengdu Reader', content: md }
-  }
-  if (kind === 'lengdu_quality_report') {
-    const verdictLabel: Record<string, string> = {
-      passed: '通过',
-      needs_attention: '待关注',
-      unverified: '未验证',
-    }
-    const status = detail.status as string
-    const statusLabel = status === 'passed'
-      ? '独立读感通过'
-      : status === 'degraded'
-        ? '自审降级'
-        : '存在待关注读感'
-    const calibration = detail.calibration === 'independent' ? '独立校准完成' : '校准未完成'
-    const reader = detail.reader === 'independent' ? '独立 Reader 完成' : 'Reader 自审降级'
-    const md = [
-      `## lengdu 读感校验：${statusLabel}`,
-      '',
-      `- 看懂：${verdictLabel[String(detail.comprehension)] ?? '未验证'}`,
-      `- 流畅：${verdictLabel[String(detail.fluency)] ?? '未验证'}`,
-      `- 好看：${verdictLabel[String(detail.appeal)] ?? '未验证'}`,
-      `- 独立性：${calibration}；${reader}`,
-      `- 本轮修订：${Number(detail.revisionCount ?? 0)} 次`,
-      '',
-      `**读者总评**：${String(detail.summary ?? '未返回可展示的 Reader 总评。')}`,
-    ].join('\n')
-    return { agentType: 'lengdu', agentName: 'lengdu 读感', content: md }
-  }
   if (kind === 'rhythm_suggestion') {
     const rhythm = detail.rhythm as string
     const climaxIntensity = detail.climaxIntensity as string | undefined

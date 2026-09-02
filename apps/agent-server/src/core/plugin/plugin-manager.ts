@@ -2201,13 +2201,16 @@ export class PluginManager {
             userSeq === undefined ? undefined : [userSeq]
           )
           const timeoutMs = options.timeoutMs ?? runtimePerformance.llm.timeoutMs
-          // ── 多轮 prompt 串行化（lengdu Reader 等分包会话的生命线）──
+          // ── 多轮 prompt 串行化（同会话分包/修复轮的生命线）──
           //
           // waitForFinalAssistantOrPrompt 刻意只等最终 assistant 消息、不等 Pi 的完整
           // prompt 生命周期（一次性 create-flow Agent 不该被自动压缩阻塞）。但 Pi 的
           // AgentSession.prompt() 在上一轮未走完（isStreaming=true）时会抛
           // "Agent is already processing"。两者组合下，同一 Session 的第二次
-          // prompt(message) 必然撞上未结束的上一轮 —— 这是 lengdu Reader 恒降级的根因。
+          // prompt(message) 必然撞上未结束的上一轮。
+          //
+          // 现有依赖方：reference-analysis-run-worker / beat-plan-generator /
+          // chapter-outline-generator 的「协议解析失败后同会话修复轮」。
           //
           // 处理：发起本轮之前，先等上一次 prompt 的**完整生命周期**落定。
           // - 本轮自己的返回时机不变（终态消息即返回，仍不被压缩阻塞）；

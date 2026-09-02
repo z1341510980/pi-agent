@@ -191,21 +191,21 @@ describe('PluginManager', () => {
 
     const handle = await context!.createSession({ systemPrompt: 'sys', userMessage: 'setup' })
 
-    // 模拟 lengdu Reader：装载档案后按事件包连续多轮 prompt。
+    // 模拟同会话分包/修复轮：首轮之后继续追加用户消息连续多轮 prompt。
     // 回归背景：waitForFinalAssistantOrPrompt 在终态消息即返回，而上一轮
     // promptPromise 尚未落定，第二轮直接撞 Pi 的 "Agent is already processing"。
-    const first = await handle.prompt('【正文事件包 1】')
-    const second = await handle.prompt('【正文事件包 2】')
-    const third = await handle.prompt('请给出最终读感。')
+    const first = await handle.prompt('【第 1 段输入】')
+    const second = await handle.prompt('【第 2 段输入】')
+    const third = await handle.prompt('请给出最终结论。')
 
     // 句柄返回的是事件流累积的 assistant 文本（text_delta 拼接），不是 SDK 返回值
     expect(first).toBe('turn-1')
     expect(second).toBe('turn-2')
     expect(third).toBe('turn-3')
     expect(fake.prompts).toEqual([
-      '【正文事件包 1】',
-      '【正文事件包 2】',
-      '请给出最终读感。'
+      '【第 1 段输入】',
+      '【第 2 段输入】',
+      '请给出最终结论。'
     ])
     handle.dispose()
   })

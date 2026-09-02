@@ -480,8 +480,7 @@ export function mapAgentType(agentType: string): ConversationAgentType {
     'context',
     'extractor',
     'moderator',
-    'character',
-    'lengdu'
+    'character'
   ]
   return knownTypes.includes(agentType as ConversationAgentType)
     ? (agentType as ConversationAgentType)

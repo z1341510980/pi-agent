@@ -254,7 +254,7 @@ context.registerPanel({
 1. `config/plugins.yml` 注释更新：novel 条目注明"builtin 加载期全能力授予，grants 字段当前不影响 builtin"；注明"disabled 的 builtin 迁移仍会执行（getLoadedMigrations 语义），禁用不清数据，卸载数据另走显式产品流程"。
 2. `docs/novel-module-analysis.md` 增补一节记录本次边界变更；ARCHITECTURE.md 对账（顺带清理其已滞后的模块条目，即分析报告 P2-1）。
 3. e2e（apps/agent-server/scripts/e2e-test）：novel enabled 全流程冒烟 + disabled 启动冒烟（含"禁用后在飞任务被取消"场景）。
-4. 回归清单：创作流 SSE、检查点决策、矩阵拖拽、画布、群聊、参考小说分析、lengdu skill 路径（`skillRead` 授权链路不受影响）。
+4. 回归清单：创作流 SSE、检查点决策、矩阵拖拽、画布、群聊、参考小说分析（`skillRead` 授权链路不受影响；lengdu 链路已于 2026-09-02 整体移除）。
 
 ## 6. 实施顺序与工作量预估
 

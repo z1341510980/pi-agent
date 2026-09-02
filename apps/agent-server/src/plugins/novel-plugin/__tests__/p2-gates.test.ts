@@ -5,55 +5,6 @@ import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
 import { buildStyleMetricsDiff, measureStyleMetrics } from '../core/analysis/style-measurement.js'
 
-function createStoreWithChapter(): { store: NovelStore; chapterId: string } {
-  const db = new Database(':memory:')
-  for (const migration of novelMigrations) db.exec(migration.sql)
-  const store = new NovelStore(db)
-  const projectId = randomUUID()
-  store.createProject({
-    id: projectId, title: 't', genre: 't', synopsis: '', outline: '',
-    targetWords: 0, currentVolume: 1, currentChapter: 1,
-    currentStage: 'setup', status: 'active',
-  })
-  const chapter = store.createChapter({
-    id: randomUUID(), projectId, volume: 1, chapterNumber: 1,
-    title: '第一章', content: '正文', wordCount: 2,
-    status: 'review', narrativeTask: '', outline: '', volumeId: null,
-    acceptanceResult: null, tension: null, positioning: null,
-    timeOffset: null, chapterEndingHook: null, recap: null,
-  })
-  return { store, chapterId: chapter.id }
-}
-
-describe('P2-1 章节级 lengdu 质量报告持久化', () => {
-  it('写入后可读回，未写入时为 undefined，损坏 JSON 返回 undefined', () => {
-    const { store, chapterId } = createStoreWithChapter()
-
-    expect(store.getChapterLengduQuality(chapterId)).toBeUndefined()
-
-    store.setChapterLengduQuality(chapterId, {
-      status: 'needs_attention',
-      comprehension: 'passed',
-      fluency: 'passed',
-      appeal: 'needs_attention',
-      revisionCount: 2,
-      usedIndependentReader: true,
-      summary: '好看项未通过',
-      savedAt: 123,
-    })
-    expect(store.getChapterLengduQuality(chapterId)?.status).toBe('needs_attention')
-    expect(store.getChapterLengduQuality(chapterId)?.revisionCount).toBe(2)
-
-    // 覆盖写入最新结果
-    store.setChapterLengduQuality(chapterId, { status: 'passed', savedAt: 456 })
-    expect(store.getChapterLengduQuality(chapterId)?.status).toBe('passed')
-
-    // 损坏 JSON 不抛错
-    store.setChapterLengduQuality(chapterId, undefined)
-    expect(store.getChapterLengduQuality(chapterId)).toBeUndefined()
-  })
-})
-
 describe('ScenePlan V2 覆盖率探针（P1-3 v2 前置审计）', () => {
   it('空项目返回全零且 sceneRewriteReady 判定为 false 口径的原始统计', () => {
     const db = new Database(':memory:')

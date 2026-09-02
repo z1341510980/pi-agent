@@ -82,9 +82,6 @@ import { baseTargetOf, resolveWordBudget, resolveWriterMaxTokens } from './chapt
 import { ON_DEMAND_LIMITS } from './prompting/entity-summary.js'
 import { degradeChunks, materializeDegradedChunks, type DegradableChunk } from './prompting/context-budget.js'
 import { buildScenePlanFromNarrativeTask } from './chapters/chapter-scene-plan-adapter.js'
-import { LengduWorkflow, LENGDU_STAGE_AGENT_NAMES } from './lengdu/lengdu-workflow.js'
-import { hashChapterContent } from './stores/chapter-store.js'
-import { persistNovelFailureAudit } from './observability/novel-error-audit.js'
 
 import { buildWriterRewritePlan } from './chapters/writer-rewrite-plan.js'
 import { measureStyleMetrics, buildStyleMetricsDiff } from './analysis/style-measurement.js'
@@ -860,8 +857,6 @@ export class NovelOrchestrator {
       // 不再弹出第二个会覆盖该选择的验收检查点。
       let requestedRevisionReason = ''
       let bestWriterCandidate: { content: string; score: number } | undefined
-      // lengdu 是独立的“作者侧校准 → Reader → 修订 → 新 Reader”工作流，
-      // 只在本次完成初稿后运行，不能作为 Writer 的附加说明混进正文生成。
       const MAX_PUSHBACK = 1 // 限制推回 1 次，避免无限循环
 
       while (true) {
@@ -1222,233 +1217,6 @@ export class NovelOrchestrator {
         })
       }
 
-      // reviewing 快照是在 lengdu 处理完成后保存的；续跑时绝不能让已读过
-      // 该版本的工作流再执行一次，否则会伪造“新 Reader”独立性。
-      // lengdu 读感质量： hoist 到外层作用域，供下方质量门仲裁消费。
-      let lengduQuality: import('./lengdu/lengdu-workflow.js').LengduQualityReport | undefined
-      if (!(resume?.entry === 'reviewing' && resume.writerDraft)) {
-        const lengduModelId = options.modelId ?? parseNovelModelRef(run.projectModelId)
-        const lengduSkillPath = this.promptBuilder.getLengduSkillPath?.()
-        // 档案来源显式告知：外部 Skill 缺失时回退到插件内置档案，不再静默跳过。
-        if (!lengduSkillPath) {
-          this.emitProgress(options, 'writing', 'phase_change', {
-            message: '未找到外部 lengdu Skill（PI_LENGDU_SKILL_PATH 或 .claude/skills/lengdu），使用插件内置读感档案。',
-          })
-        }
-        const lengduResult = await new LengduWorkflow(this.context).run({
-          projectId,
-          chapterNumber,
-          content: writerResult,
-          skillPath: lengduSkillPath,
-          signal: options.signal,
-          modelId: lengduModelId,
-          emit: options.emit,
-          onEvent: event => {
-            switch (event.kind) {
-              case 'status':
-                this.emitProgress(options, 'writing', 'phase_change', { message: event.message })
-                break
-              case 'stage_start':
-                // 与 runAgentOnce 相同的 agent_start 契约：先于首 token 发射，
-                // 前端据此把 TEXT_MESSAGE_* 流式增量挂到对应气泡。
-                this.emitProgress(options, 'writing', 'agent_start', {
-                  agentType: 'lengdu',
-                  agentName: event.agentName,
-                  messageId: event.messageId,
-                  message: `${event.agentName} 已启动...`,
-                })
-                break
-              case 'packet_report':
-                this.emitProgress(options, 'writing', 'phase_change', {
-                  message: `lengdu Reader 第 ${event.round + 1} 轮：事件包 ${event.packetIndex}/${event.packetCount} 读感已返回`,
-                  detail: {
-                    kind: 'lengdu_reader_packet',
-                    round: event.round,
-                    packetIndex: event.packetIndex,
-                    packetCount: event.packetCount,
-                    report: event.report,
-                  },
-                })
-                break
-            }
-          },
-          onStageLog: log => {
-            // 统一计量：AgentLog 面板可见 + 单章预算计入（此前 lengdu 的全部
-            // LLM 调用都绕过 recordLlmCall，成本闸门系统性低估）。
-            try {
-              this.store.insertAgentLog({
-                projectId,
-                chapterNumber,
-                agentType: 'lengdu',
-                agentName: LENGDU_STAGE_AGENT_NAMES[log.stage],
-                displayAgentType: 'lengdu',
-                displayAgentName: LENGDU_STAGE_AGENT_NAMES[log.stage],
-                phase: 'reviewing',
-                systemPrompt: log.systemPrompt,
-                chapterContext: '',
-                userMessage: log.userMessage,
-                taskInput: '',
-                userInstructions: [],
-                tools: [],
-                toolNames: [],
-                askStoryPolicy: run.askStoryPolicy,
-                askStoryEnabled: false,
-                result: log.result,
-                resultLength: log.result.length,
-                durationMs: log.durationMs,
-                status: log.status,
-                error: log.error ?? '',
-                sessionId: log.sessionId ?? '',
-                operation: `lengdu-${log.stage}`,
-                inputTokens: log.usage?.inputTokens ?? 0,
-                outputTokens: log.usage?.outputTokens ?? 0,
-                cacheReadTokens: log.usage?.cacheReadTokens ?? 0,
-                cacheWriteTokens: log.usage?.cacheWriteTokens ?? 0,
-                llmProvider: log.usage?.llmProvider ?? '',
-                llmModel: log.usage?.llmModel ?? '',
-                payloadMessagesChars: 0,
-                payloadToolsChars: 0,
-                payloadToolCount: 0,
-                payloadTotalChars: log.payloadTotalChars,
-                llmRoundTrips: log.llmRoundTrips,
-                cacheKey: `novel:${projectId}:${chapterNumber}:lengdu:${log.stage}`,
-              })
-            } catch (logErr) {
-              this.context.logger.warn(
-                { err: logErr, projectId, chapterNumber, stage: log.stage },
-                'lengdu 阶段日志写入失败（不影响创作流程）',
-              )
-            }
-            if (run.budget && hasLlmUsage(log.usage)) {
-              run.budget = recordLlmCall(run.budget, log.usage.inputTokens)
-            }
-          },
-          onDegraded: event => persistNovelFailureAudit({
-            store: this.store,
-            projectId,
-            chapterNumber,
-            operation: `lengdu-${event.stage}`,
-            source: {
-              file: 'apps/agent-server/src/plugins/novel-plugin/core/lengdu/lengdu-workflow.ts',
-              symbol: `LengduWorkflow > ${event.stage}`,
-            },
-            input: {
-              content: event.content,
-              skillPath: lengduSkillPath,
-              modelId: lengduModelId,
-              stage: event.stage,
-            },
-            errorCode: `lengdu_${event.stage}_degraded`,
-            error: event.error,
-            durationMs: event.durationMs,
-            result: {
-              status: 'degraded',
-              fallback: event.stage === 'calibrator' ? '不使用校准报告' : '自审 Reader 报告',
-            },
-            requestTraceId: event.traceId,
-            agentType: 'audit',
-            agentName: 'lengdu 降级审计',
-            displayAgentType: 'audit',
-            displayAgentName: 'lengdu 降级审计',
-            phase: 'reviewing',
-            onAuditFailure: auditError => this.context.logger.warn(
-              { projectId, chapterNumber, err: auditError, stage: event.stage },
-              'lengdu 降级错误审计写入失败',
-            ),
-          }),
-          onFailure: event => persistNovelFailureAudit({
-            store: this.store,
-            projectId,
-            chapterNumber,
-            operation: `lengdu-${event.stage}`,
-            source: {
-              file: 'apps/agent-server/src/plugins/novel-plugin/core/lengdu/lengdu-workflow.ts',
-              symbol: `LengduWorkflow > ${event.stage}`,
-            },
-            input: {
-              content: event.content,
-              skillPath: lengduSkillPath,
-              modelId: lengduModelId,
-              stage: event.stage,
-            },
-            errorCode: `lengdu_${event.stage}_failed`,
-            error: event.error,
-            durationMs: event.durationMs,
-            result: { status: 'error', failedStage: event.stage },
-            requestTraceId: event.traceId,
-            agentType: 'audit',
-            agentName: 'lengdu 失败审计',
-            displayAgentType: 'audit',
-            displayAgentName: 'lengdu 失败审计',
-            phase: 'writing',
-            onAuditFailure: auditError => this.context.logger.warn(
-              { projectId, chapterNumber, err: auditError, stage: event.stage },
-              'lengdu 失败错误审计写入失败',
-            ),
-          }),
-        })
-        writerResult = lengduResult.content
-        this.context.logger.info(
-          {
-            projectId,
-            chapterNumber,
-            independentCalibration: lengduResult.usedIndependentCalibration,
-            independentReader: lengduResult.usedIndependentReader,
-            revisionCount: lengduResult.revisionCount,
-          },
-          'lengdu 独立读感工作流已完成',
-        )
-        const quality = lengduResult.quality
-        lengduQuality = quality
-        // P2-1：持久化最近一次读感质量报告（publish 门数据源）。
-        // 记录读感对应的内容指纹：后续 Reviewer/Reviser 改稿会让结论失效，
-        // publish 门据此判断是拦截还是放行旧结论（与审稿门 contentHash 校验同思路）。
-        const lengduContentHash = hashChapterContent(writerResult)
-        const lengduChapter = this.store.getChapter(projectId, chapterNumber)
-        if (lengduChapter) {
-          try {
-            this.store.setChapterLengduQuality(lengduChapter.id, {
-              ...quality,
-              usedIndependentCalibration: lengduResult.usedIndependentCalibration,
-              usedIndependentReader: lengduResult.usedIndependentReader,
-              revisionCount: lengduResult.revisionCount,
-              contentHash: lengduContentHash,
-              savedAt: Date.now(),
-            })
-          } catch (persistErr) {
-            this.context.logger.warn(
-              { err: persistErr, projectId, chapterNumber },
-              'lengdu 质量报告写入失败（不影响创作流程）',
-            )
-          }
-        }
-        const statusMessage = quality.status === 'passed'
-          ? 'lengdu 独立读感已通过：看懂、流畅、好看三项均通过。'
-          : quality.status === 'degraded'
-            ? 'lengdu 未完成独立验证，已标记为自审降级。'
-            : 'lengdu 独立读感发现待处理项，已完成本轮有界修订。'
-        this.emitProgress(options, 'writing', 'phase_change', {
-          message: statusMessage,
-          detail: { kind: 'lengdu_quality_report', ...quality },
-        })
-        options.onConversationMessage?.({
-          role: 'system',
-          fromId: 'lengdu',
-          fromName: 'lengdu 读感校验',
-          content: statusMessage,
-          phase: 'review',
-          metadata: {
-            workflowMessageType: 'lengdu_quality_report',
-            detail: { kind: 'lengdu_quality_report', ...quality },
-          },
-        })
-        this.emitProgress(options, 'writing', 'phase_change', {
-          message: lengduResult.usedIndependentReader
-            ? 'lengdu 独立冷读已完成，进入常规审稿...'
-            : 'lengdu Reader 未完成，已按自审降级模式进入常规审稿...',
-        })
-      }
-
       // 阶段边界快照 2：Writer 草稿已成。此后失败（审校/修订/检查点超时）都可
       // 从审稿阶段续跑，最贵的 Director+Writer 不再重烧。
       // （reviewing 续跑入口在循环内已把 writerResult 恢复为快照草稿，此处
@@ -1536,18 +1304,6 @@ export class NovelOrchestrator {
           action: 'advisory',
           reason: finalPostWriteGuard.reason,
           details: finalPostWriteGuard.details,
-        })
-      }
-      // lengdu 读感门：独立 Reader 判 needs_attention 时与 prose-shape 等信号
-      // 同权仲裁——此前 quality.status 只发一条状态消息，负面读感在主流程
-      // 没有任何执行力（能触发返工的 revise 冷读在工作流内部，判通过即全程旁路）。
-      // degraded（自审降级）是验证强度不足而非负面证据，不产生信号。
-      if (lengduQuality?.status === 'needs_attention') {
-        qualitySignals.push({
-          gateId: 'lengdu-reader',
-          action: 'revise',
-          reason: '独立冷读未通过',
-          details: lengduQuality.summary || '看懂/流畅/好看存在待处理项',
         })
       }
       const qualityDecision = arbitrateQuality(qualitySignals)

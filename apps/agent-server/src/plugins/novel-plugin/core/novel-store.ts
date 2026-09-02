@@ -729,14 +729,6 @@ export class NovelStore implements NovelPromptStores {
     return this.beatPlans.confirmBeatForChapter(projectId, chapterNumber)
   }
 
-  // ── P2-1：章节级 lengdu 读感质量报告 ──
-  /** 覆盖写入最近一次 lengdu 质量报告（JSON 序列化）；null 清空。 */
-  setChapterLengduQuality(chapterId: string, quality: unknown): void {
-    this.db
-      .prepare('UPDATE novel_chapters SET lengdu_quality = ? WHERE id = ?')
-      .run(quality == null ? null : JSON.stringify(quality), chapterId)
-  }
-
   /**
    * ScenePlan V2 覆盖率统计（P1-3 v2 激活前置审计）。
    * 只读聚合：有场景行 / 有 approved 计划的章节数与平均场景数。
@@ -767,28 +759,6 @@ export class NovelStore implements NovelPromptStores {
       avgSceneCountPerChapter: number | null
     }
     return row
-  }
-
-  /** 读取最近一次 lengdu 质量报告；无记录或 JSON 损坏返回 undefined。 */
-  getChapterLengduQuality(chapterId: string): {
-    status: 'passed' | 'needs_attention' | 'degraded'
-    comprehension?: string
-    fluency?: string
-    appeal?: string
-    revisionCount?: number
-    usedIndependentReader?: boolean
-    summary?: string
-    savedAt?: number
-  } | undefined {
-    const row = this.db
-      .prepare('SELECT lengdu_quality FROM novel_chapters WHERE id = ?')
-      .get(chapterId) as { lengdu_quality: string | null } | undefined
-    if (!row?.lengdu_quality) return undefined
-    try {
-      return JSON.parse(row.lengdu_quality)
-    } catch {
-      return undefined
-    }
   }
 
   getActiveTimelineInvalidation(projectId: string): TimelineInvalidation | undefined {

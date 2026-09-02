@@ -2571,9 +2571,12 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
       ON novel_beat_plans(project_id, chapter_number);`
   },
   {
-    // 117: 章节级 lengdu 读感质量报告（P2-1 发布门）。
-    // JSON 列存最近一次 LengduQualityReport（status/comprehension/fluency/appeal 等），
-    // needs_attention 时阻止 publish；重写/修订后由编排器覆盖写入最新结果。
+    // 117: 【已停用】章节级 lengdu 读感质量报告列。
+    //
+    // lengdu 读感链路已整体移除（实测无效果）：读写该列的 store 方法、
+    // publish 门与质量门信号均已删除，没有任何代码再访问 lengdu_quality。
+    // 迁移本身保留：删掉会让新库无此列、旧库残留孤儿列，schema 分叉；
+    // 保留则新旧库一致，代价只是一个不再写入的空列。
     id: '117_add_chapter_lengdu_quality',
     sql: `ALTER TABLE novel_chapters ADD COLUMN lengdu_quality TEXT;`
   },

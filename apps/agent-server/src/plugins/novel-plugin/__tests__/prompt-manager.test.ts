@@ -125,15 +125,6 @@ describe('PromptManager runtime overrides', () => {
     }
   })
 
-  it('解析项目内显式外部 Skill，不扫描其他 Skill', () => {
-    db = new Database(':memory:')
-    for (const migration of novelMigrations) db.exec(migration.sql)
-    const manager = new PromptManager(db, process.cwd())
-
-    expect(manager.getExternalSkillPath('lengdu')).toMatch(/\.claude[\\/]skills[\\/]lengdu[\\/]SKILL\.md$/)
-    expect(manager.getExternalSkillPath('missing-skill')).toBeUndefined()
-  })
-
   it('群聊 discussion 模板同样支持 Skill 化（无 reviser discussion 模板则回退）', async () => {
     db = new Database(':memory:')
     for (const migration of novelMigrations) db.exec(migration.sql)

@@ -16,7 +16,7 @@
  */
 
 import { readFileSync, existsSync, readdirSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type Database from 'better-sqlite3'
 
@@ -81,30 +81,6 @@ export class PromptManager {
     if (existsSync(join(this.projectPromptsDir, `${name}.md`))) return undefined
     const path = join(DEFAULT_PROMPTS_DIR, `${name}.md`)
     return existsSync(path) ? path : undefined
-  }
-
-  /**
-   * Resolve one explicitly named project Skill without scanning the Skill tree.
-   * The caller still decides whether the path is authorized for a session.
-   */
-  getExternalSkillPath(name: string, envVar?: string): string | undefined {
-    const configured = envVar ? process.env[envVar] : undefined
-    const searchRoots: string[] = []
-    let current = resolve(this.cwd)
-    while (true) {
-      searchRoots.push(current)
-      const parent = dirname(current)
-      if (parent === current) break
-      current = parent
-    }
-    const candidates = [
-      configured,
-      ...searchRoots.flatMap((root) => [
-        join(root, '.claude', 'skills', name, 'SKILL.md'),
-        join(root, '.agents', 'skills', name, 'SKILL.md'),
-      ]),
-    ].filter((path): path is string => Boolean(path && path.trim()))
-    return candidates.find((path) => existsSync(path))
   }
 
   /**
