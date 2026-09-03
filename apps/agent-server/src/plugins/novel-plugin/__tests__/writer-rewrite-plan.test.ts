@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildWriterRewritePlan,
+  buildSceneRewritePlan,
   isDraftUnusable,
   PREVIOUS_DRAFT_CHAR_LIMIT,
 } from '../core/chapters/writer-rewrite-plan.js'
@@ -158,5 +159,29 @@ describe('summary：供进度展示与日志', () => {
 
   it('全量重写的 summary 明确区分', () => {
     expect(plan('模型退化检测命中').summary).toContain('全量重写')
+  })
+})
+
+describe('单场重写计划', () => {
+  it('压缩只携带当前场，并保留本场因果节点', () => {
+    const result = buildSceneRewritePlan({
+      chapterNumber: 10, sceneNumber: 2, targetWords: 900, verdict: 'compress',
+      previousDraft: '第二场正文', attempt: 1,
+    })
+    expect(result.input).toContain('第 10 章第 2 场')
+    expect(result.input).toContain('压缩到约 900 字')
+    expect(result.input).toContain('所有情节节点')
+    expect(result.input).toContain('第二场正文')
+    expect(result.input).not.toContain('完整章节正文')
+  })
+
+  it('残稿改走扩写，禁止新场景和同义重复', () => {
+    const result = buildSceneRewritePlan({
+      chapterNumber: 10, sceneNumber: 1, targetWords: 1000, verdict: 'expand',
+      previousDraft: '第一场残稿', attempt: 1,
+    })
+    expect(result.input).toContain('扩写到约 1000 字')
+    expect(result.input).toContain('不要新增场景、角色')
+    expect(result.input).toContain('同义重复')
   })
 })

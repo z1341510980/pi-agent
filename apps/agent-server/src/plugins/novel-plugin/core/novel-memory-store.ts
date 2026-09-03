@@ -48,6 +48,7 @@ export type MemoryEventType =
   | 'relationship_change'
   | 'info_layer_change'
   | 'item_change'
+  | 'narrative_change'
   | 'plot_event'
   | 'world_change'
 
@@ -62,6 +63,7 @@ export type MemoryEntityType =
   | 'relationship'
   | 'info_layer'
   | 'item'
+  | 'narrative'
   | 'chapter'
   | 'world_element'
   | 'world_rule'
@@ -328,6 +330,7 @@ function eventTypeForEntity(entityType: NovelStoryEntityType): MemoryEventType {
     case 'location': return 'location_change'
     case 'info_layer': return 'info_layer_change'
     case 'item': return 'item_change'
+    case 'narrative': return 'narrative_change'
     case 'world_element':
     case 'world_rule': return 'world_change'
     case 'chapter': return 'plot_event'
@@ -444,6 +447,12 @@ const DIMENSION_RULES: Record<MemoryEventType, DimensionRule[]> = {
     { dimension: 'item.function', valueType: 'enum', matchFields: ['function'] },
     { dimension: 'item.appear', valueType: 'set', matchFields: ['appearChapters'] },
     { dimension: 'item.created', valueType: 'reference', matchFields: ['name', 'holder', 'status'], isCreate: true },
+  ],
+  narrative_change: [
+    { dimension: 'narrative.status', valueType: 'enum', matchFields: ['status'] },
+    { dimension: 'narrative.type', valueType: 'enum', matchFields: ['type'] },
+    { dimension: 'narrative.arranged', valueType: 'reference', matchFields: ['chapter'] },
+    { dimension: 'narrative.created', valueType: 'reference', matchFields: ['description', 'type'], isCreate: true },
   ],
   plot_event: [],
   world_change: [

@@ -49,6 +49,7 @@ import {
   type NovelAskStoryPolicy,
 } from './domain/novel-ask-story-policy.js'
 import type { NarrativeTask, NarrativeTaskType, ChapterConstraints, ArrangedEntity, RhythmSuggestion, VersionSource, NovelChapter } from './types.js'
+import type { NarrativeTaskScene } from './types.js'
 import type { CheckpointDecision } from './domain/novel-agents.js'
 import { RhythmController } from './chapters/rhythm-controller.js'
 import type { NovelMemoryStore } from './novel-memory-store.js'
@@ -83,7 +84,10 @@ import { ON_DEMAND_LIMITS } from './prompting/entity-summary.js'
 import { degradeChunks, materializeDegradedChunks, type DegradableChunk } from './prompting/context-budget.js'
 import { buildScenePlanFromNarrativeTask } from './chapters/chapter-scene-plan-adapter.js'
 
-import { buildWriterRewritePlan } from './chapters/writer-rewrite-plan.js'
+import { buildSceneRewritePlan, buildWriterRewritePlan } from './chapters/writer-rewrite-plan.js'
+import { applySceneCarry, checkSceneWords, countSceneWords, sceneDeviation, MAX_SCENE_RETRIES } from './chapters/scene-word-check.js'
+import type { WriterSceneContext } from './prompting/prompt-builder.js'
+import type { WorkflowSceneDraft } from './workflow-run-store.js'
 import { measureStyleMetrics, buildStyleMetricsDiff } from './analysis/style-measurement.js'
 import { classifyLlmFailure, retryDelayMs, LLM_MAX_RETRIES } from './quality/llm-error-policy.js'
 import {
@@ -122,6 +126,7 @@ interface CreationRunContext {
   directorOutput?: string
   directorTask?: NarrativeTask
   rhythmSuggestion?: RhythmSuggestion
+  writerScenes?: WorkflowSceneDraft[]
   semiLayerSharedCache: { key: string; value: string } | null
   /**
    * 单章成本累计。
@@ -182,6 +187,10 @@ interface RunAgentOverrides {
    * 返回值会覆盖 logResult；runAgent 仍返回 raw result 给调用方。
    */
   augmentLogResult?: (rawResult: string) => string
+  /** Writer 单场上下文；存在时替换整章 chapter-instruction suffix。 */
+  writerScene?: WriterSceneContext
+  /** Writer 物理闸使用的有效单场预算；缺省沿用整章预算。 */
+  writerMaxWords?: number
 }
 
 /**
@@ -496,6 +505,7 @@ export class NovelOrchestrator {
         directorOutput: options.resume?.directorOutput,
         directorTask: options.resume?.directorTask,
         rhythmSuggestion: options.resume?.rhythmSuggestion,
+        writerScenes: options.resume?.writerScenes,
         semiLayerSharedCache: null,
         budget: createChapterBudgetUsage(),
         askStoryCounts: {},
@@ -786,6 +796,7 @@ export class NovelOrchestrator {
         directorOutput: run.directorOutput,
         rhythmSuggestion,
         arrangedEntities: run.arrangedEntities,
+        writerScenes: run.writerScenes,
       })
 
       // 推送叙事任务详情，让用户了解 Director 通过工具提交的完整结构化任务（气泡展示）
@@ -910,12 +921,21 @@ export class NovelOrchestrator {
         }
         // Director 的完整方案由 Writer 专属 suffix 注入，并带独立缓存断点；
         // 推回机制已在 role-writer 中定义，动态消息无需重复。
-        writerResult = await this.runAgent('writer', projectId, chapterNumber,
-          rewritePlan
-            ? rewritePlan.input
-            : `请执行已批准的本章叙事任务，直接创作第 ${chapterNumber} 章正文。`,
-          options,
-        )
+        if (!rewritePlan && directorTask.scenes && directorTask.scenes.length > 0) {
+          writerResult = await this.runWriterScenes(
+            projectId,
+            chapterNumber,
+            directorTask,
+            options,
+          )
+        } else {
+          writerResult = await this.runAgent('writer', projectId, chapterNumber,
+            rewritePlan
+              ? rewritePlan.input
+              : `请执行已批准的本章叙事任务，直接创作第 ${chapterNumber} 章正文。`,
+            options,
+          )
+        }
 
         // 检测 Writer 是否标记推回
         if (writerResult.trimStart().startsWith('[DIRECTOR_PUSHBACK]') && directorPushbackCount < MAX_PUSHBACK) {
@@ -1206,6 +1226,7 @@ export class NovelOrchestrator {
           directorOutput: run.directorOutput,
           rhythmSuggestion,
           arrangedEntities: run.arrangedEntities,
+          writerScenes: run.writerScenes,
           writerDraft: resume.writerDraft,
           finalContent: resume.finalContent,
         })
@@ -1235,6 +1256,7 @@ export class NovelOrchestrator {
         directorOutput: run.directorOutput,
         rhythmSuggestion,
         arrangedEntities: run.arrangedEntities,
+        writerScenes: run.writerScenes,
         writerDraft: writerResult,
       })
 
@@ -2332,6 +2354,172 @@ export class NovelOrchestrator {
   }
 
   /**
+   * 逐场调用 Writer。结构化场景计划是唯一的循环来源：每一轮仅给模型当前场
+   * 因果契约、有效预算与上一场末尾锚点，避免模型把整章字数当作可选建议。
+   */
+  private async runWriterScenes(
+    projectId: string,
+    chapterNumber: number,
+    task: NarrativeTask,
+    options: CreationOptions,
+  ): Promise<string> {
+    const scenes = task.scenes
+      ?.slice()
+      .sort((left, right) => left.order - right.order)
+      ?? []
+    if (scenes.length === 0) {
+      throw new Error('逐场写作需要 Director 提交结构化 scenes[]')
+    }
+
+    const completed: WorkflowSceneDraft[] = []
+    const resumable = new Map(
+      (options.resume?.writerScenes ?? []).map((draft) => [draft.order, draft]),
+    )
+    let carry = 0
+    let previousSceneTail = ''
+
+    for (const [sceneIndex, scene] of scenes.entries()) {
+      options.signal?.throwIfAborted()
+      const applied = applySceneCarry(scene.targetWords, carry)
+      carry = applied.carry
+
+      const resumedDraft = resumable.get(scene.order)
+      if (resumedDraft?.content) {
+        const actualWords = countSceneWords(resumedDraft.content)
+        const resumedTarget = resumedDraft.effectiveTargetWords || applied.effective
+        completed.push({
+          order: scene.order,
+          content: resumedDraft.content,
+          effectiveTargetWords: resumedTarget,
+          retries: resumedDraft.retries,
+        })
+        carry += sceneDeviation(actualWords, resumedTarget)
+        previousSceneTail = resumedDraft.content.slice(-300)
+        // 续跑可能创建了新的 workflow run。即使下一场调用在此处失败，
+        // 当前 run 也必须先落下已恢复的场次，避免新快照丢失可继续的进度。
+        const run = this.requireRunContext()
+        run.writerScenes = completed.slice()
+        options.onRunStateUpdate?.({
+          entry: 'writing',
+          directorTask: run.directorTask ?? task,
+          directorOutput: run.directorOutput,
+          rhythmSuggestion: run.rhythmSuggestion,
+          arrangedEntities: run.arrangedEntities,
+          writerScenes: run.writerScenes,
+        })
+        this.context.logger.info(
+          {
+            projectId,
+            chapterNumber,
+            sceneNumber: scene.order,
+            actualWords,
+            effectiveTargetWords: applied.effective,
+          },
+          'Writer 单场续跑复用已完成场景',
+        )
+        continue
+      }
+
+      const writerScene: WriterSceneContext = {
+        scene,
+        sceneIndex,
+        sceneCount: scenes.length,
+        targetWords: applied.effective,
+        previousSceneTail,
+      }
+
+      this.emitProgress(options, 'writing', 'phase_change', {
+        message: `写作 Agent 正在创作第 ${sceneIndex + 1}/${scenes.length} 场：${scene.title}`,
+        detail: {
+          kind: 'scene_writing',
+          sceneNumber: scene.order,
+          sceneCount: scenes.length,
+          targetWords: applied.effective,
+        },
+      })
+
+      let output = await this.runAgent(
+        'writer',
+        projectId,
+        chapterNumber,
+        `请执行第 ${scene.order} 场的已批准场景契约，直接输出本场正文。`,
+        options,
+        { writerScene, writerMaxWords: applied.effective },
+      )
+      let retriesUsed = 0
+      let actualWords = countSceneWords(output)
+      let verdict = checkSceneWords(applied.effective, actualWords, retriesUsed)
+
+      if (verdict !== 'accept') {
+        retriesUsed += 1
+        const rewritePlan = buildSceneRewritePlan({
+          chapterNumber,
+          sceneNumber: scene.order,
+          targetWords: applied.effective,
+          verdict,
+          previousDraft: output,
+          attempt: retriesUsed,
+          maxAttempts: MAX_SCENE_RETRIES,
+        })
+        this.emitProgress(options, 'writing', 'phase_change', {
+          message: `第 ${sceneIndex + 1}/${scenes.length} 场字数${verdict === 'compress' ? '超标，正在就地压缩' : '不足，正在就地扩写'}...`,
+          detail: {
+            kind: 'scene_rewrite',
+            sceneNumber: scene.order,
+            verdict,
+            targetWords: applied.effective,
+            actualWords,
+          },
+        })
+        output = await this.runAgent(
+          'writer',
+          projectId,
+          chapterNumber,
+          rewritePlan.input,
+          options,
+          { writerScene, writerMaxWords: applied.effective },
+        )
+        actualWords = countSceneWords(output)
+        verdict = checkSceneWords(applied.effective, actualWords, retriesUsed)
+      }
+
+      carry += sceneDeviation(actualWords, applied.effective)
+      completed.push({
+        order: scene.order,
+        content: output,
+        effectiveTargetWords: applied.effective,
+        retries: retriesUsed,
+      })
+      previousSceneTail = output.slice(-300)
+      const run = this.requireRunContext()
+      run.writerScenes = completed.slice()
+      options.onRunStateUpdate?.({
+        entry: 'writing',
+        directorTask: run.directorTask ?? task,
+        directorOutput: run.directorOutput,
+        rhythmSuggestion: run.rhythmSuggestion,
+        arrangedEntities: run.arrangedEntities,
+        writerScenes: run.writerScenes,
+      })
+      this.context.logger.info(
+        {
+          projectId,
+          chapterNumber,
+          sceneNumber: scene.order,
+          targetWords: applied.effective,
+          actualWords,
+          retriesUsed,
+          carry,
+          finalVerdict: verdict,
+        },
+        'Writer 单场写作完成',
+      )
+    }
+
+    return completed.map((draft) => draft.content).join('\n\n')
+  }
+
+  /**
    * PostWriteGuard：正文后确定性检测
    *
    * 在 Reviewer 之前运行，捕获模型退化等致命问题，避免浪费 Reviewer token。
@@ -3047,6 +3235,7 @@ export class NovelOrchestrator {
           constraints,
           run.arrangedEntities,
           agentType,
+          overrides?.writerScene,
          )
     if (agentType === 'writer' && run.directorTask?.requiredReferences?.length) {
       const writerFactPack = this.promptBuilder.buildReferenceFactPack(
@@ -3263,10 +3452,12 @@ export class NovelOrchestrator {
         // 触发一次 compact+retry，白烧一轮还可能压掉上下文。
         // 改由 resolveWriterMaxTokens 统一换算（字→token 保守系数 + thinking 预留
         // + 模型自身 maxTokens 夹紧）；字数纪律仍由 prompt 与 PostWriteGuard 负责。
-        ...(agentType === 'writer' && constraints.wordBudget?.target
+        ...(agentType === 'writer' && (overrides?.writerMaxWords ?? constraints.wordBudget?.target)
           ? {
               maxTokens: resolveWriterMaxTokens({
-                maxWords: Math.round(constraints.wordBudget.target * WORD_COUNT_LIMITS.bloatCeilingRatio),
+                maxWords: Math.round(
+                  (overrides?.writerMaxWords ?? constraints.wordBudget!.target) * WORD_COUNT_LIMITS.bloatCeilingRatio,
+                ),
                 modelMaxTokens: modelId
                   ? findModelMaxTokens(this.context.modelRegistry, modelId.provider, modelId.modelId)
                   : undefined,

@@ -2818,6 +2818,7 @@ export type NovelStoryEntityType =
   | 'clue'
   | 'faction'
   | 'location'
+  | 'narrative'
   | 'world_element'
   | 'world_rule'
   | 'info_layer'

@@ -76,6 +76,7 @@ disable-model-invocation: true
 - **`type` 取值**：`advance`（剧情推进/局势变化）、`turn`（转折）、`reversal`（反转）、`suspense`（悬念遗留）、`resolve`（收束）、`setup`（铺垫）、`reveal`（揭示）、`misc`（其他）。
 - **narrativeCreates**：本章首次出现且值得跨章追踪的剧情条目；一次性琐事不入库。
 - **narrativeUpdates**：按 description 匹配已有剧情条目，更新 `type`/`status`；`resolved`=剧情线已收束，`dropped`=不再推进。
+- **强制去重**：先查看“当前实体状态”中的剧情条目。正文只是继续、改写或换词描述已有事件时，必须写 `narrativeUpdates`，不得写 `narrativeCreates`；只有确实没有对应既有条目且值得跨章追踪时才允许新建。相同剧情不要同时出现在 Creates 和 Updates。
 
 ### 3. 冲突（conflictCreates / conflictUpdates）— 张力层
 

@@ -1511,6 +1511,7 @@ export class NovelEntityGenerator {
         factionIds: createdFactionIds,
         locationIds: createdLocationIds,
         itemIds: createdItemIds,
+        narrativeIds: createdNarrativeIds,
       }, {
         // 复用 = 出现在结果里但不在本次新建列表里
         characterIds: characterIds.filter((id) => !createdCharacterIds.includes(id)),
@@ -1519,6 +1520,7 @@ export class NovelEntityGenerator {
         factionIds: factionIds.filter((id) => !createdFactionIds.includes(id)),
         locationIds: locationIds.filter((id) => !createdLocationIds.includes(id)),
         itemIds: itemIds.filter((id) => !createdItemIds.includes(id)),
+        narrativeIds: narrativeIds.filter((id) => !createdNarrativeIds.includes(id)),
       }, undo)
     } catch (err) {
       // 投影落账失败不能撤销已经成功的实体编排，下一次编排或章节收尾仍可补齐。
@@ -1654,6 +1656,7 @@ export class NovelEntityGenerator {
       factionIds: string[]
       locationIds: string[]
       itemIds: string[]
+      narrativeIds: string[]
     },
     reused: {
       characterIds: string[]
@@ -1662,6 +1665,7 @@ export class NovelEntityGenerator {
       factionIds: string[]
       locationIds: string[]
       itemIds: string[]
+      narrativeIds: string[]
     },
     undo?: ArrangeUndoCapture,
   ): void {
@@ -1703,7 +1707,10 @@ export class NovelEntityGenerator {
     }
 
     const project = (
-      ids: { characterIds: string[]; conflictIds: string[]; foreshadowIds: string[]; factionIds: string[]; locationIds: string[]; itemIds: string[] },
+      ids: {
+        characterIds: string[]; conflictIds: string[]; foreshadowIds: string[]; factionIds: string[];
+        locationIds: string[]; itemIds: string[]; narrativeIds: string[]
+      },
       kind: 'created' | 'arranged',
     ): void => {
       for (const id of ids.characterIds) {
@@ -1730,6 +1737,10 @@ export class NovelEntityGenerator {
         const entity = this.store.getItem(id)
         if (entity) add('item', id, `item.${kind}`, entity.name, { name: entity.name, holder: entity.ownerId, status: entity.status }, kind)
       }
+      for (const id of ids.narrativeIds) {
+        const entity = this.store.getNarrative(id)
+        if (entity) add('narrative', id, `narrative.${kind}`, entity.description, { description: entity.description, type: entity.type }, kind)
+      }
     }
 
     project(created, 'created')
@@ -1740,6 +1751,7 @@ export class NovelEntityGenerator {
 
     const createdCount = created.characterIds.length + created.conflictIds.length + created.foreshadowIds.length
       + created.factionIds.length + created.locationIds.length + created.itemIds.length
+      + created.narrativeIds.length
     const reusedCount = entityRefs.length - createdCount
 
     const projection = this.memoryStore.createStoryEventWithChanges({

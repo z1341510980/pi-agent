@@ -37,6 +37,10 @@ describe('WorkflowRunStore', () => {
       },
       arrangedEntities: { characterIds: ['c-1'], conflictIds: [], foreshadowIds: [], clueIds: [], factionIds: [], locationIds: [] },
       writerDraft: '草稿正文',
+      writerScenes: [
+        { order: 1, content: '第一场正文', effectiveTargetWords: 900, retries: 0 },
+        { order: 2, content: '第二场正文', effectiveTargetWords: 1100, retries: 1 },
+      ],
       finalContent: undefined,
       modelId: { provider: 'p', modelId: 'm' },
       error: '审校失败',
@@ -48,6 +52,10 @@ describe('WorkflowRunStore', () => {
       phase: 'reviewing',
       failedPhase: 'reviewing',
       writerDraft: '草稿正文',
+      writerScenes: [
+        { order: 1, content: '第一场正文', effectiveTargetWords: 900, retries: 0 },
+        { order: 2, content: '第二场正文', effectiveTargetWords: 1100, retries: 1 },
+      ],
       modelId: { provider: 'p', modelId: 'm' },
     })
     expect(loaded.directorTask).toMatchObject({ type: 'advance_mainline' })

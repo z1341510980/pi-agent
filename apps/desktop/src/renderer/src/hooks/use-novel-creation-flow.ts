@@ -651,14 +651,104 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
     return { agentType: 'arranger', agentName: '编排', content: md }
   }
   if (kind === 'arrange_summary') {
-    const total = detail.total as number
-    const characters = detail.characters as number
-    const conflicts = detail.conflicts as number
-    const foreshadows = detail.foreshadows as number
-    const factions = detail.factions as number
-    const locations = detail.locations as number
-    const md = `## 编排草稿完成，等待确认\n\n**共生成 ${total} 个实体，尚未落库**\n\n- 角色：${characters}\n- 冲突：${conflicts}\n- 伏笔：${foreshadows}\n- 势力：${factions}\n- 地点：${locations}\n\n请在下方确认落库，或填写意见后按意见修改。`
-    return { agentType: 'arranger', agentName: '编排', content: md }
+    const total = Number(detail.total ?? 0)
+    const entityDetails = detail.entityDetails as Record<string, unknown> | undefined
+    const reviewPending = detail.reviewPending !== false
+    const lines: string[] = [
+      reviewPending ? '## 编排草稿完成，等待确认' : '## 编排完成清单',
+      '',
+      reviewPending
+        ? `**共生成 ${total} 个实体**。确认后保留到正式矩阵；拒绝或按意见修改会回滚本轮草稿。`
+        : `**共处理 ${total} 个实体**，已写入本章矩阵。`,
+    ]
+
+    const renderDetails = <T extends Record<string, unknown>>(
+      key: string,
+      label: string,
+      render: (item: T, index: number) => string[],
+    ): void => {
+      const items = Array.isArray(entityDetails?.[key])
+        ? entityDetails[key] as T[]
+        : []
+      if (items.length === 0) return
+      lines.push('', `### ${label}（${items.length}）`)
+      items.forEach((item, index) => lines.push('', ...render(item, index)))
+    }
+
+    renderDetails('characters', '角色', (item, index) => [
+      `${index + 1}. **${String(item.name ?? '未命名角色')}**${item.id ? `（ID: \`${String(item.id)}\`）` : ''} — ${String(item.description ?? '')}`,
+      ...(item.plotFunction ? [`   - 本章功能：${String(item.plotFunction)}${item.functionNote ? `；${String(item.functionNote)}` : ''}`] : []),
+      ...(item.currentState ? [`   - 当前状态：${String(item.currentState)}`] : []),
+      ...(item.currentGoal ? [`   - 当前目标：${String(item.currentGoal)}`] : []),
+    ])
+    renderDetails('conflicts', '冲突', (item, index) => [
+      `${index + 1}. ${String(item.description ?? '未命名冲突')}${item.id ? `（ID: \`${String(item.id)}\`）` : ''}`,
+      `   - 类型/层级：${String(item.type ?? '-')} / ${String(item.tier ?? '-')}；阶段：${String(item.stage ?? '-')}；强度：${String(item.intensity ?? '-')}/10`,
+      ...(item.stakes ? [`   - 赌注：${String(item.stakes)}`] : []),
+      ...(item.plotFunction || item.progressionMode ? [`   - 推进约束：${String(item.plotFunction ?? '-')} / ${String(item.progressionMode ?? '-')}`] : []),
+      ...(item.climaxChapter != null ? [`   - 高潮目标：第${String(item.climaxChapter)}章${item.climaxType ? `（${String(item.climaxType)}）` : ''}`] : []),
+    ])
+    renderDetails('foreshadows', '伏笔', (item, index) => [
+      `${index + 1}. [${String(item.category ?? '-')} / ${String(item.status ?? '-')} ] ${String(item.description ?? '')}${item.id ? `（ID: \`${String(item.id)}\`）` : ''}`,
+      ...(item.chapterAction ? [`   - 本章动作：${String(item.chapterAction)}${item.beatNote ? `；${String(item.beatNote)}` : ''}`] : []),
+      ...(item.plantMethod || item.recoverMethod ? [`   - 埋收方式：${String(item.plantMethod ?? '-')} / ${String(item.recoverMethod ?? '-')}`] : []),
+      ...(item.recoverByChapter != null ? [`   - 计划回收：第${String(item.recoverByChapter)}章前`] : []),
+    ])
+    renderDetails('clues', '线索', (item, index) => [
+      `${index + 1}. ${String(item.description ?? '')}${item.id ? `（ID: \`${String(item.id)}\`）` : ''}`,
+      `   - 指向：${String(item.pointsTo ?? '-')}；进度：${String(item.progress ?? 0)}%`,
+      `   - 当前步骤：${String(item.currentStep ?? '-')}；下一步：${String(item.nextStep ?? '-')}${item.isMisleading ? '；误导线索' : ''}`,
+    ])
+    renderDetails('factions', '势力', (item, index) => [
+      `${index + 1}. **${String(item.name ?? '未命名势力')}**（${String(item.type ?? '-')}）${item.id ? `（ID: \`${String(item.id)}\`）` : ''} — ${String(item.description ?? '')}`,
+      `   - 立场/实力：${String(item.ideology ?? '-')} / ${String(item.strength ?? '-')}；状态：${String(item.status ?? '-')}`,
+    ])
+    renderDetails('locations', '地点', (item, index) => [
+      `${index + 1}. **${String(item.name ?? '未命名地点')}**（${String(item.type ?? '-')}）${item.id ? `（ID: \`${String(item.id)}\`）` : ''} — ${String(item.description ?? '')}`,
+      `   - 重要性：${String(item.significance ?? '-')}；状态：${String(item.status ?? '-')}`,
+    ])
+    renderDetails('items', '物品', (item, index) => [
+      `${index + 1}. **${String(item.name ?? '未命名物品')}**（${String(item.type ?? '-')}）${item.id ? `（ID: \`${String(item.id)}\`）` : ''} — ${String(item.description ?? '')}`,
+      ...(item.abilities ? [`   - 能力：${String(item.abilities)}`] : []),
+      ...(item.origin ? [`   - 来源：${String(item.origin)}`] : []),
+      `   - 状态：${String(item.status ?? '-')}${item.ownerId ? `；持有者：\`${String(item.ownerId)}\`` : ''}`,
+    ])
+    renderDetails('narratives', '剧情', (item, index) => [
+      `${index + 1}. [${String(item.type ?? '-')} / ${String(item.status ?? '-')}] ${String(item.description ?? '')}${item.id ? `（ID: \`${String(item.id)}\`）` : ''}`,
+    ])
+
+    if (!entityDetails || !Object.values(entityDetails).some((value) => Array.isArray(value) && value.length > 0)) {
+      const arranged = detail.arrangedEntities as Record<string, unknown> | undefined
+      const count = (key: string): number => {
+        const direct = Number(detail[key])
+        if (Number.isFinite(direct)) return direct
+        const idKey: Record<string, string> = {
+          characters: 'characterIds',
+          conflicts: 'conflictIds',
+          foreshadows: 'foreshadowIds',
+          clues: 'clueIds',
+          factions: 'factionIds',
+          locations: 'locationIds',
+          items: 'itemIds',
+          narratives: 'narrativeIds',
+        }
+        const ids = arranged?.[idKey[key] ?? `${key}Ids`]
+        return Array.isArray(ids) ? ids.length : 0
+      }
+      lines.push(
+        '',
+        `- 角色：${count('characters')}`,
+        `- 冲突：${count('conflicts')}`,
+        `- 伏笔：${count('foreshadows')}`,
+        `- 线索：${count('clues')}`,
+        `- 势力：${count('factions')}`,
+        `- 地点：${count('locations')}`,
+        `- 物品：${count('items')}`,
+        `- 剧情：${count('narratives')}`,
+      )
+    }
+    if (reviewPending) lines.push('', '请在下方确认落库，或填写意见后按意见修改。')
+    return { agentType: 'arranger', agentName: '编排', content: lines.join('\n') }
   }
   if (kind === 'revision_passed') {
     // re-revise 定向修订通过：展示轮次与结果（不自动落库，由用户决定保存）

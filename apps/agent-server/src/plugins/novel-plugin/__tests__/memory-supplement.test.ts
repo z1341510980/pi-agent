@@ -3,6 +3,10 @@ import {
   findUnmentionedEntities,
   mergeMemoryPayloads,
 } from '../core/generation/novel-memory-generator.js'
+import {
+  deduplicateNarrativeCandidates,
+  findCoveredNarrative,
+} from '../core/entities/entity-admission-policy.js'
 import type { MemoryUpdatePayload } from '../core/generation/novel-memory-generator.js'
 
 describe('findUnmentionedEntities（P1-4 确定性核对）', () => {
@@ -71,5 +75,30 @@ describe('mergeMemoryPayloads（P1-4 补提取合并）', () => {
 
     expect(merged.characterUpdates).toHaveLength(1)
     expect(merged.summary).toBe('s')
+  })
+})
+
+describe('剧情候选去重', () => {
+  it('同一批改写描述只保留一条', () => {
+    const result = deduplicateNarrativeCandidates([
+      { description: '城门守卫放行主角', type: 'advance' },
+      { description: '城门守卫放行了主角。', type: 'advance' },
+    ])
+    expect(result).toHaveLength(1)
+  })
+
+  it('不同剧情不因共享角色词被误合并', () => {
+    const result = deduplicateNarrativeCandidates([
+      { description: '主角进入密室', type: 'advance' },
+      { description: '主角发现城门入口', type: 'advance' },
+    ])
+    expect(result).toHaveLength(2)
+  })
+
+  it('已收束剧情允许未来重新开启新的叙事周期', () => {
+    const result = findCoveredNarrative([
+      { id: 'n1', description: '主角发现密室入口', status: 'resolved' },
+    ], { description: '主角发现了密室入口。' })
+    expect(result).toBeUndefined()
   })
 })

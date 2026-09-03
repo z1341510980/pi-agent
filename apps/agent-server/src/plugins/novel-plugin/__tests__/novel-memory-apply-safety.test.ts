@@ -125,6 +125,35 @@ describe('Memory applyChanges - characterCreates 查重与事务化', () => {
     expect(stats.characterCreatesDeduped).toBe(1)
   })
 
+  it('剧情创建遇到同一事件的轻微改写：合并到既有剧情，不产生重复条目', () => {
+    store.createNarrative({
+      projectId: PROJECT_ID,
+      description: '主角发现密室入口',
+      type: 'advance',
+      chapterSpans: [[1, 1]],
+      status: 'active',
+    })
+
+    const stats = (generator as any).applyChanges(PROJECT_ID, {
+      narrativeCreates: [{ description: '主角发现了密室入口。', type: 'advance' }],
+    }, 2)
+
+    expect(store.listNarratives(PROJECT_ID)).toHaveLength(1)
+    expect(stats.narrativeCreatesApplied).toBe(0)
+  })
+
+  it('同一 payload 内重复创建同一剧情：第二条不会继续膨胀', () => {
+    const stats = (generator as any).applyChanges(PROJECT_ID, {
+      narrativeCreates: [
+        { description: '城门守卫放行主角', type: 'advance' },
+        { description: '城门守卫放行了主角。', type: 'advance' },
+      ],
+    }, 2)
+
+    expect(store.listNarratives(PROJECT_ID)).toHaveLength(1)
+    expect(stats.narrativeCreatesApplied).toBe(1)
+  })
+
   it('同一 payload 新建的角色可立即成为物品持有者和关系端点', () => {
     store.createCharacter(baseCharacter('林晚'))
 

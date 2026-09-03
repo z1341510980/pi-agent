@@ -11,6 +11,11 @@ export interface ConflictAdmissionFields {
   type?: unknown
 }
 
+export interface NarrativeAdmissionFields {
+  description?: unknown
+  type?: unknown
+}
+
 const EVIDENCE_MARKER = /编号|印记|符号|文字|照片|录音|录像|文件|档案|记录|书信|纸条|地图|血迹|指纹|脚印|弹痕|证词|口供|信号|密码|坐标|样本|监控|交易|日志|数据|痕迹|图案|标签|遗物/
 
 function hasText(value: unknown, minLength: number): value is string {
@@ -75,4 +80,71 @@ export function findCoveredConflict<T extends Pick<NovelConflict, 'id' | 'descri
     }
     return common >= 5 && common / Math.min(candidateBigrams.size, existingBigrams.size) >= 0.1
   })
+}
+
+/**
+ * 归一化剧情描述，用于拦截 LLM 对同一事件的标点、空格和体貌词改写。
+ * 不做同义词替换，避免把两个真正不同的事件误合并。
+ */
+export function normalizeNarrativeDescription(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\p{P}\u3000]/gu, '')
+    .replace(/了/g, '')
+}
+
+function narrativeBigrams(value: string): Set<string> {
+  const normalized = normalizeNarrativeDescription(value)
+  const result = new Set<string>()
+  for (let index = 0; index < normalized.length - 1; index += 1) {
+    result.add(normalized.slice(index, index + 2))
+  }
+  return result
+}
+
+/**
+ * 剧情轨道的保守去重：精确归一化优先；改写只在至少 4 个二元锚点、且覆盖最长描述 60%
+ * 时视为同一事件。已收束/放弃的旧剧情允许未来重新开启新的叙事周期。
+ */
+export function findCoveredNarrative<T extends { id: string; description: string; status?: unknown }>(
+  existing: T[],
+  candidate: NarrativeAdmissionFields,
+): T | undefined {
+  if (typeof candidate.description !== 'string' || candidate.description.trim().length < 4) return undefined
+  const candidateNormalized = normalizeNarrativeDescription(candidate.description)
+  const candidateBigrams = narrativeBigrams(candidate.description)
+  if (!candidateNormalized || candidateBigrams.size === 0) return undefined
+
+  return existing.find((narrative) => {
+    const status = typeof narrative.status === 'string' ? narrative.status.trim().toLowerCase() : 'active'
+    if (status === 'resolved' || status === 'dropped') return false
+    const normalized = normalizeNarrativeDescription(narrative.description)
+    if (!normalized) return false
+    if (normalized === candidateNormalized) return true
+
+    const existingBigrams = narrativeBigrams(narrative.description)
+    if (existingBigrams.size === 0) return false
+    let common = 0
+    for (const bigram of candidateBigrams) {
+      if (existingBigrams.has(bigram)) common += 1
+    }
+    return common >= 4 && common / Math.max(candidateBigrams.size, existingBigrams.size) >= 0.6
+  })
+}
+
+/** 同一批抽取结果内的剧情候选去重，保留首次出现的描述。 */
+export function deduplicateNarrativeCandidates<T extends NarrativeAdmissionFields>(candidates: T[]): T[] {
+  const kept: T[] = []
+  for (const candidate of candidates) {
+    if (typeof candidate.description !== 'string' || candidate.description.trim().length < 4) continue
+    const previous = kept.map((item, index) => ({
+      id: String(index),
+      description: String(item.description),
+      status: 'active',
+    }))
+    if (findCoveredNarrative(previous, candidate)) continue
+    kept.push(candidate)
+  }
+  return kept
 }

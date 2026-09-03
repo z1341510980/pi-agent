@@ -132,6 +132,26 @@ describe('NovelMemoryGenerator Skill 白名单路径（Memory 迁移）', () => 
     expect(opts.tools).toEqual([])
   })
 
+  it('分析提示包含既有剧情条目，避免同一事件被反复当作新剧情创建', async () => {
+    const narrative = fx.store.createNarrative({
+      projectId: fx.projectId,
+      description: '主角发现密室入口',
+      type: 'advance',
+      chapterSpans: [[FIXTURE_TARGET_CHAPTER - 1, FIXTURE_TARGET_CHAPTER - 1]],
+      status: 'active',
+    })
+    try {
+      await makeGenerator().analyze(fx.projectId, FIXTURE_TARGET_CHAPTER, '主角发现了密室入口。')
+
+      const opts = createSessionSpy.mock.calls[0][0] as { userMessage: string }
+      expect(opts.userMessage).toContain('### 剧情')
+      expect(opts.userMessage).toContain('主角发现密室入口')
+      expect(opts.userMessage).toContain('type=advance | status=active')
+    } finally {
+      fx.store.deleteNarrative(narrative.id)
+    }
+  })
+
   it('旧模板渲染路径不受影响：frontmatter 已剥离', () => {
     const template = promptManager.getTemplate('role-memory-generator')
     expect(template).toContain('记忆管家')

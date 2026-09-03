@@ -55,7 +55,12 @@ import {
   type RelationshipUpdateInput,
 } from '../memory/world-relation-memory-applicator.js'
 import { selectAdmissibleNewForeshadows } from '../entities/foreshadow-policy.js'
-import { findCoveredConflict, selectAdmissibleNewClues } from '../entities/entity-admission-policy.js'
+import {
+  deduplicateNarrativeCandidates,
+  findCoveredConflict,
+  findCoveredNarrative,
+  selectAdmissibleNewClues,
+} from '../entities/entity-admission-policy.js'
 import type {
   NovelCharacter,
   NovelConflict,
@@ -1143,6 +1148,28 @@ export class NovelMemoryGenerator {
       }
     }
 
+    // 剧情轨道：把已有剧情注入 Memory 上下文，避免同一事件换词后被当成新剧情。
+    const arrangedNarrativeIds = new Set(arranged?.narrativeIds ?? [])
+    const allNarratives = this.store.listNarratives(projectId)
+    const activeNarratives = allNarratives.filter((n) => n.status !== 'resolved' && n.status !== 'dropped')
+    const recentActiveNarratives = [...activeNarratives]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 24)
+    const matchedNarratives = activeNarratives.filter((n) =>
+      arrangedNarrativeIds.has(n.id) || includesText(n.description.slice(0, 16)),
+    )
+    const narratives = includeAll
+      ? allNarratives
+      : [...new Map([...recentActiveNarratives, ...matchedNarratives].map((n) => [n.id, n])).values()]
+    if (narratives.length > 0) {
+      parts.push('\n### 剧情')
+      for (const narrative of narratives) {
+        parts.push(`- ${narrative.description.slice(0, 100)}（ID: ${narrative.id}）: type=${narrative.type} | status=${narrative.status}`)
+      }
+    } else if (!includeAll) {
+      parts.push('\n### 剧情\n- 当前没有可匹配的既有剧情条目；仅当正文出现值得跨章追踪的新剧情时才使用 narrativeCreates。')
+    }
+
     // 关系（四层逻辑②：让 Memory Agent 看到当前关系状态，以便判断关系变更）
     const relevantCharacterIds = new Set(characters.map((c) => c.id))
     const relationships = includeAll
@@ -1630,9 +1657,17 @@ export class NovelMemoryGenerator {
         'memory-generator.applyChanges',
       ))
     }
-    for (const item of payload.narrativeCreates ?? []) {
+    const narrativeCreates = deduplicateNarrativeCandidates(payload.narrativeCreates ?? [])
+    for (const item of narrativeCreates) {
       if (!item.description?.trim()) continue
-      if (this.findNarrativeByDescription(projectId, item.description)) continue
+      const covered = findCoveredNarrative(this.store.listNarratives(projectId), item)
+      if (covered) {
+        this.context.logger.info(
+          { projectId, chapterNumber, narrativeId: covered.id, description: item.description },
+          '记忆 Agent：相似剧情合并为已有实体',
+        )
+        continue
+      }
       const narrative = this.store.createNarrative({
         projectId,
         description: item.description.trim(),

@@ -61,6 +61,21 @@ export interface WriterRewritePlan {
   summary: string
 }
 
+export interface SceneRewritePlan {
+  input: string
+  summary: string
+}
+
+export interface BuildSceneRewritePlanParams {
+  chapterNumber: number
+  sceneNumber: number
+  targetWords: number
+  verdict: 'compress' | 'expand'
+  previousDraft: string
+  attempt: number
+  maxAttempts?: number
+}
+
 export interface BuildRewritePlanParams {
   chapterNumber: number
   reason: GuardReason
@@ -208,6 +223,37 @@ export function buildWriterRewritePlan(params: BuildRewritePlanParams): WriterRe
       '## 输出要求',
       '',
       '输出修改后的**完整**章节正文（含未改动的段落），不要输出差异说明、修改清单或核对过程。',
+    ].join('\n'),
+  }
+}
+
+/** 单场字数偏差的就地修写指令；只携带当前场正文，避免重烧整章上下文。 */
+export function buildSceneRewritePlan(params: BuildSceneRewritePlanParams): SceneRewritePlan {
+  const { chapterNumber, sceneNumber, targetWords, verdict, previousDraft, attempt, maxAttempts = 1 } = params
+  const { text, truncated } = clampDraft(previousDraft)
+  const instruction = verdict === 'compress'
+    ? [
+        `第 ${chapterNumber} 章第 ${sceneNumber} 场需要压缩到约 ${targetWords} 字。`,
+        '保留本场所有情节节点、关键动作、人物选择、后果和必要对话。',
+        '删减重复的环境/心理描写、读者已知信息和纯氛围句，不改变因果链，不新增事件。',
+      ]
+    : [
+        `第 ${chapterNumber} 章第 ${sceneNumber} 场是残稿，需要扩写到约 ${targetWords} 字。`,
+        '保留已有情节走向和对话，在本场补足阻力、动作过程、人物即时反应、选择代价与可见后果。',
+        '不要新增场景、角色或脱离契约的新事件，不要用同义重复凑字数。',
+      ]
+  return {
+    summary: `单场${verdict === 'compress' ? '压缩' : '扩写'}（第 ${attempt}/${maxAttempts} 次）：第 ${sceneNumber} 场`,
+    input: [
+      `请只修改第 ${chapterNumber} 章第 ${sceneNumber} 场正文。`,
+      '',
+      ...instruction,
+      '',
+      truncated ? '## 当前场正文（过长已截断，未展示部分保持原样）' : '## 当前场正文',
+      '',
+      text,
+      '',
+      '输出修改后的完整本场正文，不要输出说明、差异或核对过程。',
     ].join('\n'),
   }
 }

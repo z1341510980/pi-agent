@@ -12,6 +12,14 @@ import type { PluginSessionOptions } from '../../../core/plugin/plugin-types.js'
  */
 export type WorkflowRunPhase = 'writing' | 'reviewing' | 'memory'
 
+/** Writer 分场循环的已完成场次快照；用于中断后从下一场继续。 */
+export interface WorkflowSceneDraft {
+  order: number
+  content: string
+  effectiveTargetWords: number
+  retries: number
+}
+
 /** 续跑入口与快照载荷（orchestrator 读取后跳过已完成阶段） */
 export interface WorkflowResumeState {
   entry: WorkflowRunPhase
@@ -20,6 +28,7 @@ export interface WorkflowResumeState {
   rhythmSuggestion?: RhythmSuggestion
   arrangedEntities?: ArrangedEntity
   writerDraft?: string
+  writerScenes?: WorkflowSceneDraft[]
   finalContent?: string
 }
 
@@ -38,6 +47,7 @@ export interface WorkflowRunSnapshot {
   rhythmSuggestion?: RhythmSuggestion
   arrangedEntities?: ArrangedEntity
   writerDraft?: string
+  writerScenes?: WorkflowSceneDraft[]
   finalContent?: string
   /** 本次运行使用的 per-call 模型；续跑沿用，避免同一次创作换模型 */
   modelId?: PluginSessionOptions['modelId']
@@ -62,6 +72,7 @@ interface WorkflowRunRow {
   rhythm_suggestion: string | null
   arranged_entities: string | null
   writer_draft: string | null
+  writer_scenes: string | null
   final_content: string | null
   model_id: string | null
   style_expert_ids: string | null
@@ -87,9 +98,9 @@ export class WorkflowRunStore {
       INSERT INTO novel_workflow_runs (
         id, project_id, chapter_number, status, phase, failed_phase,
         director_task, director_output, rhythm_suggestion, arranged_entities,
-        writer_draft, final_content, model_id, style_expert_ids, error, resumed_from_run_id,
+        writer_draft, writer_scenes, final_content, model_id, style_expert_ids, error, resumed_from_run_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         phase = excluded.phase,
@@ -99,6 +110,7 @@ export class WorkflowRunStore {
         rhythm_suggestion = excluded.rhythm_suggestion,
         arranged_entities = excluded.arranged_entities,
         writer_draft = excluded.writer_draft,
+        writer_scenes = excluded.writer_scenes,
         final_content = excluded.final_content,
         model_id = excluded.model_id,
         style_expert_ids = excluded.style_expert_ids,
@@ -109,7 +121,7 @@ export class WorkflowRunStore {
     this.stmtGet = db.prepare(`
       SELECT id, project_id, chapter_number, status, phase, failed_phase,
              director_task, director_output, rhythm_suggestion, arranged_entities,
-             writer_draft, final_content, model_id, style_expert_ids, error, resumed_from_run_id,
+              writer_draft, writer_scenes, final_content, model_id, style_expert_ids, error, resumed_from_run_id,
              created_at, updated_at
       FROM novel_workflow_runs
       WHERE id = ?
@@ -132,6 +144,7 @@ export class WorkflowRunStore {
       input.rhythmSuggestion ? JSON.stringify(input.rhythmSuggestion) : null,
       input.arrangedEntities ? JSON.stringify(input.arrangedEntities) : null,
       input.writerDraft ?? null,
+      input.writerScenes ? JSON.stringify(input.writerScenes) : null,
       input.finalContent ?? null,
       input.modelId ? JSON.stringify(input.modelId) : null,
       input.styleExpertIds ? JSON.stringify(input.styleExpertIds) : null,
@@ -156,7 +169,7 @@ export class WorkflowRunStore {
     const row = this.db.prepare(`
       SELECT id, project_id, chapter_number, status, phase, failed_phase,
              director_task, director_output, rhythm_suggestion, arranged_entities,
-             writer_draft, final_content, model_id, style_expert_ids, error, resumed_from_run_id,
+              writer_draft, writer_scenes, final_content, model_id, style_expert_ids, error, resumed_from_run_id,
              created_at, updated_at
       FROM novel_workflow_runs
       WHERE project_id = ? AND chapter_number = ? AND phase IS NOT NULL
@@ -178,7 +191,7 @@ export class WorkflowRunStore {
     const rows = this.db.prepare(`
       SELECT id, project_id, chapter_number, status, phase, failed_phase,
              director_task, director_output, rhythm_suggestion, arranged_entities,
-             writer_draft, final_content, model_id, style_expert_ids, error, resumed_from_run_id,
+              writer_draft, writer_scenes, final_content, model_id, style_expert_ids, error, resumed_from_run_id,
              created_at, updated_at
       FROM novel_workflow_runs
       WHERE project_id = ? AND phase IS NOT NULL
@@ -230,6 +243,7 @@ export class WorkflowRunStore {
         ? JSON.parse(row.arranged_entities) as ArrangedEntity
         : undefined,
       writerDraft: row.writer_draft ?? undefined,
+      writerScenes: row.writer_scenes ? JSON.parse(row.writer_scenes) as WorkflowSceneDraft[] : undefined,
       finalContent: row.final_content ?? undefined,
        modelId: row.model_id ? JSON.parse(row.model_id) as PluginSessionOptions['modelId'] : undefined,
       styleExpertIds: row.style_expert_ids ? JSON.parse(row.style_expert_ids) as string[] : undefined,

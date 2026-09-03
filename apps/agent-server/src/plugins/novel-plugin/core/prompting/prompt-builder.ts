@@ -125,6 +125,7 @@ import type {
   NovelVolume,
   StoryState,
   NarrativeTask,
+  NarrativeTaskScene,
   ChapterConstraints,
   ArrangedEntity,
   NovelAgentLog,
@@ -132,6 +133,14 @@ import type {
 } from '../types.js'
 import type { MemoryEvent, MemoryEventType, MemorySnapshot } from '../novel-memory-store.js'
 import { resolveChapterBoundaryEntity } from '../chapters/chapter-boundary-resolution.js'
+
+export interface WriterSceneContext {
+  scene: NarrativeTaskScene
+  sceneIndex: number
+  sceneCount: number
+  targetWords: number
+  previousSceneTail?: string
+}
 
 /** 将持久化枚举翻译成创作语境中的自然语言，避免把实现细节交给模型理解。 */
 const PROMPT_VALUE_LABELS: Record<string, string> = {
@@ -1841,12 +1850,13 @@ export class NovelPromptBuilder {
     narrativeTask: NarrativeTask,
     constraints: ChapterConstraints,
     arrangedEntities?: ArrangedEntity,
-    agentType?: string
+    agentType?: string,
+    writerScene?: WriterSceneContext,
   ): string {
     // T03-2 等价拆块：suffix 统一由 chunk 版构建（Agent 分支独立 chunk），
     // join 结果与旧字符串逐字节一致（每分支合并为一个 chunk，分隔符位置不变）。
     const chunks = this.buildChapterContextSuffixChunks(
-      projectId, chapterNumber, narrativeTask, constraints, arrangedEntities, agentType,
+      projectId, chapterNumber, narrativeTask, constraints, arrangedEntities, agentType, writerScene,
     )
     if (chunks.length === 0) return ''
     return this.stripEmDash(chunks.map((c) => c.content).join('\n\n---\n\n'))
@@ -1864,6 +1874,7 @@ export class NovelPromptBuilder {
     constraints: ChapterConstraints,
     arrangedEntities?: ArrangedEntity,
     agentType?: string,
+    writerScene?: WriterSceneContext,
   ): Array<{ chunkId: string; content: string }> {
     if (!agentType) return []
     const chunks: Array<{ chunkId: string; content: string }> = []
@@ -1962,35 +1973,86 @@ export class NovelPromptBuilder {
       const positioningGuidance = sceneSampleSection
         ? `${styleDecisionPack}\n\n${sceneSampleSection}`
         : styleDecisionPack
-      const instruction = this.promptManager.render(
-        'chapter-instruction',
-        {
-          chapter_number: String(chapterNumber),
-          narrative_task: normalizeLiteralNewlines(narrativeTask.description),
-          task_type: promptLabel(narrativeTask.type),
-          target_words: String(targetWords),
-          max_words: String(maxWords),
-          // 逐场字数预算（scene-wise-writing T1/T2）：优先取 Director 结构化 scenes[]
-          // 的逐场 targetWords（工具已校验总和=本章目标），无 scenes 时回退均分。
-          // 写死到指令里替代"目标÷场数自己分配"——模型自计数不可靠。
-          scene_budgets: formatSceneBudgetGuidance(
-            narrativeTask.sceneCount,
-            targetWords,
-            narrativeTask.scenes,
-          ),
-          positioning_guidance: positioningGuidance,
-          // 形态判定线与 prose-quality-evaluator 同口径（quality-policy 注释曾要求
-          // 数字不进 prompt，但模板早已手写死数值且与门禁不一致——改为从
-          // PROSE_SHAPE_LIMITS 插值，保证"与审稿门同口径"这句声明为真）
-          gate_consecutive_single: String(PROSE_SHAPE_LIMITS.maxConsecutiveSingleSentenceParagraphs),
-          gate_short_ratio: `${Math.round(PROSE_SHAPE_LIMITS.shortParagraphRatioError * 100)}%`,
-        },
-        projectId
-      )
+      const instruction = writerScene
+        ? this.buildSceneInstruction(projectId, chapterNumber, narrativeTask, constraints, writerScene)
+        : this.promptManager.render(
+          'chapter-instruction',
+          {
+            chapter_number: String(chapterNumber),
+            narrative_task: normalizeLiteralNewlines(narrativeTask.description),
+            task_type: promptLabel(narrativeTask.type),
+            target_words: String(targetWords),
+            max_words: String(maxWords),
+            // 逐场字数预算（scene-wise-writing T1/T2）：优先取 Director 结构化 scenes[]
+            // 的逐场 targetWords（工具已校验总和=本章目标），无 scenes 时回退均分。
+            // 写死到指令里替代"目标÷场数自己分配"——模型自计数不可靠。
+            scene_budgets: formatSceneBudgetGuidance(
+              narrativeTask.sceneCount,
+              targetWords,
+              narrativeTask.scenes,
+            ),
+            positioning_guidance: positioningGuidance,
+            // 形态判定线与 prose-quality-evaluator 同口径（quality-policy 注释曾要求
+            // 数字不进 prompt，但模板早已手写死数值且与门禁不一致——改为从
+            // PROSE_SHAPE_LIMITS 插值，保证"与审稿门同口径"这句声明为真）
+            gate_consecutive_single: String(PROSE_SHAPE_LIMITS.maxConsecutiveSingleSentenceParagraphs),
+            gate_short_ratio: `${Math.round(PROSE_SHAPE_LIMITS.shortParagraphRatioError * 100)}%`,
+          },
+          projectId,
+        )
       chunks.push({ chunkId: 'writer-instruction', content: instruction })
     }
 
     return chunks
+  }
+
+  /** 构建 Writer 的单场创作指令；场景契约与预算只在动态 suffix 注入。 */
+  buildSceneInstruction(
+    projectId: string,
+    chapterNumber: number,
+    narrativeTask: NarrativeTask,
+    constraints: ChapterConstraints,
+    writerScene: WriterSceneContext,
+  ): string {
+    const { scene, sceneIndex, sceneCount, targetWords, previousSceneTail } = writerScene
+    const maxWords = Math.round(targetWords * WORD_COUNT_LIMITS.bloatCeilingRatio)
+    const styleDecisionPack = buildStyleDecisionPack({
+      positioning: constraints.positioning ?? narrativeTask.positioning,
+      narrativeTaskType: narrativeTask.type,
+      profile: this.stores.getWritingStyleProfile?.(projectId),
+    })
+    const sceneSampleSection = this.buildWriterSceneSamples(
+      projectId,
+      chapterNumber,
+      `${narrativeTask.description}\n${scene.title}\n${scene.goal}`,
+      constraints.positioning ?? narrativeTask.positioning,
+    )
+    const positioningGuidance = sceneSampleSection
+      ? `${styleDecisionPack}\n\n${sceneSampleSection}`
+      : styleDecisionPack
+    return this.promptManager.render(
+      'scene-instruction',
+      {
+        chapter_number: String(chapterNumber),
+        scene_number: String(scene.order),
+        scene_index: String(sceneIndex + 1),
+        scene_count: String(sceneCount),
+        narrative_task: normalizeLiteralNewlines(narrativeTask.description),
+        task_type: promptLabel(narrativeTask.type),
+        scene_title: scene.title,
+        scene_emphasis: scene.emphasis === 'core' ? '核心' : '过场',
+        scene_target_words: String(targetWords),
+        scene_max_words: String(maxWords),
+        scene_goal: scene.goal,
+        scene_entry: scene.entry,
+        scene_pressure: scene.pressure,
+        scene_choice: scene.choice,
+        scene_consequence: scene.consequence,
+        previous_scene_tail: previousSceneTail?.trim() || '（这是第一场，没有上一场承接文本。）',
+        positioning_guidance: positioningGuidance,
+      },
+      projectId,
+    )
   }
 
   /**
@@ -4367,6 +4429,7 @@ export class NovelPromptBuilder {
       relationship_change: '关系变更',
       info_layer_change: '信息差变更',
       item_change: '物品变更',
+      narrative_change: '剧情变更',
       plot_event: '剧情事件',
       world_change: '世界变更'
     }

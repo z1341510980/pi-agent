@@ -742,3 +742,139 @@ describe('NovelOrchestrator request context', () => {
     expect(reviewedInput).not.toContain(degradedDraft)
   })
 })
+
+function makeWriterScene(order: number, targetWords = 100) {
+  return {
+    order,
+    title: `场景 ${order}`,
+    emphasis: order === 1 ? 'core' : 'transition',
+    targetWords,
+    goal: `目标 ${order}`,
+    entry: `入场 ${order}`,
+    pressure: `阻力 ${order}`,
+    choice: `选择 ${order}`,
+    consequence: `后果 ${order}`,
+  } as const
+}
+
+function createSceneWriterHarness() {
+  const orchestrator = Object.create(NovelOrchestrator.prototype) as any
+  orchestrator.runStorage = new AsyncLocalStorage()
+  orchestrator.context = {
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  }
+  return orchestrator
+}
+
+describe('Writer 分场续跑', () => {
+  it('按场调用 Writer，并把上一场尾部传给下一场', async () => {
+    const orchestrator = createSceneWriterHarness()
+    const task = {
+      description: '推进主线', type: 'advance_mainline', targetEntity: null, priority: 'high',
+      scenes: [makeWriterScene(1), makeWriterScene(2), makeWriterScene(3)],
+    }
+    const calls: unknown[][] = []
+    orchestrator.runAgent = vi.fn(async (...args: unknown[]) => {
+      calls.push(args)
+      const scene = (args[5] as any).writerScene.scene
+      return `场${scene.order}`.repeat(50)
+    })
+    const updates: any[] = []
+    const options = { onProgress: vi.fn(), onRunStateUpdate: (state: any) => updates.push(state) }
+    orchestrator.runStorage.enterWith({
+      directorTask: task, rhythmSuggestion: { rhythm: 'rising' }, semiLayerSharedCache: null,
+      budget: {}, askStoryCounts: {},
+    })
+
+    const result = await orchestrator.runWriterScenes('project', 1, task, options)
+
+    expect(calls).toHaveLength(3)
+    expect((calls[1]![5] as any).writerScene.previousSceneTail).toContain('场1')
+    expect((calls[2]![5] as any).writerScene.previousSceneTail).toContain('场2')
+    expect(result).toContain('场1'.repeat(50))
+    expect(updates).toHaveLength(3)
+    expect(updates.at(-1).writerScenes).toHaveLength(3)
+  })
+
+  it('续跑复用已完成场景，只调用未完成场景，并先保存恢复进度', async () => {
+    const orchestrator = createSceneWriterHarness()
+    const task = {
+      description: '推进主线', type: 'advance_mainline', targetEntity: null, priority: 'high',
+      scenes: [makeWriterScene(1), makeWriterScene(2), makeWriterScene(3)],
+    }
+    const firstDraft = '已完成第一场'.repeat(10)
+    const calls: unknown[][] = []
+    orchestrator.runAgent = vi.fn(async (...args: unknown[]) => {
+      calls.push(args)
+      const scene = (args[5] as any).writerScene.scene
+      return `新场${scene.order}`.repeat(50)
+    })
+    const updates: any[] = []
+    const options = {
+      onProgress: vi.fn(), onRunStateUpdate: (state: any) => updates.push(state),
+      resume: { entry: 'writing', writerScenes: [{ order: 1, content: firstDraft, effectiveTargetWords: 100, retries: 0 }] },
+    }
+    orchestrator.runStorage.enterWith({
+      directorTask: task, rhythmSuggestion: { rhythm: 'rising' }, semiLayerSharedCache: null,
+      budget: {}, askStoryCounts: {},
+    })
+
+    const result = await orchestrator.runWriterScenes('project', 1, task, options)
+
+    expect(calls).toHaveLength(2)
+    expect((calls[0]![5] as any).writerScene.scene.order).toBe(2)
+    expect((calls[0]![5] as any).writerScene.previousSceneTail).toContain('已完成第一场')
+    expect(result).toContain(firstDraft)
+    expect(updates[0].writerScenes).toEqual([expect.objectContaining({ order: 1, content: firstDraft })])
+    expect(updates.at(-1).writerScenes).toHaveLength(3)
+  })
+
+  it('单场超标只重写当前场，不重复调用其他场', async () => {
+    const orchestrator = createSceneWriterHarness()
+    const task = {
+      description: '推进主线', type: 'advance_mainline', targetEntity: null, priority: 'high',
+      scenes: [makeWriterScene(1), makeWriterScene(2)],
+    }
+    const calls: unknown[][] = []
+    orchestrator.runAgent = vi.fn(async (...args: unknown[]) => {
+      calls.push(args)
+      const scene = (args[5] as any).writerScene.scene.order
+      return calls.length === 1 ? `超长${scene}`.repeat(100) : `合${scene}`.repeat(100)
+    })
+    orchestrator.runStorage.enterWith({
+      directorTask: task, rhythmSuggestion: { rhythm: 'rising' }, semiLayerSharedCache: null,
+      budget: {}, askStoryCounts: {},
+    })
+
+    await orchestrator.runWriterScenes('project', 1, task, { onProgress: vi.fn(), onRunStateUpdate: vi.fn() })
+
+    expect(calls.map((call) => (call[5] as any)?.writerScene?.scene?.order)).toEqual([1, 1, 2])
+    expect(calls).toHaveLength(3)
+    expect((calls[0]![5] as any).writerScene.scene.order).toBe(1)
+    expect((calls[1]![5] as any).writerScene.scene.order).toBe(1)
+    expect((calls[2]![5] as any).writerScene.scene.order).toBe(2)
+  })
+
+  it('续跑时下一场失败仍保留此前已完成场景的快照', async () => {
+    const orchestrator = createSceneWriterHarness()
+    const task = {
+      description: '推进主线', type: 'advance_mainline', targetEntity: null, priority: 'high',
+      scenes: [makeWriterScene(1), makeWriterScene(2)],
+    }
+    const firstDraft = '第一场正文'.repeat(10)
+    orchestrator.runAgent = vi.fn(async () => { throw new Error('writer failed') })
+    const updates: any[] = []
+    orchestrator.runStorage.enterWith({
+      directorTask: task, rhythmSuggestion: { rhythm: 'rising' }, semiLayerSharedCache: null,
+      budget: {}, askStoryCounts: {},
+    })
+
+    await expect(orchestrator.runWriterScenes('project', 1, task, {
+      onProgress: vi.fn(), onRunStateUpdate: (state: any) => updates.push(state),
+      resume: { entry: 'writing', writerScenes: [{ order: 1, content: firstDraft, effectiveTargetWords: 100, retries: 0 }] },
+    })).rejects.toThrow('writer failed')
+
+    expect(updates).toHaveLength(1)
+    expect(updates[0].writerScenes).toEqual([expect.objectContaining({ order: 1, content: firstDraft })])
+  })
+})

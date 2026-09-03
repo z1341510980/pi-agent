@@ -146,22 +146,22 @@
   - 验证：`chapter-scene-plan-adapter.test.ts` 重写 formatSceneBudgetGuidance 用例（均分回退/结构化分配/数量不一致防御）+ 新增 scenes 消费用例；store 链路集成用例随方法改名
   - 依赖：T1
 
-- [ ] T3：单场创作指令与单场字数核验
-  - 文件：`core/prompts/scene-instruction.md`（新建）、`core/prompting/prompt-builder.ts`、`core/chapters/scene-word-check.ts`（新建）、`core/chapters/writer-rewrite-plan.ts`、`__tests__/scene-word-check.test.ts`（新建）
+- [x] T3：单场创作指令与单场字数核验（2026-09-02 完成）
+  - 文件：`core/prompts/scene-instruction.md`（新建）、`core/prompting/prompt-builder.ts`、`core/chapters/scene-word-check.ts`（新建）、`core/chapters/writer-rewrite-plan.ts`、`__tests__/scene-word-check.test.ts`（新建）、`__tests__/scene-instruction.test.ts`（新建）
   - 改动：新增单场指令模板（本场契约/本场预算/承接锚点/只写本场）；prompt-builder 增 `buildSceneInstruction`；`scene-word-check` 纯函数返回 `accept | compress | expand`；`writer-rewrite-plan` 增单场压缩/扩写指令
-  - 验证：`vitest run scene-word-check.test.ts` + `golden-prompt.snapshot.test.ts -u`
+  - 验证：`scene-word-check.test.ts`、`writer-rewrite-plan.test.ts`、`scene-instruction.test.ts` 与类型检查通过；单场模板已接入 `PromptBuilder.buildSceneInstruction`
   - 依赖：T2
 
-- [ ] T4：Writer 分场循环接入 create-flow
-  - 文件：`core/novel-orchestrator.ts`、`core/chapters/word-budget-resolver.ts`、`__tests__/scene-wise-writing.test.ts`（新建）
+- [x] T4：Writer 分场循环接入 create-flow（2026-09-02 完成）
+  - 文件：`core/novel-orchestrator.ts`、`core/chapters/word-budget-resolver.ts`、`__tests__/novel-orchestrator-run-context.test.ts`
   - 改动：Writer 阶段改为按 `scenes[]` 循环调用，每场核验 + 就地重写（上限 1 次）+ 超出量向后扣减；合稿后进现有 Guard；`resolveWriterMaxTokens` 改按单场预算
-  - 验证：`vitest run scene-wise-writing.test.ts`（4 个集成用例）+ `word-budget-resolver.test.ts`
+  - 验证：`novel-orchestrator-run-context.test.ts` 分场调用/就地重写用例通过；`resolveWriterMaxTokens` 已按单场预算接入
   - 依赖：T3
 
-- [ ] T5：续跑与进度事件适配
+- [x] T5：续跑与进度事件适配（2026-09-02 完成）
   - 文件：`core/novel-orchestrator.ts`、`core/workflow-run-store.ts`、`__tests__/novel-orchestrator-run-context.test.ts`
   - 改动：run state 记录已完成场次与各场正文，续跑从未完成场次继续；逐场进度经现有 `phase_change` 推送（前端无需改动）
-  - 验证：`vitest run novel-orchestrator-run-context.test.ts` + 手动中断续跑一次
+  - 验证：`novel-orchestrator-run-context.test.ts` 覆盖已完成场景跳过、上一场尾部承接、逐场快照及失败保留；`workflow-run-store.test.ts` 7 tests passed；`tsc --noEmit` 通过
   - 依赖：T4
 
 - [ ] T6：实测对账与回归
@@ -181,13 +181,16 @@
 
 若 T6 实测显示 token 总量反而升高（缓存命中不足），保留 T1/T2 的结构化契约（它们本身消除了正则解析、且让 Director 显式分配预算），把 T4 的循环退化为「一次调用但 prompt 内带结构化逐场预算」——即当前形态，但预算来自 Director 结构化分配而非系统均分。这条回退不需要撤销 T1-T3。
 
-> **2026-09-02 执行注记**：当前按「回退路径」形态落地——T1/T2 已完成（结构化 scenes[] 契约
-> + 计划转正 + 正则解析退役），Writer 仍为单次整章调用，但逐场预算来自 Director 结构化
-> 分配（`formatSceneBudgetGuidance` 读 `task.scenes`）而非系统均分。T3-T6 未实施，
-> 待本轮实测字数分布后再决定是否继续推进分场循环。
+> **2026-09-02 执行注记**：T1-T5 已落地。Writer 在 `task.scenes[]` 存在时按场调用，单场
+> 字数由系统核验并就地压缩/扩写，已完成场景写入 `novel_workflow_runs.writer_scenes` 供续跑；
+> 无结构化场景的旧数据仍走整章兼容路径。T6 的真实模型 token/缓存对账尚未执行。
+
+> **2026-09-02 补充**：`ai-arrange` 的 `arrange_review` 检查点已增加按类型分组的实体明细，
+> 审核前可查看具体实体及本章功能/推进/伏笔动作等核心约束；确认、修改、拒绝的实际落库与回滚语义不变，旧版仅计数载荷继续兼容。
 
 ## RouteSync
 
-- 需要 route-sync：是（T1/T2 部分已完成同步；T3-T6 落地时需补 scene-word-check 等条目）
-- 预期更新：`docs/routespec/feature-routes/novel-plugin.md` 的「章节创作流程（SSE）」条目已补
-  scenes[] 提交契约与结构化预算描述；「领域子模块」chapters 分域已说明正则解析退役
+- 需要 route-sync：已完成（T1-T5 的入口、单场循环、续跑快照与测试入口已同步；T6 仅新增对账记录）
+- 已更新：`docs/routespec/feature-routes/novel-plugin.md` 的「章节创作流程（SSE）」条目已补
+  scenes[] 提交契约、单场 Writer 循环、续跑快照与测试入口；「领域子模块」chapters/prompting 分域已补
+  scene-word-check 与单场指令模板说明

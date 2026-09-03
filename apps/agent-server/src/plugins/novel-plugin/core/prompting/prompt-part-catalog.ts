@@ -53,6 +53,13 @@ export const PROMPT_PART_CATALOG: Record<string, PromptPartMeta> = {
     agents: ['writer'],
     effect: 'Writer 的任务指令骨架：叙事任务、目标字数、矩阵约束、钩子等以 {{变量}} 占位符注入，是"本次要写什么"的权威载体。',
   },
+  'scene-instruction': {
+    category: '主流程工种',
+    title: '单场创作指令模板',
+    usedBy: ['主流程 Writer 的逐场调用 suffix'],
+    agents: ['writer'],
+    effect: '将 Director 提交的单场因果契约、有效预算和上一场承接锚点注入 Writer，确保每次调用只产出一个场景。',
+  },
   'novel-creation': {
     category: '通用底座',
     title: '创作入口识别',

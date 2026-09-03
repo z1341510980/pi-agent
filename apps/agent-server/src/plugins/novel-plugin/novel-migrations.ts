@@ -2641,5 +2641,11 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
   {
     id: '122_add_gender_to_novel_characters',
     sql: `ALTER TABLE novel_characters ADD COLUMN gender TEXT;`
+  },
+  {
+    // 123: Writer 分场断点续跑快照。
+    // 保存已完成场次正文及其有效预算/重试次数，续跑从下一个未完成场次继续。
+    id: '123_add_workflow_writer_scenes',
+    sql: `ALTER TABLE novel_workflow_runs ADD COLUMN writer_scenes TEXT;`
   }
 ]

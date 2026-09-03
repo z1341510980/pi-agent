@@ -96,7 +96,9 @@ function stubPlan(generator: NovelEntityGenerator, plan: unknown, generated: Map
   })
 }
 
-const EMPTY_PLAN = { characters: [], conflicts: [], foreshadows: [], factions: [], locations: [], items: [] }
+const EMPTY_PLAN = {
+  characters: [], conflicts: [], foreshadows: [], factions: [], locations: [], items: [], narratives: [],
+}
 
 describe('ai-arrange 复用已有实体', () => {
   it('writes aggregate payload sums/max and session-attributed child logs', async () => {
@@ -185,6 +187,32 @@ describe('ai-arrange 复用已有实体', () => {
       ])
       expect(updated.status).toBe('reinforced')
       expect(updated.lastChapter).toBe(11)
+    } finally {
+      h.db.close()
+    }
+  })
+
+  it('新剧情会写入 appearance 并进入本章矩阵投影', async () => {
+    const h = createHarness()
+    try {
+      stubPlan(h.generator, {
+        ...EMPTY_PLAN,
+        narratives: [{ coreStyle: '主角在旧港钟楼确认六节点联动', narrativeType: 'reveal' }],
+      }, new Map())
+
+      const arranged = await h.generator.generateAndArrange(h.projectId, 11, '章纲', undefined, 'outline')
+
+      expect(arranged.narrativeIds ?? []).toHaveLength(1)
+      const narrativeId = (arranged.narrativeIds ?? [])[0]
+      expect(h.store.listChapterAppearanceIds({
+        projectId: h.projectId, chapterNumber: 11, entityType: 'narrative',
+      })).toEqual([narrativeId])
+      const arrangeEvent = h.memoryStore
+        .listStoryEvents(h.projectId, { chapterNumber: 11 })
+        .find((event) => event.title === '章纲编排实体投影')
+      expect(arrangeEvent).toBeDefined()
+      expect(h.memoryStore.listStoryEventEntityRefs(arrangeEvent!.id).map((ref) => ref.entityType))
+        .toContain('narrative')
     } finally {
       h.db.close()
     }

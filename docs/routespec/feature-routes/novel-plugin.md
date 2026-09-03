@@ -18,11 +18,11 @@
 
 ### 章节创作流程（SSE）
 
-- 描述：三条触发路径——`create-flow`（手动编排矩阵）、`ai-arrange`（AI 编排后确认再创作）、`create-team`（同步兼容入口）；Director（经 `novel_submit_narrative_task` 提交结构化任务 + **结构化 scenes[]**（scene-wise-writing T1：逐场 order/title/emphasis/targetWords/goal/entry/pressure/choice/consequence，工具内校验总和=本章目标 ±1、核心 ≤2、order 连续；2026-09-02 起正则解析场景结构已退役）→ 检查点1 → Writer（单次整章调用，逐场预算提示读 `task.scenes` 的 Director 分配，无 scenes 回退均分）→ 质量门 → 盲审/Reviewer → 检查点 → Reviser/Memory。场景计划经 `writeDirectorScenePlan`（原 shadowWriteDirectorPlan）落库为 approved V2 计划（生成依据，非影子）。群聊路径（`create-discussion`，后台运行 + 事件 tail）另见「群聊共创演绎链路」。
+- 描述：三条触发路径——`create-flow`（手动编排矩阵）、`ai-arrange`（AI 编排后确认再创作）、`create-team`（同步兼容入口）；Director（经 `novel_submit_narrative_task` 提交结构化任务 + **结构化 scenes[]**（scene-wise-writing T1：逐场 order/title/emphasis/targetWords/goal/entry/pressure/choice/consequence，工具内校验总和=本章目标 ±1、核心 ≤2、order 连续；2026-09-02 起正则解析场景结构已退役）→ 检查点1 → Writer（存在 `task.scenes` 时按场循环调用，逐场传入因果契约、有效预算与上一场尾部；单场超标压缩/残稿扩写最多 1 次，超出量结转后续场；恢复运行跳过已完成场景；无 scenes 回退整章写作）→ 合稿后质量门 → 盲审/Reviewer → 检查点 → Reviser/Memory。场景计划经 `writeDirectorScenePlan`（原 shadowWriteDirectorPlan）落库为 approved V2 计划（生成依据，非影子）。群聊路径（`create-discussion`，后台运行 + 事件 tail）另见「群聊共创演绎链路」。
 - 入口：HTTP `POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/create-flow` 等
-- 核心：`routes/creation-flow-routes.ts`（SSE 与检查点决策）、`core/novel-orchestrator.ts`（createChapterWithFlow）、`core/tools/submit.ts`（scenes[] schema 与校验）、`core/chapters/chapter-scene-plan-adapter.ts`（scenes 消费与逐场预算提示）
-- 测试：`apps/agent-server/src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts`、`__tests__/novel-tools.test.ts`（scenes 校验用例）、`__tests__/chapter-scene-plan-adapter.test.ts`
-- 备注：检查点决策经 `POST .../checkpoint/:type/decision` + EventEmitter 传递；群聊（create-discussion）自 2026-08-28 起为后台运行 + 事件 tail，与其余路径的一次性 SSE 不同。诊断见 `docs/novel/2026-08-24-群聊演绎链路诊断与修复方案.md`。lengdu 读感链路已于 2026-09-02 整体移除。方案与进度见 `docs/routespec/2026-09-01-scene-wise-writing/spec.md`（T1/T2 已完成，T3-T6 待定）。
+- 核心：`routes/creation-flow-routes.ts`（SSE 与检查点决策）、`routes/arrange-review-contract.ts`（审核明细 DTO）、`core/novel-orchestrator.ts`（createChapterWithFlow）、`core/tools/submit.ts`（scenes[] schema 与校验）、`core/chapters/chapter-scene-plan-adapter.ts`（scenes 消费与逐场预算提示）
+- 测试：`apps/agent-server/src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts`、`__tests__/novel-tools.test.ts`（scenes 校验用例）、`__tests__/chapter-scene-plan-adapter.test.ts`、`__tests__/novel-orchestrator-run-context.test.ts`（分场调用/续跑/就地重写/快照）
+- 备注：检查点决策经 `POST .../checkpoint/:type/decision` + EventEmitter 传递；Writer 分场进度复用既有 `phase_change`，阶段边界及已完成场景通过 `novel_workflow_runs.writer_scenes` 持久化，续跑从未完成场景继续；`ai-arrange` 的 `arrange_review` 检查点携带按类型分组的 `entityDetails`（名称/描述及本章功能、推进、伏笔动作等字段），前端审核卡展示具体将落库实体，旧版仅计数载荷仍兼容；群聊（create-discussion）自 2026-08-28 起为后台运行 + 事件 tail，与其余路径的一次性 SSE 不同。诊断见 `docs/novel/2026-08-24-群聊演绎链路诊断与修复方案.md`。lengdu 读感链路已于 2026-09-02 整体移除。方案与进度见 `docs/routespec/2026-09-01-scene-wise-writing/spec.md`（T1-T5 已完成，T6 需真实模型对账）。
 - 覆盖：sufficient
 - last-updated: 2026-09-02
 
@@ -67,7 +67,7 @@
 
 ### 领域子模块（core/ 分域）
 
-- 描述：stores（实体 CRUD/版本链/事务）、chapters（章节聊天/版本/场景计划）、prompting（三层缓存 PromptManager/Builder）、memory（长期记忆/账本）、entities（准入/编排/相似度）、quality（文风质量/陈词检测）、analysis（矩阵投影/一致性）、discussion（群聊）、generation（角色/实体生成）。
+- 描述：stores（实体 CRUD/版本链/事务）、chapters（章节聊天/版本/场景计划、单场字数核验与重写计划）、prompting（三层缓存 PromptManager/Builder，含单场 Writer 指令）、memory（长期记忆/账本；剧情轨道注入已有条目并对 `narrativeCreates` 做保守近似去重）、entities（准入/编排/相似度）、quality（文风质量/陈词检测）、analysis（矩阵投影/一致性）、discussion（群聊）、generation（角色/实体生成）。
 - 核心：`apps/agent-server/src/plugins/novel-plugin/core/`
 - 备注：各分域细节以 `ARCHITECTURE.md` 为准，本次未逐一展开。
 - 覆盖：partial

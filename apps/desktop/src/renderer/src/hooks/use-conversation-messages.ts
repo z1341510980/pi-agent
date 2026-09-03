@@ -398,30 +398,19 @@ export function renderCheckpointContent(checkpoint: CheckpointData): string {
     }
 
     if (checkpoint.type === 'arrange_review') {
-      const arranged = record.arrangedEntities as Record<string, unknown> | undefined
-      const model = record.model as { provider?: string; modelId?: string } | undefined
-      const counts = arranged
-        ? [
-            ['角色', arranged.characterIds],
-            ['冲突', arranged.conflictIds],
-            ['伏笔', arranged.foreshadowIds],
-            ['线索', arranged.clueIds],
-            ['势力', arranged.factionIds],
-            ['地点', arranged.locationIds],
-            ['物品', arranged.itemIds]
-          ]
-            .filter(([, ids]) => Array.isArray(ids))
-            .map(([label, ids]) => `- ${label}：${(ids as unknown[]).length}`)
-        : []
-      return [
-        '## AI 编排结果待确认',
-        '',
-        `本次共生成 **${String(record.total ?? 0)}** 个矩阵实体。确认前不会写入正式矩阵。`,
-        ...(model?.provider && model.modelId ? ['', `**本次模型：** ${model.provider}/${model.modelId}`] : []),
-        ...(counts.length > 0 ? ['', ...counts] : []),
-        '',
-        '如果不满意，请在下方填写意见并点击「按意见修改」。当前草稿会先回滚，再根据意见重新调用 AI。'
-      ].join('\n')
+      const formatted = formatDetailBubble({ ...record, kind: 'arrange_summary' })
+      if (formatted.content) {
+        const model = record.model as { provider?: string; modelId?: string } | undefined
+        return [
+          '## AI 编排结果待确认',
+          '',
+          ...(model?.provider && model.modelId ? [`**本次模型：** ${model.provider}/${model.modelId}`, ''] : []),
+          formatted.content,
+          '',
+          '如果不满意，请在下方填写意见并点击「按意见修改」。当前草稿会先回滚，再根据意见重新调用 AI。'
+        ].join('\n')
+      }
+      return '## AI 编排结果待确认'
     }
 
     if (checkpoint.type === 'chapter_budget') {

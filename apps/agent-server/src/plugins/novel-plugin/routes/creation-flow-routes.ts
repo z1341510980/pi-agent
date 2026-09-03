@@ -52,6 +52,7 @@ import {
   parseArrangedEntities,
   findForeignArrangedEntities,
 } from './arranged-entities-contract.js'
+import { buildArrangeReviewDetails } from './arrange-review-contract.js'
 import { parseNovelModelRef } from '../core/domain/novel-model-ref.js'
 import type { ArrangeDraftHandle } from '../core/generation/novel-entity-generator.js'
 import { modelSelectionSchema } from './model-selection-contract.js'
@@ -316,6 +317,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             rhythmSuggestion: boundary?.rhythmSuggestion,
             arrangedEntities: boundary?.arrangedEntities,
             writerDraft: boundary?.writerDraft,
+            writerScenes: boundary?.writerScenes,
             finalContent: boundary?.finalContent,
             modelId: input.modelId,
             styleExpertIds: input.styleExpertIds,
@@ -617,6 +619,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         rhythmSuggestion: snapshot.rhythmSuggestion,
         arrangedEntities: snapshot.arrangedEntities,
         writerDraft: snapshot.writerDraft,
+        writerScenes: snapshot.writerScenes,
         finalContent: snapshot.finalContent,
       }
       const saveRunSnapshot = (
@@ -637,6 +640,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             rhythmSuggestion: boundary?.rhythmSuggestion,
             arrangedEntities: boundary?.arrangedEntities,
             writerDraft: boundary?.writerDraft,
+            writerScenes: boundary?.writerScenes,
             finalContent: boundary?.finalContent,
             modelId: frozenModelId,
             styleExpertIds: snapshot.styleExpertIds,
@@ -681,6 +685,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               rhythmSuggestion: snapshot.rhythmSuggestion,
               arrangedEntities: snapshot.arrangedEntities,
               writerDraft: snapshot.writerDraft,
+              writerScenes: snapshot.writerScenes,
               finalContent: snapshot.finalContent,
             },
             styleExpertIds: snapshot.styleExpertIds,
@@ -1893,8 +1898,9 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             )
             draft = { result: arrangedEntities, commit: () => undefined, rollback: () => undefined }
           }
-           pendingArrangeDrafts.set(lockKey, { draftId, handle: draft, modelId: arrangeInput.modelId, feedback })
+          pendingArrangeDrafts.set(lockKey, { draftId, handle: draft, modelId: arrangeInput.modelId, feedback })
           const arrangedEntities = draft.result
+          const entityDetails = buildArrangeReviewDetails(store, arrangedEntities, chNum)
           const totalCount = arrangedEntities.characterIds.length
             + arrangedEntities.conflictIds.length
             + arrangedEntities.foreshadowIds.length
@@ -1902,6 +1908,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             + arrangedEntities.factionIds.length
             + arrangedEntities.locationIds.length
             + (arrangedEntities.itemIds ?? []).length
+            + (arrangedEntities.narrativeIds ?? []).length
           emitter.progress({
             type: 'arrange_done',
             phase: 'arranging',
@@ -1917,8 +1924,18 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               factions: arrangedEntities.factionIds.length,
               locations: arrangedEntities.locationIds.length,
               items: (arrangedEntities.itemIds ?? []).length,
+              narratives: (arrangedEntities.narrativeIds ?? []).length,
+              entityDetails,
+              reviewPending: true,
             },
           })
+          const reviewData = {
+            arrangedEntities,
+            total: totalCount,
+            model: entityGenerator.getArrangeModel(projectId, arrangeInput.modelId),
+            entityDetails,
+            reviewPending: true,
+          }
           const decisionPromise = services.confirmationManager.requestDecision({
             threadId: `novel-arrange-${projectId}-${chNum}`,
             toolCallId: draftId,
@@ -1927,7 +1944,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               checkpoint: {
                 type: 'arrange_review',
                 phase: 'checkpoint_review',
-                 data: { arrangedEntities, total: totalCount, model: entityGenerator.getArrangeModel(projectId, arrangeInput.modelId) },
+                data: reviewData,
                 options: ['approve', 'revise', 'reject'],
               },
               draftId,
@@ -1939,7 +1956,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             type: 'arrange_review',
             phase: 'checkpoint_review',
             checkpointId: pending?.id,
-             data: { arrangedEntities, total: totalCount, model: entityGenerator.getArrangeModel(projectId, arrangeInput.modelId) },
+            data: reviewData,
             options: ['approve', 'revise', 'reject'],
           })
           const decision = await decisionPromise
@@ -2132,6 +2149,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           + (arrangedEntities.clueIds ?? []).length
           + arrangedEntities.factionIds.length
           + arrangedEntities.locationIds.length
+          + (arrangedEntities.itemIds ?? []).length
+          + (arrangedEntities.narrativeIds ?? []).length
         emitter.progress({
           type: 'arrange_done',
           phase: 'arranging',
@@ -2146,6 +2165,9 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             clues: (arrangedEntities.clueIds ?? []).length,
             factions: arrangedEntities.factionIds.length,
             locations: arrangedEntities.locationIds.length,
+            items: (arrangedEntities.itemIds ?? []).length,
+            narratives: (arrangedEntities.narrativeIds ?? []).length,
+            reviewPending: false,
           },
         })
         emitter.result({
