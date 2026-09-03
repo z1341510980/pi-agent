@@ -2283,6 +2283,7 @@ export class PluginManager {
 
         /** 最近一次 prompt 的完整生命周期落定信号（成功/失败都算落定）；见上方串行化说明。 */
         let lastPluginPromptSettled: Promise<void> = Promise.resolve()
+        let followUpUsed = false
 
         const runPromptUntilFinalAssistant = async (nextUserMessage?: string): Promise<void> => {
           await runSinglePromptTurn(nextUserMessage)
@@ -2701,6 +2702,20 @@ export class PluginManager {
             // 属于 Session 维护，不应阻塞一次性的 create-flow Agent。
             try {
               await runPromptUntilFinalAssistant(finalMessage)
+              // 工具化协议 Agent 可能只输出分析或修订正文，却没有调用工具。
+              // 由调用方提供一次纠正提示；必须复用当前 Session，才能保留工具定义
+              // 和闭包 draft，让修订真正落到正文，而不是只停留在对话输出里。
+              const followUp = !followUpUsed && options.followUpPrompt
+                ? await options.followUpPrompt(completeText)
+                : undefined
+              if (followUp) {
+                followUpUsed = true
+                logger.warn({ threadId }, '插件 Session 首轮未提交工具结果，发起同会话纠正轮')
+                completeText = ''
+                lastErrorMessage = ''
+                sawFinalAssistantSuccess = false
+                await runPromptUntilFinalAssistant(followUp)
+              }
               // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
               if (lastErrorMessage) {
                 cancelDebug('prompt-error-detected', {

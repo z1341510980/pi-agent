@@ -176,6 +176,21 @@ describe('NovelOrchestrator 定向修订循环', () => {
     expect(result.rounds[0].appliedPatches).toBe(0)
   })
 
+  it('Reviser 工具未调用时提供一次明确的工具纠正提示', async () => {
+    let followUp: ((raw: string) => string | undefined) | undefined
+    runAgentMock.mockImplementation(async (_a: string, _b: string, _c: number, _d: string, _o: unknown, overrides?: { followUpPrompt?: (raw: string) => string | undefined }) => {
+      followUp = overrides?.followUpPrompt
+      return '我先分析需要修改的内容，但没有调用工具。'
+    })
+
+    const result = await invokeLoop({ initialContent: dirtyContent() })
+
+    expect(result.status).toBe('blocked')
+    expect(followUp).toBeDefined()
+    expect(followUp!('我先分析需要修改的内容，但没有调用工具。')).toContain('novel_apply_revision')
+    expect(followUp!('我先分析需要修改的内容，但没有调用工具。')).toContain('正文没有发生任何修改')
+  })
+
   it('首轮修订通过（patch 生效后复检干净）：单轮结束，返回 passed', async () => {
     // 每个修订轮把 DIRTY_FRAGMENT 替换成干净结尾 → 第 1 轮后复检即通过
     runAgentMock.mockImplementation(async (_a: string, _b: string, _c: number, _d: string, _o: unknown, overrides?: { extraTools?: ApplyRevisionTool[] }) => {

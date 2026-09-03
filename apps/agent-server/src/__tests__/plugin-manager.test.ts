@@ -210,6 +210,47 @@ describe('PluginManager', () => {
     handle.dispose()
   })
 
+  it('runs one protocol follow-up in the same session and does not repeat it', async () => {
+    let context: PluginContext | undefined
+    const fake = createStreamingGuardSession()
+    manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+      builtinPlugins: [
+        {
+          plugin: createTestPlugin({
+            name: 'protocol-follow-up-test',
+            setupFn: (pluginContext) => {
+              context = pluginContext
+            },
+          }),
+        },
+      ],
+    })
+    manager.setSessionStore({
+      getOrCreate: vi.fn().mockResolvedValue({ session: fake.session }),
+    } as any)
+    await manager.init()
+    await manager.start()
+
+    const seen: string[] = []
+    const handle = await context!.createSession({
+      systemPrompt: 'sys',
+      userMessage: 'setup',
+      followUpPrompt: (raw) => {
+        seen.push(raw)
+        return raw === 'turn-1' ? '请通过工具提交结果。' : undefined
+      },
+    })
+
+    const first = await handle.prompt('首轮')
+    const second = await handle.prompt('普通后续')
+
+    expect(seen).toEqual(['turn-1'])
+    expect(first).toBe('turn-2')
+    expect(second).toBe('turn-3')
+    expect(fake.prompts).toEqual(['首轮', '请通过工具提交结果。', '普通后续'])
+    handle.dispose()
+  })
+
   /**
    * 模拟「终答成功之后维护往返失败」：Pi Session 在 stopReason='stop' 之后仍会
    * 继续 emit message_end（自动压缩等维护动作），实测出现过其中一次报

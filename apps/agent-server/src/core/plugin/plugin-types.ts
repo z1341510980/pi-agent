@@ -576,6 +576,8 @@ export interface PluginSessionOptions {
   temperature?: number
   /** LLM 最大输出 token 数（未配置则从模型注册信息自动读取） */
   maxTokens?: number
+  /** 首轮未提交工具结果时，在同一 Session 内最多追加一次纠正提示。 */
+  followUpPrompt?: (rawResult: string) => string | undefined | Promise<string | undefined>
   /** 响应格式：'json' 强制 JSON 输出，但不会移除工具定义；只读 JSON 会话仍需显式 tools: []。 */
   responseFormat?: 'json' | 'text'
   /**

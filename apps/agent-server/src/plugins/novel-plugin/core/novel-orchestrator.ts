@@ -178,6 +178,8 @@ interface RunAgentOverrides {
    * orchestrator 在 Reviser 结束后从 draft 读取最终正文，完全绕开正则解析。
    */
   extraTools?: ToolDefinition[]
+  /** Reviser 首轮未调用工具时，在同一 Session 内追加一次纠正提示。 */
+  followUpPrompt?: (rawResult: string) => string | undefined | Promise<string | undefined>
   /**
    * 增强 agent_log.result 字段（不影响 runAgent 的返回值）。
    *
@@ -2073,6 +2075,7 @@ export class NovelOrchestrator {
       }
       const draft: RevisionDraftHolder = { content, appliedPatches: [] }
       const applyRevisionTool = createNovelApplyRevisionTool(draft)
+      const originalLength = content.length
       await this.runAgent('reviser', projectId, chapterNumber, prompt, options, {
         phase: 'revising',
         extraTools: [applyRevisionTool],
@@ -2084,6 +2087,21 @@ export class NovelOrchestrator {
         // 在 draft.content 里（通过 novel_apply_revision 工具闭包更新）。
         // 不追加的话 agent_log 看不到修订结果，用户无法在日志面板审查修订后的正文。
         augmentLogResult: (raw) => this.augmentReviserLogResult(raw, draft),
+        followUpPrompt: (raw) => {
+          if (draft.appliedPatches.some(p => p.success)) return undefined
+          // “无需修订”是合法终态，不应强行再烧一轮；其它文本终态都说明
+          // 模型没有把修改提交到工具，需要让它立刻走唯一生效通道。
+          if (/无需(?:修订|修改)/.test(raw)) return undefined
+          return [
+            '上一轮你没有调用 novel_apply_revision 工具，因此正文没有发生任何修改。',
+            '请立即调用该工具提交修订；对话文本中的分析、原文/修改后配对或完整正文都不会自动写回。',
+            'from 必须从下方正文逐字复制（包含标点、空格和换行），to 为空表示删除。',
+            '',
+            '## 当前章节正文',
+            '',
+            content,
+          ].join('\n')
+        },
       })
       this.budgetRecordReviserRun()
       const successful = draft.appliedPatches.filter(p => p.success)
@@ -2096,10 +2114,12 @@ export class NovelOrchestrator {
           round,
           appliedCount: successful.length,
           failedCount: draft.appliedPatches.length - successful.length,
-          originalLength: content.length,
+          originalLength,
           revisedLength: successful.length > 0 ? draft.content.length : content.length,
         },
-        `修订第 ${round} 轮完成（novel_apply_revision 工具应用结果）`,
+        successful.length > 0
+          ? `修订第 ${round} 轮完成（novel_apply_revision 工具应用结果）`
+          : `修订第 ${round} 轮未修改正文（工具未提交或 patch 未定位）`,
       )
 
       // 修订后复检：记录本轮结果，通过即结束
@@ -3439,6 +3459,9 @@ export class NovelOrchestrator {
           ? { skill: { name: skillConfig.name, path: skillPath } }
           : {}),
         tools: finalTools,
+        ...(overrides?.followUpPrompt
+          ? { followUpPrompt: overrides.followUpPrompt }
+          : {}),
         signal: options?.signal,
         temperature,
         // 透传 AgentPage 配置的 modelId（未配置则 undefined，走默认 Provider）
@@ -3927,7 +3950,10 @@ export class NovelOrchestrator {
   private augmentReviserLogResult(raw: string, draft: RevisionDraftHolder): string {
     const successful = draft.appliedPatches.filter(p => p.success)
     const failed = draft.appliedPatches.filter(p => !p.success)
-    const parts: string[] = [raw, '', '---', '', '## 修订后正文（draft.content，由 novel_apply_revision 工具应用）', '', draft.content, '', '---', '', '## 修订统计', '']
+    const heading = successful.length > 0
+      ? '## 修订后正文（draft.content，由 novel_apply_revision 工具应用）'
+      : '## 修订结果（正文未修改）'
+    const parts: string[] = [raw, '', '---', '', heading, '', draft.content, '', '---', '', '## 修订统计', '']
     parts.push(`- 成功应用：${successful.length} 处`)
     parts.push(`- 定位失败：${failed.length} 处`)
     if (failed.length > 0) {

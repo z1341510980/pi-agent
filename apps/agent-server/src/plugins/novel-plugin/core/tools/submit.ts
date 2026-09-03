@@ -62,7 +62,9 @@ export function createNovelApplyRevisionTool(draft: RevisionDraftHolder): ToolDe
 
       for (const pair of params.pairs) {
         if (draft.content.includes(pair.from)) {
-          draft.content = draft.content.replace(pair.from, pair.to)
+          // 使用 replacer 函数，避免 to 中的 "$&" / "$1" 被 String.replace
+          // 解释成替换模板，确保模型提交的文字原样落库。
+          draft.content = draft.content.replace(pair.from, () => pair.to)
           draft.appliedPatches.push({ ...pair, success: true })
           appliedCount++
           results.push({
