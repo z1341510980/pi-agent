@@ -55,6 +55,53 @@ describe('DesignBoardEditor', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
+  it('preserves text draft when adding a rect mid-edit', () => {
+    const { onCommit } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    const textarea = screen.getByRole('textbox')
+    fireEvent.change(textarea, { target: { value: '你好' } })
+    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects).toHaveLength(2)
+    expect(doc.objects).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'text', text: '你好' }),
+        expect.objectContaining({ kind: 'rect' })
+      ])
+    )
+  })
+
+  it('commits the previous draft when adding another text mid-edit', () => {
+    const { onCommit } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    const textarea = screen.getByRole('textbox')
+    fireEvent.change(textarea, { target: { value: '你好' } })
+    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects).toHaveLength(2)
+    expect(doc.objects).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'text', text: '你好' }),
+        expect.objectContaining({ kind: 'text', text: '' })
+      ])
+    )
+  })
+
+  it('commits text draft on blur and keeps it when finishing', () => {
+    const { onCommit } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    const textarea = screen.getByRole('textbox')
+    fireEvent.change(textarea, { target: { value: '你好' } })
+    // React 19 把 onBlur 委托到冒泡的 focusout（原生 blur 不冒泡，React 收不到）
+    fireEvent.focusOut(textarea)
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects).toHaveLength(1)
+    expect(doc.objects[0]).toMatchObject({ kind: 'text', text: '你好' })
+  })
+
   it('restores selection-free state and supports undo of creation', async () => {
     const { onCommit } = setup()
     fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))

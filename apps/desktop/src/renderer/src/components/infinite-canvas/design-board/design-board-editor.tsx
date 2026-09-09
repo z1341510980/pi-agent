@@ -161,6 +161,17 @@ export function DesignBoardEditor({
     restoreHistory(Math.min(historyRef.current.stack.length - 1, historyRef.current.index + 1))
   }, [restoreHistory])
 
+  // 文本编辑：草稿在提交点同步写回文档，避免闭包拿到旧 doc。
+  // 返回提交后的 doc，供复制等需要读取「已含草稿」对象的路径同步使用。
+  // 幂等：textEditingId 已清空时直接返回当前 doc，重复调用无副作用。
+  const commitTextDraft = useCallback((): DesignBoardDoc => {
+    if (!textEditingId) return doc
+    const finalDoc = applyTextDraftToDoc(doc, textEditingId, textDraft)
+    if (finalDoc !== doc) setDoc(finalDoc)
+    setTextEditingId(null)
+    return finalDoc
+  }, [doc, textDraft, textEditingId])
+
   // 对象操作
   const updateObject = useCallback(
     (objectId: string, updater: (object: DesignBoardObject) => DesignBoardObject): void => {
@@ -180,19 +191,23 @@ export function DesignBoardEditor({
   }, [])
 
   const addText = useCallback((): void => {
+    // 先落盘草稿：下方 setTextEditingId/setTextDraft 会覆写当前编辑状态
+    commitTextDraft()
     const object = createTextObject(doc.width / 2 - 160, doc.height / 2 - 40, 320)
     addObject(object)
     setTextEditingId(object.id)
     setTextDraft('')
-  }, [addObject, doc.height, doc.width])
+  }, [addObject, commitTextDraft, doc.height, doc.width])
 
   const addRect = useCallback((): void => {
+    commitTextDraft()
     const size = Math.round(Math.min(doc.width, doc.height) * 0.16)
     addObject(createRectObject(doc.width / 2 - size / 2, doc.height / 2 - size / 2, size, size))
-  }, [addObject, doc.height, doc.width])
+  }, [addObject, commitTextDraft, doc.height, doc.width])
 
   const insertResource = useCallback(
     (nodeId: string, index: number): void => {
+      commitTextDraft()
       const width = Math.round(doc.width * 0.4)
       addObject(
         createImageObject(
@@ -204,17 +219,20 @@ export function DesignBoardEditor({
         )
       )
     },
-    [addObject, doc.height, doc.width]
+    [addObject, commitTextDraft, doc.height, doc.width]
   )
 
   const duplicateSelected = useCallback((): void => {
     if (!selectedObject) return
-    const clone = JSON.parse(JSON.stringify(selectedObject)) as DesignBoardObject
+    const committedDoc = commitTextDraft()
+    const source =
+      committedDoc.objects.find((object) => object.id === selectedObject.id) ?? selectedObject
+    const clone = JSON.parse(JSON.stringify(source)) as DesignBoardObject
     clone.id = makeObjectId()
     clone.x += CLONE_OFFSET_PX
     clone.y += CLONE_OFFSET_PX
     addObject(clone)
-  }, [addObject, selectedObject])
+  }, [addObject, commitTextDraft, selectedObject])
 
   const deleteSelected = useCallback((): void => {
     if (!selectedId) return
@@ -224,14 +242,6 @@ export function DesignBoardEditor({
     }))
     setSelectedId(null)
   }, [selectedId])
-
-  // 文本编辑：草稿在提交点同步写回文档，避免闭包拿到旧 doc
-  const commitTextDraft = useCallback((): void => {
-    if (!textEditingId) return
-    const finalDoc = applyTextDraftToDoc(doc, textEditingId, textDraft)
-    if (finalDoc !== doc) setDoc(finalDoc)
-    setTextEditingId(null)
-  }, [doc, textDraft, textEditingId])
 
   // 拖拽/缩放（window 级 move/up/cancel）
   const boardRect = (): { left: number; top: number } => {
@@ -516,6 +526,7 @@ export function DesignBoardEditor({
                     editing={textEditingId === object.id}
                     draft={textDraft}
                     onDraftChange={setTextDraft}
+                    onCommitDraft={commitTextDraft}
                     resolveUrl={(source) => resolveDesignImageSource(source, nodes)}
                   />
                 </div>
@@ -630,6 +641,7 @@ function ObjectView({
   editing,
   draft,
   onDraftChange,
+  onCommitDraft,
   resolveUrl
 }: {
   object: DesignBoardObject
@@ -637,6 +649,7 @@ function ObjectView({
   editing: boolean
   draft: string
   onDraftChange: (value: string) => void
+  onCommitDraft: () => void
   resolveUrl: (source: DesignImageSource) => string
 }): ReactElement {
   if (object.kind === 'text') {
@@ -647,6 +660,8 @@ function ObjectView({
           value={draft}
           spellCheck={false}
           onChange={(event) => onDraftChange(event.target.value)}
+          // blur 提交（工具条/资源面板点击先失焦）；与 pointerdown 路径重复触发时幂等
+          onBlur={onCommitDraft}
           onPointerDown={(event) => event.stopPropagation()}
           onDoubleClick={(event) => event.stopPropagation()}
           className="h-full w-full resize-none bg-transparent p-0 outline-none"
