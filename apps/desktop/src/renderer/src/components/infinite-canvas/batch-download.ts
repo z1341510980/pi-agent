@@ -12,18 +12,49 @@ export type BatchDownloadItem =
 
 export type BatchZipFile = { filename: string; data: Uint8Array }
 
-const WINDOWS_INVALID = /[<>:"/\\|?*\u0000-\u001f]/g
+const WINDOWS_INVALID = /[<>:"/\\|?*]/g
+const WINDOWS_RESERVED_NAMES = new Set([
+  'CON',
+  'PRN',
+  'AUX',
+  'NUL',
+  ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`)
+])
+
+function hasContent(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function isWindowsReservedName(value: string): boolean {
+  const stem = value.split('.')[0]?.toUpperCase()
+  return stem ? WINDOWS_RESERVED_NAMES.has(stem) : false
+}
+
+function withReservedNameSuffix(value: string): string {
+  if (!isWindowsReservedName(value)) return value
+  const dot = value.indexOf('.')
+  return dot > 0 ? `${value.slice(0, dot)}-file${value.slice(dot)}` : `${value}-file`
+}
 
 export function sanitizeBatchFilename(value: string): string {
   const sanitized = value
     .trim()
+    .split('')
+    .map((character) => (character.charCodeAt(0) < 32 ? '-' : character))
+    .join('')
     .replace(WINDOWS_INVALID, '-')
     .replace(/[-. ]+$/g, '')
-  return sanitized || '未命名节点'
+  return withReservedNameSuffix(sanitized || '未命名节点')
 }
 
 export function uniqueBatchFilename(filename: string, used: Set<string>): string {
-  if (!used.has(filename)) {
+  const isUsed = (candidate: string): boolean => {
+    const normalized = candidate.toLowerCase()
+    return Array.from(used).some((existing) => existing.toLowerCase() === normalized)
+  }
+
+  if (!isUsed(filename)) {
     used.add(filename)
     return filename
   }
@@ -33,7 +64,7 @@ export function uniqueBatchFilename(filename: string, used: Set<string>): string
   const extension = dot > 0 ? filename.slice(dot) : ''
   let index = 2
   let candidate = `${stem}-${index}${extension}`
-  while (used.has(candidate)) candidate = `${stem}-${++index}${extension}`
+  while (isUsed(candidate)) candidate = `${stem}-${++index}${extension}`
   used.add(candidate)
   return candidate
 }
@@ -42,34 +73,38 @@ export function mediaFileExtension(
   mime: string | undefined,
   mediaType: 'image' | 'video' | 'audio'
 ): string {
-  const subtype = (mime ?? '').toLowerCase().split(';')[0].split('/')[1]?.trim()
-  const known: Record<typeof mediaType, Record<string, string>> = {
-    image: {
-      jpeg: '.jpg',
-      png: '.png',
-      webp: '.webp',
-      gif: '.gif',
-      avif: '.avif',
-      'svg+xml': '.svg',
-      'x-icon': '.ico'
-    },
-    video: {
-      mp4: '.mp4',
-      mpeg: '.mpeg',
-      webm: '.webm',
-      quicktime: '.mov'
-    },
-    audio: {
-      mpeg: '.mp3',
-      ogg: '.ogg',
-      wav: '.wav',
-      'x-m4a': '.m4a',
-      webm: '.webm'
-    }
+  const [mainType, subtype] = (mime ?? '').toLowerCase().split(';')[0].split('/')
+  const known: Record<string, string> = {
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'image/gif': '.gif',
+    'image/avif': '.avif',
+    'image/svg+xml': '.svg',
+    'image/x-icon': '.ico',
+    'video/mp4': '.mp4',
+    'video/mpeg': '.mpeg',
+    'video/webm': '.webm',
+    'video/quicktime': '.mov',
+    'video/ogg': '.ogg',
+    'audio/mpeg': '.mp3',
+    'audio/mp4': '.mp4',
+    'audio/ogg': '.ogg',
+    'audio/wav': '.wav',
+    'audio/x-m4a': '.m4a',
+    'audio/webm': '.webm'
   }
 
-  if (subtype && known[mediaType][subtype]) return known[mediaType][subtype]
+  const mimeKey = mainType && subtype ? `${mainType}/${subtype.trim()}` : ''
+  if (mimeKey && known[mimeKey]) return known[mimeKey]
   return mediaType === 'image' ? '.png' : mediaType === 'video' ? '.mp4' : '.mp3'
+}
+
+function textNodeContent(metadata: NonNullable<CanvasNodeData['metadata']>): string | null {
+  for (const value of [metadata.content, metadata.prompt, metadata.composerContent]) {
+    if (hasContent(value)) return value
+  }
+  return null
 }
 
 export function collectBatchDownloadItems(nodes: CanvasNodeData[]): BatchDownloadItem[] {
@@ -83,14 +118,12 @@ export function collectBatchDownloadItems(nodes: CanvasNodeData[]): BatchDownloa
 
     if (node.type === 'image') {
       const images = Array.isArray(metadata.images)
-        ? metadata.images
-            .map(canvasGeneratedImageContent)
-            .filter((content): content is string => Boolean(content))
+        ? metadata.images.map(canvasGeneratedImageContent).filter(hasContent)
         : []
       const sources = images.length ? images : [metadata.content]
 
       sources.forEach((content, index) => {
-        if (typeof content !== 'string' || !content) return
+        if (!hasContent(content)) return
         items.push({
           baseName: images.length > 1 ? `${baseName}-${index + 1}` : baseName,
           kind: 'media',
@@ -102,7 +135,7 @@ export function collectBatchDownloadItems(nodes: CanvasNodeData[]): BatchDownloa
     }
 
     if (node.type === 'video' || node.type === 'audio') {
-      if (typeof metadata.content === 'string' && metadata.content) {
+      if (hasContent(metadata.content)) {
         items.push({
           baseName,
           kind: 'media',
@@ -123,7 +156,7 @@ export function collectBatchDownloadItems(nodes: CanvasNodeData[]): BatchDownloa
       continue
     }
 
-    const content = typeof metadata.content === 'string' ? metadata.content : ''
+    const content = textNodeContent(metadata)
     if (content) items.push({ baseName, kind: 'text', extension: '.txt', content })
   }
 

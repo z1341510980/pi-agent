@@ -84,12 +84,35 @@ describe('batch download item collection', () => {
         node({ type: 'audio', title: '旁白', metadata: { content: 'audio-url' } }),
         node({ type: 'prompt', title: '扩展文本', metadata: { content: '文本结果' } }),
         node({ type: 'text', title: '空文本', metadata: { content: '' } }),
-        node({ type: 'video', title: '空视频', metadata: { content: '' } })
+        node({ type: 'video', title: '空视频', metadata: { content: '  ' } })
       ])
     ).toEqual([
       { baseName: '演示', kind: 'media', mediaType: 'video', content: 'video-url' },
       { baseName: '旁白', kind: 'media', mediaType: 'audio', content: 'audio-url' },
       { baseName: '扩展文本', kind: 'text', extension: '.txt', content: '文本结果' }
+    ])
+  })
+
+  it('falls back from content to prompt and composer content for text nodes', () => {
+    expect(
+      collectBatchDownloadItems([
+        node({ type: 'prompt', title: 'Prompt', metadata: { prompt: '提示词' } }),
+        node({ type: 'agent-result', title: 'Agent', metadata: { composerContent: '编排结果' } }),
+        node({
+          type: 'text-extension',
+          title: '优先级',
+          metadata: { content: '正文', prompt: '提示词', composerContent: '编排结果' }
+        }),
+        node({
+          type: 'text-extension-empty',
+          title: '空白回退',
+          metadata: { content: '  ', prompt: '\n', composerContent: '  ' }
+        })
+      ])
+    ).toEqual([
+      { baseName: 'Prompt', kind: 'text', extension: '.txt', content: '提示词' },
+      { baseName: 'Agent', kind: 'text', extension: '.txt', content: '编排结果' },
+      { baseName: '优先级', kind: 'text', extension: '.txt', content: '正文' }
     ])
   })
 
@@ -106,13 +129,22 @@ describe('batch download item collection', () => {
 describe('batch download filenames and archive', () => {
   it('removes path separators and Windows-invalid characters', () => {
     expect(sanitizeBatchFilename('  A/B:C*D?  ')).toBe('A-B-C-D')
+    expect(sanitizeBatchFilename('A\u0001B')).toBe('A-B')
     expect(sanitizeBatchFilename('')).toBe('未命名节点')
+  })
+
+  it('avoids Windows reserved device names', () => {
+    expect(sanitizeBatchFilename('CON')).toBe('CON-file')
+    expect(sanitizeBatchFilename('prn.txt')).toBe('prn-file.txt')
+    expect(sanitizeBatchFilename('LPT9.log')).toBe('LPT9-file.log')
   })
 
   it('deduplicates names inside one archive', () => {
     const used = new Set<string>()
     expect(uniqueBatchFilename('同名.txt', used)).toBe('同名.txt')
     expect(uniqueBatchFilename('同名.txt', used)).toBe('同名-2.txt')
+    expect(uniqueBatchFilename('Report.txt', used)).toBe('Report.txt')
+    expect(uniqueBatchFilename('report.txt', used)).toBe('report-2.txt')
   })
 
   it('maps common media MIME types to extensions', () => {
@@ -129,7 +161,11 @@ describe('batch download filenames and archive', () => {
     expect(mediaFileExtension('audio/wav', 'audio')).toBe('.wav')
     expect(mediaFileExtension('audio/x-m4a', 'audio')).toBe('.m4a')
     expect(mediaFileExtension('audio/webm', 'audio')).toBe('.webm')
-    expect(mediaFileExtension('video/mpeg', 'audio')).toBe('.mp3')
+    expect(mediaFileExtension('audio/mp4', 'audio')).toBe('.mp4')
+    expect(mediaFileExtension('video/ogg', 'video')).toBe('.ogg')
+    expect(mediaFileExtension('video/mpeg', 'audio')).toBe('.mpeg')
+    expect(mediaFileExtension('audio/mpeg', 'video')).toBe('.mp3')
+    expect(mediaFileExtension('audio/ogg', 'video')).toBe('.ogg')
     expect(mediaFileExtension('', 'video')).toBe('.mp4')
   })
 
