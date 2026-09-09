@@ -2,6 +2,7 @@ import type { FastifyBaseLogger } from 'fastify'
 import type { ProviderConfigStore } from './provider-config-store.js'
 import { normalizeMediaProtocol, type MediaProtocol } from './provider-config-store.js'
 import { normalizeProviderBaseUrl } from './provider-base-url.js'
+import { mediaDiag } from './media-diag.js'
 
 export interface MediaGenerator {
   generateImage(input: {
@@ -86,6 +87,26 @@ export function normalizeImageBaseUrl(baseUrl: string): string {
 const IMAGE_JOB_TIMEOUT_MS = 5 * 60_000
 const IMAGE_POLL_INITIAL_DELAY_MS = 2_000
 const IMAGE_POLL_MAX_DELAY_MS = 10_000
+
+/**
+ * 只有这些状态码能证明该 Provider 没有 multipart 编辑端点，才允许改走 JSON 端点。
+ *
+ * 超时/网络错误一律不算：多数平台的图生图本来就要几十秒，把超时当"端点不存在"
+ * 会把请求悄悄降级到不带参考图的生成，用户看到的是"参考图没生效"。
+ */
+function isUnusableEditEndpoint(status: number): boolean {
+  return status === 404 || status === 405 || status === 415 || status === 501
+}
+
+/** 已确认返回"端点不存在"的 Base URL：仅由上述状态码写入，避免重复白等一轮。 */
+const jsonOnlyImageEndpoints = new Set<string>()
+
+/**
+ * 已确认 JSON 图生图被 400/415 拒绝的 Base URL（部分聚合平台只认 multipart
+ * 文件上传，尽管文档宣称支持 JSON）：进程内记忆，后续直接走 multipart，
+ * 省掉一轮注定失败的 JSON 请求。
+ */
+const multipartOnlyEditEndpoints = new Set<string>()
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
@@ -188,6 +209,17 @@ function imageHttpError(body: unknown, status: number, operation: string): Error
   return new Error(`${operation}: ${imageErrorMessage(body) || `HTTP ${status}`}`)
 }
 
+/** 诊断用：参考图负载的元信息（只记数量与字节，不记内容）。 */
+function referenceStats(references: string[] | undefined): {
+  referenceCount: number
+  referenceBytes: number
+} {
+  return {
+    referenceCount: references?.length ?? 0,
+    referenceBytes: references?.reduce((sum, value) => sum + value.length, 0) ?? 0
+  }
+}
+
 function imageResponseShape(body: unknown): 'images' | 'job' | 'empty' {
   if (parseImages(body).length) return 'images'
   return imageJob(body) ? 'job' : 'empty'
@@ -261,6 +293,7 @@ async function pollImageJob(
   traceId?: string
 ): Promise<string[]> {
   let waitMs = IMAGE_POLL_INITIAL_DELAY_MS
+  let lastLoggedStatus = ''
   for (;;) {
     await delay(waitMs, signal)
     const response = await fetch(taskEndpoint(context, jobId), {
@@ -293,6 +326,15 @@ async function pollImageJob(
       '图片任务轮询'
     )
     if (images.length) return images
+    if (status !== lastLoggedStatus) {
+      lastLoggedStatus = status
+      mediaDiag.event('job-poll', {
+        traceId,
+        provider: safeProviderLabel(context),
+        jobId,
+        jobStatus: job.status
+      })
+    }
     if (!job) throw new Error(noImageMessage)
     if (isFailedStatus(status)) throw imageJobFailure(body, operation)
     if (isCompletedStatus(status)) throw new Error(noImageMessage)
@@ -337,6 +379,47 @@ export function normalizeApimartSize(size: string | undefined): string | undefin
   return APIMART_SIZE_ALIASES[value] || (/^\d+:\d+$/.test(value) ? value : value)
 }
 
+/**
+ * OpenAI 兼容图片接口的 size 白名单（1k/2k/4k 档位）。
+ * 接口文档要求只传白名单值，非法自由分辨率按比例吸附到最近档位。
+ */
+const OPENAI_IMAGE_SIZE_TIERS: string[][] = [
+  // 1k
+  ['1024x1024', '1152x896', '896x1152', '1536x864', '864x1536', '1536x1024', '1024x1536', '1792x768'],
+  // 2k
+  ['2048x2048', '2048x1536', '1536x2048', '2048x1152', '1152x2048', '2048x1360', '1360x2048', '2048x880'],
+  // 4k
+  ['3840x3840', '3840x2880', '2880x3840', '3840x2160', '2160x3840', '3840x2560', '2560x3840', '3840x1648']
+]
+
+const OPENAI_IMAGE_SIZE_WHITELIST: string[] = OPENAI_IMAGE_SIZE_TIERS.flat()
+
+/** 把任意 "宽x高" 吸附到文档白名单里长宽比最接近的档位（按最大边选 1k/2k/4k）。 */
+export function normalizeOpenAiCompatibleSize(size: string | undefined): string | undefined {
+  const value = size?.trim()
+  if (!value || value === 'auto') return undefined
+  if (OPENAI_IMAGE_SIZE_WHITELIST.includes(value)) return value
+  const match = /^(\d+)x(\d+)$/.exec(value)
+  if (!match) return undefined
+  const width = Number(match[1])
+  const height = Number(match[2])
+  if (!(width > 0) || !(height > 0)) return undefined
+  const maxDim = Math.max(width, height)
+  const tier = maxDim >= 3840 ? OPENAI_IMAGE_SIZE_TIERS[2] : maxDim >= 2048 ? OPENAI_IMAGE_SIZE_TIERS[1] : OPENAI_IMAGE_SIZE_TIERS[0]
+  const aspect = Math.log(width / height)
+  let best = tier[0]
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const candidate of tier) {
+    const [w, h] = candidate.split('x').map(Number)
+    const distance = Math.abs(aspect - Math.log(w / h))
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = candidate
+    }
+  }
+  return best
+}
+
 function apimartPayload(input: {
   context: ImageRequestContext
   prompt: string
@@ -367,6 +450,8 @@ export async function requestImageGeneration(input: {
   signal?: AbortSignal
   logger?: FastifyBaseLogger
   traceId?: string
+  /** 参考图随 JSON 的 image_urls 提交，而不是走 multipart /images/edits。 */
+  referencesInJson?: boolean
 }): Promise<{ images: string[] }> {
   const startedAt = Date.now()
   const protocol = protocolFor(input.context)
@@ -394,7 +479,7 @@ export async function requestImageGeneration(input: {
 
   // OpenAI-compatible edit uses multipart /images/edits. APIMart accepts references
   // on its JSON generation endpoint as image_urls instead, so it stays on one path.
-  if (hasReferences && protocol === 'openai-images') {
+  if (hasReferences && protocol === 'openai-images' && !input.referencesInJson) {
     const [image, ...images] = input.references as string[]
     return requestImageEdit({
       context: input.context,
@@ -425,8 +510,25 @@ export async function requestImageGeneration(input: {
           model: input.context.modelId,
           prompt: input.prompt,
           n: isXKiroBaseUrl(input.context.baseUrl) ? 1 : n,
-          ...(input.size && input.size !== 'auto' ? { size: input.size } : {})
+          ...(normalizeOpenAiCompatibleSize(input.size)
+            ? { size: normalizeOpenAiCompatibleSize(input.size) }
+            : {}),
+          response_format: 'url',
+          ...(input.referencesInJson && input.references?.length
+            ? { image_urls: input.references }
+            : {})
         }
+    mediaDiag.event('generation-submit', {
+      traceId: input.traceId,
+      provider: safeProviderLabel(input.context),
+      protocol,
+      endpoint,
+      model: input.context.modelId,
+      size: input.size,
+      count: n,
+      referencesInJson: Boolean(input.referencesInJson && input.references?.length),
+      ...referenceStats(input.references)
+    })
     const response = await fetch(`${input.context.baseUrl}${endpoint}`, {
       method: 'POST',
       headers: { ...input.context.headers, 'Content-Type': 'application/json' },
@@ -435,6 +537,15 @@ export async function requestImageGeneration(input: {
     })
     const responseBody = await readImageResponse(response, '图片生成失败')
     const job = imageJob(responseBody)
+    mediaDiag.event('generation-response', {
+      traceId: input.traceId,
+      provider: safeProviderLabel(input.context),
+      endpoint,
+      status: response.status,
+      responseShape: imageResponseShape(responseBody),
+      jobId: job?.id,
+      jobStatus: job?.status
+    })
     input.logger?.info(
       {
         traceId: input.traceId,
@@ -471,6 +582,13 @@ export async function requestImageGeneration(input: {
       },
       '图片请求完成'
     )
+    mediaDiag.event('generation-done', {
+      traceId: input.traceId,
+      provider: safeProviderLabel(input.context),
+      endpoint,
+      outputCount: images.length,
+      durationMs: Date.now() - startedAt
+    })
     return { images }
   } catch (error) {
     input.logger?.error(
@@ -485,6 +603,13 @@ export async function requestImageGeneration(input: {
       },
       '图片请求失败'
     )
+    mediaDiag.event('generation-error', {
+      traceId: input.traceId,
+      provider: safeProviderLabel(input.context),
+      endpoint,
+      durationMs: Date.now() - startedAt,
+      error: errorText(error)
+    })
     throw error
   } finally {
     guard.dispose()
@@ -518,6 +643,24 @@ export async function requestImageEdit(input: {
   }
 
   const startedAt = Date.now()
+  const jsonOnly = !input.mask && jsonOnlyImageEndpoints.has(input.context.baseUrl)
+  if (jsonOnly) {
+    mediaDiag.event('edit-cached-json-only', {
+      traceId: input.traceId,
+      provider: safeProviderLabel(input.context)
+    })
+    return requestImageGeneration({
+      context: input.context,
+      prompt: input.prompt,
+      references: [input.image, ...(input.images ?? [])].filter(Boolean),
+      size: input.size,
+      count: 1,
+      signal: input.signal,
+      logger: input.logger,
+      traceId: input.traceId,
+      referencesInJson: true
+    })
+  }
   input.logger?.info(
     {
       traceId: input.traceId,
@@ -536,27 +679,112 @@ export async function requestImageEdit(input: {
   )
   const guard = withAbortGuard(input.signal, IMAGE_JOB_TIMEOUT_MS)
   try {
-    const form = new FormData()
     const sourceImages = [input.image, ...(input.images ?? [])].filter(Boolean)
-    for (const [index, sourceImage] of sourceImages.entries()) {
-      form.append('image', dataUrlToBlob(sourceImage), `image-${index + 1}.png`)
-    }
-    if (input.mask) form.append('mask', dataUrlToBlob(input.mask), 'mask.png')
-    form.append(
-      'prompt',
+    const effectivePrompt =
       sourceImages.length > 1
         ? `${input.prompt}\n\n第一张上传图片是需要修改的原图，后续上传图片仅作为视觉风格参考。`
         : input.prompt
-    )
-    form.append('model', input.context.modelId)
-    form.append('n', '1')
-    if (input.size && input.size !== 'auto') form.append('size', input.size)
-    const response = await fetch(`${input.context.baseUrl}/images/edits`, {
-      method: 'POST',
-      headers: input.context.headers,
-      body: form,
-      signal: guard.signal
+    const size = normalizeOpenAiCompatibleSize(input.size)
+    // 关键证据行：编辑请求实际携带的参考图数量与字节数
+    mediaDiag.event('edit-submit', {
+      traceId: input.traceId,
+      provider: safeProviderLabel(input.context),
+      endpoint: '/images/edits',
+      model: input.context.modelId,
+      size,
+      hasMask: Boolean(input.mask),
+      ...referenceStats(sourceImages)
     })
+    // 严格 OpenAI 官方端点/部分聚合平台只认 multipart 文件上传
+    const sendMultipart = async (): Promise<Response> => {
+      const form = new FormData()
+      for (const [index, sourceImage] of sourceImages.entries()) {
+        form.append('image', dataUrlToBlob(sourceImage), `image-${index + 1}.png`)
+      }
+      if (input.mask) form.append('mask', dataUrlToBlob(input.mask), 'mask.png')
+      form.append('prompt', effectivePrompt)
+      form.append('model', input.context.modelId)
+      form.append('n', '1')
+      form.append('response_format', 'url')
+      if (size) form.append('size', size)
+      return fetch(`${input.context.baseUrl}/images/edits`, {
+        method: 'POST',
+        headers: input.context.headers,
+        body: form,
+        signal: guard.signal
+      })
+    }
+
+    let response: Response
+    if (multipartOnlyEditEndpoints.has(input.context.baseUrl)) {
+      // 已确认该平台 JSON 图生图被拒：直接 multipart，省一轮注定失败的 400
+      mediaDiag.event('edit-multipart-only', {
+        traceId: input.traceId,
+        provider: safeProviderLabel(input.context)
+      })
+      response = await sendMultipart()
+    } else {
+      // 文档契约（JSON）：image 为 URL/data URL/数组，response_format=url。
+      // 参考图用 data URL——本地资产地址服务商访问不到。
+      response = await fetch(`${input.context.baseUrl}/images/edits`, {
+        method: 'POST',
+        headers: { ...input.context.headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: input.context.modelId,
+          prompt: effectivePrompt,
+          image: sourceImages.length === 1 ? sourceImages[0] : sourceImages,
+          n: 1,
+          ...(size ? { size } : {}),
+          response_format: 'url',
+          ...(input.mask ? { mask: input.mask } : {})
+        }),
+        signal: guard.signal
+      })
+      if (response.status === 400 || response.status === 415) {
+        multipartOnlyEditEndpoints.add(input.context.baseUrl)
+        mediaDiag.event('edit-json-rejected', {
+          traceId: input.traceId,
+          provider: safeProviderLabel(input.context),
+          status: response.status
+        })
+        response = await sendMultipart()
+      }
+    }
+    // 只有明确的"端点不存在"才改走 JSON /images/generations + image_urls：
+    // 参考图必须要么真的送达，要么如实报错，不能悄悄丢掉。
+    if (isUnusableEditEndpoint(response.status)) {
+      mediaDiag.event('edit-endpoint-missing', {
+        traceId: input.traceId,
+        provider: safeProviderLabel(input.context),
+        status: response.status
+      })
+      input.logger?.warn(
+        {
+          traceId: input.traceId,
+          providerId: input.context.providerId,
+          provider: safeProviderLabel(input.context),
+          baseUrl: safeBaseUrl(input.context.baseUrl),
+          endpoint: '/images/edits',
+          status: response.status
+        },
+        'multipart 图片编辑端点不存在，回退到 /images/generations 携带 image_urls'
+      )
+      if (input.mask) {
+        throw new Error('当前图片 Provider 不支持 /images/edits，无法执行蒙版局部重绘')
+      }
+      jsonOnlyImageEndpoints.add(input.context.baseUrl)
+      return requestImageGeneration({
+        context: input.context,
+        prompt: input.prompt,
+        references: sourceImages,
+        size: input.size,
+        count: 1,
+        signal: input.signal,
+        logger: input.logger,
+        traceId: input.traceId,
+        referencesInJson: true
+      })
+    }
     const responseBody = await readImageResponse(response, '图片编辑失败')
     const job = imageJob(responseBody)
     input.logger?.info(
@@ -593,6 +821,12 @@ export async function requestImageEdit(input: {
       },
       '图片编辑请求完成'
     )
+    mediaDiag.event('edit-done', {
+      traceId: input.traceId,
+      provider: safeProviderLabel(input.context),
+      outputCount: images.length,
+      durationMs: Date.now() - startedAt
+    })
     return { images }
   } catch (error) {
     input.logger?.error(
@@ -606,6 +840,12 @@ export async function requestImageEdit(input: {
       },
       '图片编辑请求失败'
     )
+    mediaDiag.event('edit-error', {
+      traceId: input.traceId,
+      provider: safeProviderLabel(input.context),
+      durationMs: Date.now() - startedAt,
+      error: errorText(error)
+    })
     throw error
   } finally {
     guard.dispose()

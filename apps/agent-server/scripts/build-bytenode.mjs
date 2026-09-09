@@ -26,7 +26,7 @@ import { build } from 'esbuild'
 import bytenode from 'bytenode'
 import { readFile, writeFile, mkdir, rm, cp } from 'node:fs/promises'
 import { readFileSync, existsSync } from 'node:fs'
-import { join, dirname, resolve } from 'node:path'
+import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
@@ -59,7 +59,17 @@ function resolveElectronPath() {
 }
 
 /** 原生模块：标记 external，运行时从 node_modules 解析 */
-const EXTERNALS = ['better-sqlite3']
+// ── 外置依赖 ──
+// 原生模块 + "运行时按模块路径读文件"的包及其依赖闭包 标记 external，
+// 以真实文件树随包发布（collect-server-deps.mjs 负责收集）：
+// bundle 会把所有模块摊平进同一个文件，第三方包里的 __dirname /
+// require.resolve("./x") / 相对路径读文件全部错位（jsdom css、css-tree
+// data 皆此类）。受影响包由 metafile 扫描自动探测（见 detectExternals），
+// 升级依赖无需人工维护清单。@repo/* 是本仓库 TS 源码包，继续打进 bundle。
+const pkgJson = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'))
+const EXTERNALS_BASE = ['better-sqlite3']
+/** 原生模块：无论校验结果如何都必须 external（ABI 由 rebuild:sqlite 保障） */
+const NATIVE_PACKAGES = new Set(EXTERNALS_BASE)
 
 /** loader 入口源码（会被 esbuild 打包，内联 bytenode） */
 const LOADER_ENTRY = `'use strict'
@@ -436,33 +446,210 @@ function patchDynamicImports(code) {
   return { code: out, count }
 }
 
+/**
+ * 探测"运行时按模块路径读文件"的第三方包：
+ * bundle 会把所有模块摊平进同一文件，__dirname / require.resolve 的
+ * 相对路径在运行时全部指向 dist/ 而不是包自己的目录。
+ * 扫描 esbuild metafile 的每个输入文件（node_modules 下），
+ * 命中 __dirname 或 require.resolve 的包 → 必须以真实文件随包发布。
+ * @param metafile esbuild 的 metafile 对象
+ * @returns 需要外置的包根目录（绝对路径）数组
+ */
+function detectFilepathSensitivePackages(metafile) {
+  const packageDirs = new Set()
+  for (const { inputs } of Object.values(metafile.outputs)) {
+    for (const inputPath of Object.keys(inputs)) {
+      // metafile 的路径是相对于 cwd 的；只关心 node_modules 下的第三方包，
+      // 本仓库源码（src/、@repo/*）按 bundle 内语义处理（locales/prompts 已随包复制）
+      const normalized = inputPath.replaceAll('\\', '/')
+      const nmIndex = normalized.indexOf('node_modules/')
+      if (nmIndex < 0) continue
+      const absInput = resolve(process.cwd(), inputPath)
+      try {
+        if (!/\.(js|cjs|mjs)$/.test(absInput)) continue
+        const source = readFileSync(absInput, 'utf8')
+        if (/\b__dirname\b/.test(source) || /require\s*\.\s*resolve\s*\(\s*["']\.\.?\//.test(source)) {
+          const root = findPackageRoot(absInput)
+          if (root) packageDirs.add(root)
+        }
+      } catch {
+        /* 读不了的跳过 */
+      }
+    }
+  }
+  return [...packageDirs]
+}
+
+/** 从文件路径向上找到包根：node_modules/<name>/ 或 node_modules/<@scope>/<name>/。 */
+function findPackageRoot(absFile) {
+  let dir = dirname(absFile)
+  while (dir !== dirname(dir)) {
+    if (existsSync(join(dir, 'package.json'))) {
+      const parent = dirname(dir)
+      const segments = parent.split(/[\\/]/)
+      const last = segments[segments.length - 1]
+      if (last === 'node_modules' || segments[segments.length - 2] === 'node_modules') {
+        return dir
+      }
+    }
+    dir = dirname(dir)
+  }
+  return null
+}
+
+/** 包根目录 → 包名（node_modules/<name> 或 node_modules/<@scope>/<name>）。 */
+function packageDirToName(packageDir) {
+  const segments = packageDir.replaceAll('\\', '/').split('/')
+  const nmIndex = segments.lastIndexOf('node_modules')
+  if (nmIndex < 0 || nmIndex + 1 >= segments.length) return null
+  const rest = segments.slice(nmIndex + 1)
+  return rest[0]?.startsWith('@') && rest.length > 1 ? rest.slice(0, 2).join('/') : rest[0]
+}
+
 async function main() {
   console.log('[bytenode] 清理 dist/')
   await rm(DIST, { recursive: true, force: true })
   await mkdir(DIST, { recursive: true })
 
-  // ── Step 1: esbuild bundle → CJS（处理顶层 await + import.meta.url）──
-  console.log('[bytenode] esbuild 打包后端 bundle...')
-  const bundlePath = join(DIST, 'sea-bundle.cjs')
-  await build({
+  // ── Step 0: 探测路径敏感包（两遍构建的第一遍）──
+  // 第一遍带 metafile 打包，扫描 __dirname/require.resolve 引用，
+  // 得出必须以真实文件发布的包 → 连同依赖闭包一起 external
+  console.log('[bytenode] Step 0: 探测路径敏感的第三方包...')
+  const probeResult = await build({
     entryPoints: [join(ROOT, 'src/index.ts')],
     bundle: true,
     platform: 'node',
     format: 'cjs',
     target: ['node22'],
-    outfile: bundlePath,
-    external: EXTERNALS,
+    outfile: join(DIST, '.probe-bundle.cjs'),
+    external: EXTERNALS_BASE,
     minify: true,
     sourcemap: false,
     legalComments: 'none',
-    logLevel: 'warning',
-    define: {
-      'process.env.NODE_ENV': '"production"',
-    },
-    // 顶层 await 已在 index.ts 中用 async main() 包装，无需 banner/footer
+    logLevel: 'silent',
+    metafile: true,
+    write: false,
+    define: { 'process.env.NODE_ENV': '"production"' },
     plugins: [importMetaUrlPlugin],
   })
-  console.log('[bytenode] 后端 bundle 完成:', bundlePath)
+  const sensitivePackages = detectFilepathSensitivePackages(probeResult.metafile)
+  await rm(join(DIST, '.probe-bundle.cjs'), { force: true })
+  // ESM-only 包（exports 无 require/default 条件）无法被 .jsc 的 require 加载，
+  // 必须留在 bundle 里由 esbuild 转换；它们的运行时文件读取走 import.meta.url
+  // （loader 已注入路径 shim），不依赖 __dirname。
+  const isRequireable = (pkgDir) => {
+    try {
+      const pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'))
+      if (!pkg.exports) return Boolean(pkg.main) || existsSync(join(pkgDir, 'index.js'))
+      const text = JSON.stringify(pkg.exports)
+      return text.includes('"require"') || text.includes('"default"')
+    } catch {
+      return false
+    }
+  }
+  const sensitiveEntries = sensitivePackages
+    .map((dir) => ({ name: packageDirToName(dir), dir }))
+    .filter((entry) => {
+      if (!entry.name) return false
+      if (!isRequireable(entry.dir)) {
+        console.log(`[bytenode] ${entry.name} 不可 require（ESM-only），保留在 bundle 内`)
+        return false
+      }
+      return true
+    })
+  // better-sqlite3 是直接依赖，可从 agent-server 解析出真实目录。
+  // 注意 require.resolve 返回主入口文件（lib/index.js），必须向上走到包根
+  // （父目录是 node_modules 为止），否则 collect 的包根校验会失败
+  const nativeEntries = EXTERNALS_BASE.map((name) => {
+    let root = dirname(require.resolve(name))
+    while (basename(dirname(root)) !== 'node_modules' && root !== dirname(root)) {
+      root = dirname(root)
+    }
+    return { name, dir: root }
+  })
+  const EXTERNAL_ENTRIES = [...nativeEntries]
+  for (const entry of sensitiveEntries) {
+    if (!EXTERNAL_ENTRIES.some((item) => item.name === entry.name)) EXTERNAL_ENTRIES.push(entry)
+  }
+
+  /**
+   * exports 子路径校验：判断 pkg 是否允许以 require 加载某子路径。
+   * 简化实现（覆盖 ESM-only / 子路径未导出两类真实故障）：
+   * - 无 exports：旧式包，全部子路径可用
+   * - 命中子路径：字符串值 → 可用；对象/数组需含 "require" 或 "default" 条件
+   */
+  function subpathRequireable(pkgDir, subpath) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'))
+      if (!pkg.exports) return true
+      const key = subpath === '.' ? '.' : `./${subpath}`
+      const targets = Array.isArray(pkg.exports) ? pkg.exports : [pkg.exports[key] ?? (key === '.' ? pkg.exports : undefined)]
+      if (targets.length === 0 || targets.every((t) => t === undefined)) return false
+      const ok = (value) => {
+        if (typeof value === 'string') return true
+        if (Array.isArray(value)) return value.some(ok)
+        if (value && typeof value === 'object') return 'require' in value || 'default' in value
+        return false
+      }
+      return targets.some(ok)
+    } catch {
+      return false
+    }
+  }
+
+  // ── Step 1: esbuild bundle（循环：把 require 不了的包收回 bundle，直到全部 external 可加载）──
+  console.log('[bytenode] esbuild 打包后端 bundle...')
+  const bundlePath = join(DIST, 'sea-bundle.cjs')
+  let externalEntries = [...EXTERNAL_ENTRIES]
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await build({
+      entryPoints: [join(ROOT, 'src/index.ts')],
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      target: ['node22'],
+      outfile: bundlePath,
+      external: externalEntries.map((entry) => entry.name),
+      minify: true,
+      sourcemap: false,
+      legalComments: 'none',
+      logLevel: 'warning',
+      define: {
+        'process.env.NODE_ENV': '"production"',
+      },
+      // 顶层 await 已在 index.ts 中用 async main() 包装，无需 banner/footer
+      plugins: [importMetaUrlPlugin],
+    })
+
+    // 收集 bundle 里指向 external 包的 require 子路径
+    let text = await readFile(bundlePath, 'utf8')
+    const names = externalEntries.map((entry) => entry.name)
+    const specs = new Set()
+    for (const match of text.matchAll(/require\("([^"]+)"\)/g)) {
+      const spec = match[1]
+      const pkg = names.find((name) => spec === name || spec.startsWith(`${name}/`))
+      if (pkg) specs.add(spec)
+    }
+    if (specs.size === 0) break
+
+    // 校验每个被引用的子路径都允许 require；不允许的包收回 bundle
+    const reBundle = new Set()
+    for (const spec of specs) {
+      const pkg = names.find((name) => spec === name || spec.startsWith(`${name}/`))
+      const entry = externalEntries.find((item) => item.name === pkg)
+      if (!entry || NATIVE_PACKAGES.has(pkg)) continue
+      const subpath = spec === pkg ? '.' : spec.slice(pkg.length + 1)
+      if (!subpathRequireable(entry.dir, subpath)) {
+        reBundle.add(pkg)
+        console.log(`[bytenode] ${spec} 不可 require（ESM-only/未导出），收回 bundle`)
+      }
+    }
+    if (reBundle.size === 0) break
+    externalEntries = externalEntries.filter((entry) => !reBundle.has(entry.name))
+  }
+  const EXTERNALS = externalEntries.map((entry) => entry.name)
+  console.log(`[bytenode] 最终 external（真实文件随包发布）: ${EXTERNALS.join(', ')}`)
+  await writeFile(join(DIST, 'externals.json'), JSON.stringify(externalEntries, null, 2), 'utf8')
 
   // ── Step 1.5: patch dynamic import() → Promise.resolve(require()) ──
   // bytenode 用 vm.Script 运行 .jsc，不支持 import() 动态导入，
@@ -519,6 +706,8 @@ async function main() {
 
   // ── Step 4: 复制运行时资源文件 ──
   console.log('[bytenode] 复制运行时资源...')
+  // locales/prompts 是本仓库源码里以相对路径读取的资源，bundle 后仍指向 dist/
+  // 第三方包的运行时资源不再需要单独拷贝：全部依赖以真实 node_modules 随包发布
   const resources = [
     { src: join(ROOT, 'src/core/i18n/locales'), dest: join(DIST, 'locales') },
     { src: join(ROOT, 'src/plugins/novel-plugin/core/prompts'), dest: join(DIST, 'prompts') },
@@ -527,6 +716,8 @@ async function main() {
     if (existsSync(src)) {
       await cp(src, dest, { recursive: true })
       console.log(`[bytenode] 资源已复制: ${dirname(dest)}`)
+    } else {
+      console.warn(`[bytenode] 警告: 运行时资源不存在: ${src}`)
     }
   }
 
@@ -538,6 +729,7 @@ async function main() {
   console.log(`  loader.cjs: ${(loaderSize / 1024).toFixed(0)} KB`)
   console.log(`  locales/:   ${existsSync(join(DIST, 'locales')) ? 'OK' : '缺失'}`)
   console.log(`  prompts/:   ${existsSync(join(DIST, 'prompts')) ? 'OK' : '缺失'}`)
+  console.log(`  externals:  ${JSON.parse(await readFile(join(DIST, 'externals.json'), 'utf8')).length} 个包（真实文件随包发布）`)
 }
 
 main().catch((err) => {

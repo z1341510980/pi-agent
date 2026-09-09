@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 
 import type { CanvasNodeData } from '@/api/infinite-canvas-client'
+import { proxyExternalImageUrl } from '@/api/infinite-canvas-client'
 import type { CanvasTheme } from './canvas-theme'
 
 export interface UpstreamInputSummary {
@@ -19,6 +20,15 @@ export interface UpstreamInputSummary {
   imageCount: number
   videoCount: number
   audioCount: number
+}
+
+/** 面板里"参考图顺序预览"的一项：按实际发送顺序排列，第 1 张为编辑原图。 */
+export interface OrderedReference {
+  nodeId: string
+  title: string
+  /** data URL / 资产路径 / 远程 URL */
+  src: string
+  isSelf: boolean
 }
 
 export interface MentionReference {
@@ -42,10 +52,117 @@ export interface CanvasNodePanelProps {
   onConfigChange?: (nodeId: string, patch: Record<string, unknown>) => void
   upstreamSummary?: UpstreamInputSummary
   mentionReferences?: MentionReference[]
+  /** 参考图顺序预览：与实际发给生成服务的顺序一致（第 1 张为编辑原图）。 */
+  orderedReferences?: OrderedReference[]
   onOpenPromptLibrary?: () => void
 }
 
-const IMAGE_SIZES = ['auto', '1024x1024', '1536x1024', '1024x1536']
+const IMAGE_SIZES = ['auto', '1024x1024', '1152x896', '896x1152', '1536x1024', '1024x1536', '1536x864', '864x1536']
+
+/** 尺寸选项的展示元数据：比例标签 + 缩略框的渲染像素（保持真实长宽比）。 */
+const IMAGE_SIZE_META: Record<string, { ratio: string; box: { w: number; h: number } }> = {
+  '1024x1024': { ratio: '1:1', box: { w: 42, h: 42 } },
+  '1152x896': { ratio: '4:3', box: { w: 48, h: 37 } },
+  '896x1152': { ratio: '3:4', box: { w: 37, h: 48 } },
+  '1536x1024': { ratio: '3:2', box: { w: 50, h: 34 } },
+  '1024x1536': { ratio: '2:3', box: { w: 34, h: 50 } },
+  '1536x864': { ratio: '16:9', box: { w: 52, h: 30 } },
+  '864x1536': { ratio: '9:16', box: { w: 30, h: 52 } }
+}
+
+/** 比例选择器：按真实长宽比渲染缩略框，替代纯文本下拉。 */
+function SizePicker({
+  theme,
+  value,
+  onChange
+}: {
+  theme: CanvasTheme
+  value: string
+  onChange: (size: string) => void
+}): ReactElement {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const close = (event: PointerEvent): void => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node))
+        setOpen(false)
+    }
+    document.addEventListener('pointerdown', close, true)
+    return () => document.removeEventListener('pointerdown', close, true)
+  }, [open])
+
+  // 触发按钮保持一行放得下：可见文本只显示比例（或"自动"），完整值放 aria-label
+  const meta = IMAGE_SIZE_META[value]
+  const shortLabel = value === 'auto' ? '自动' : (meta?.ratio ?? value)
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        aria-label={`尺寸 ${value === 'auto' ? '自动' : `${meta?.ratio ?? ''} ${value}`.trim()}`}
+        className="inline-flex h-8 items-center gap-1 rounded-full border px-2.5 text-xs"
+        style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="opacity-70">尺寸</span>
+        <span className="font-medium">{shortLabel}</span>
+      </button>
+      {open && (
+        <div
+          className="absolute bottom-full left-0 z-[90] mb-1.5 grid w-[300px] grid-cols-4 gap-2 rounded-xl border p-2.5 shadow-2xl"
+          style={{ background: theme.node.panel, borderColor: theme.node.stroke }}
+          data-canvas-no-zoom
+        >
+          <button
+            type="button"
+            className="col-span-4 flex items-center justify-center rounded-lg px-2 py-1.5 text-xs transition hover:bg-black/5 dark:hover:bg-white/10"
+            style={{ color: theme.node.text }}
+            onClick={() => {
+              onChange('auto')
+              setOpen(false)
+            }}
+          >
+            自动尺寸（跟随画布全局设置）
+          </button>
+          {IMAGE_SIZES.filter((size) => size !== 'auto').map((size) => {
+            const sizeMeta = IMAGE_SIZE_META[size]
+            const selected = value === size
+            return (
+              <button
+                key={size}
+                type="button"
+                className="flex flex-col items-center rounded-lg px-1 py-2 transition"
+                style={{
+                  background: selected ? theme.toolbar.activeBg : 'transparent',
+                  color: selected ? theme.toolbar.activeText : theme.node.text
+                }}
+                onClick={() => {
+                  onChange(size)
+                  setOpen(false)
+                }}
+              >
+                {/* 统一高度的框容器：不同比例的缩略框垂直居中，下方文字保持齐平 */}
+                <span className="flex h-[52px] items-center justify-center">
+                  <span
+                    className="block rounded border"
+                    style={{
+                      width: sizeMeta.box.w,
+                      height: sizeMeta.box.h,
+                      borderColor: selected ? 'currentColor' : theme.toolbar.border
+                    }}
+                    aria-hidden
+                  />
+                </span>
+                <span className="mt-1 text-[11px] font-medium leading-4">{sizeMeta.ratio}</span>
+                <span className="text-[10px] leading-4 opacity-60">{size}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
 const VIDEO_SIZES = ['auto', '1280x720', '1920x1080']
 const VIDEO_SECONDS = [5, 10]
 const AUDIO_FORMATS = ['mp3', 'wav']
@@ -129,19 +246,11 @@ function ConfigSettingsRow({
     const count = Math.min(4, Math.max(1, Number(metadata.count) || 1))
     return (
       <>
-        <select
+        <SizePicker
+          theme={theme}
           value={size}
-          onChange={(event) => onConfigChange({ size: event.target.value })}
-          className="h-8 rounded-full border bg-transparent px-2 text-xs outline-none"
-          style={selectStyle}
-          aria-label="图片尺寸"
-        >
-          {IMAGE_SIZES.map((value) => (
-            <option key={value} value={value}>
-              {value === 'auto' ? '自动尺寸' : value}
-            </option>
-          ))}
-        </select>
+          onChange={(next) => onConfigChange({ size: next })}
+        />
         <label className="inline-flex items-center gap-1 text-xs opacity-70">
           数量
           <input
@@ -152,7 +261,7 @@ function ConfigSettingsRow({
             onChange={(event) =>
               onConfigChange({ count: Math.min(4, Math.max(1, Number(event.target.value) || 1)) })
             }
-            className="h-8 w-14 rounded-full border bg-transparent px-2 text-center text-xs outline-none"
+            className="h-8 w-12 rounded-full border bg-transparent px-1.5 text-center text-xs outline-none"
             style={selectStyle}
           />
         </label>
@@ -255,6 +364,7 @@ export function CanvasNodePanel({
   onConfigChange,
   upstreamSummary,
   mentionReferences,
+  orderedReferences = [],
   onOpenPromptLibrary
 }: CanvasNodePanelProps): ReactElement {
   const isConfig = node.type === 'config'
@@ -414,6 +524,35 @@ export function CanvasNodePanel({
           ))}
         </div>
       )}
+      {mode === 'image' && (
+        <div className="mt-2">
+          <p className="mb-1 text-[10px] font-medium opacity-55">参考图（按发送顺序）</p>
+          {orderedReferences.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {orderedReferences.map((reference, index) => (
+                <figure key={reference.nodeId} className="w-16">
+                  <img
+                    src={proxyExternalImageUrl(reference.src)}
+                    alt={reference.title}
+                    className="h-12 w-16 rounded-lg border object-cover"
+                    style={{ borderColor: reference.isSelf ? theme.toolbar.activeBg : theme.toolbar.border }}
+                  />
+                  <figcaption className="mt-0.5 truncate text-[10px] opacity-60">
+                    {reference.isSelf ? '第1张 · 原图' : `参考图${index + 1}`}
+                  </figcaption>
+                  <p className="truncate text-[10px] opacity-45" title={reference.title}>
+                    {reference.title}
+                  </p>
+                </figure>
+              ))}
+            </div>
+          ) : node.type === 'image' ? (
+            <p className="text-[10px] opacity-50">将以本节点图片作为第 1 张原图发送。</p>
+          ) : (
+            <p className="text-[10px] opacity-50">未连接图片参考，将按纯文字生成。</p>
+          )}
+        </div>
+      )}
       <div className="relative">
         <textarea
           ref={textareaRef}
@@ -500,7 +639,7 @@ export function CanvasNodePanel({
         </div>
       )}
       {!isConfig && mode !== 'text' && onConfigChange && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div className="mt-2 flex items-center gap-2">
           <ConfigSettingsRow
             node={node}
             theme={theme}
@@ -511,7 +650,7 @@ export function CanvasNodePanel({
       )}
       <div className="mt-2 flex items-center justify-between gap-2">
         {isConfig ? (
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <ConfigSettingsRow
               node={node}
               theme={theme}

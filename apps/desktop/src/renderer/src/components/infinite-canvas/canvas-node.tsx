@@ -15,6 +15,7 @@ import {
 
 import {
   canvasGeneratedImageContent,
+  proxyExternalImageUrl,
   type CanvasNodeData
 } from '@/api/infinite-canvas-client'
 import { cn } from '@/lib/utils'
@@ -150,7 +151,11 @@ export const CanvasNode = memo(function CanvasNode({
   const resizeRef = useRef<ResizeState | null>(null)
 
   const metadata = data.metadata ?? {}
-  const content = typeof metadata.content === 'string' ? metadata.content : ''
+  // 渲染时统一过代理：相对资产路径补全为绝对地址，外站 URL 走服务端代理，
+  // data:/blob: 原样放行
+  const content = proxyExternalImageUrl(
+    typeof metadata.content === 'string' ? metadata.content : ''
+  )
   // 批量图片（对齐参考 BatchFrame）：images 存全部结果，content 始终为主图。
   const batchImages =
     data.type === 'image' && Array.isArray(metadata.images)

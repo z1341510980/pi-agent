@@ -41,7 +41,8 @@ import {
   proxyExternalImageUrl,
   renameCanvasProject,
   reverseCanvasPrompt,
-  saveCanvasGraph,
+  saveCanvasGraphBody,
+  uploadCanvasAsset,
   type CanvasGraphPayload,
   type CanvasNodeRow,
   type CanvasProject,
@@ -50,7 +51,21 @@ import {
   type ViewportTransform
 } from '@/api/infinite-canvas-client'
 import { cn } from '@/lib/utils'
+import {
+  downloadJson,
+  downloadUrl,
+  imageFileExtension,
+  resolveDownloadBlob,
+  withImageExtension
+} from '@/lib/download'
 import { CanvasNode } from './canvas-node'
+import {
+  GRAPH_PAYLOAD_LIMIT_BYTES,
+  compressImageDataUrl,
+  formatBytes,
+  graphPayload as buildGraphPayload,
+  shouldPersistGraph
+} from './graph-persistence'
 import { CanvasNodePanel, type MentionReference } from './canvas-node-panel'
 import { ConnectionPath, ActiveConnectionPath } from './canvas-connections'
 import { useCanvasTheme } from './canvas-theme'
@@ -94,6 +109,7 @@ import {
 import { CanvasAssetLibrary, saveCanvasAsset, type CanvasAsset } from './asset-library'
 import { CanvasAgentPanel } from './canvas-agent-panel'
 import { MediaConfigDialog } from './media-config-dialog'
+import { MediaLogPanel } from './media-log-panel'
 import {
   buildCanvasGenerationContext,
   withHydratedImageReferences
@@ -180,22 +196,7 @@ function graphPayload(
   viewport: ViewportTransform,
   settings: CanvasProjectSettings
 ): CanvasGraphPayload {
-  return {
-    nodes: nodes.map((node) => ({
-      id: node.id,
-      type: node.type,
-      title: node.title,
-      content: typeof node.metadata?.content === 'string' ? node.metadata.content : '',
-      x: node.position.x,
-      y: node.position.y,
-      width: node.width,
-      height: node.height,
-      metadata: node.metadata
-    })),
-    connections,
-    viewport: { x: viewport.x, y: viewport.y, zoom: viewport.k },
-    settings
-  }
+  return buildGraphPayload(nodes, connections, viewport, settings)
 }
 
 function fileAsDataUrl(file: File): Promise<string> {
@@ -277,6 +278,8 @@ export function InfiniteCanvasWorkspace({
   const [sidePanelOpen, setSidePanelOpen] = useState(true)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  /** 整图保存失败/被跳过的提示：不能用 error，那会整屏替换掉还没落库的画布。 */
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [canvasSize, setCanvasSize] = useState({ width: 1200, height: 720 })
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false })
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
@@ -290,6 +293,7 @@ export function InfiniteCanvasWorkspace({
   const [replaceMediaNodeId, setReplaceMediaNodeId] = useState<string | null>(null)
   const [agentPanelOpen, setAgentPanelOpen] = useState(false)
   const [mediaConfigOpen, setMediaConfigOpen] = useState(false)
+  const [mediaLogsOpen, setMediaLogsOpen] = useState(false)
   const [assetLibraryState, setAssetLibraryState] = useState<{
     open: boolean
     tab: 'assets' | 'prompts'
@@ -313,6 +317,10 @@ export function InfiniteCanvasWorkspace({
   })
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skipPersistRef = useRef(false)
+  /** 服务端最近一次确认保存的节点数，用于空图覆盖防护。 */
+  const savedNodeCountRef = useRef(0)
+  /** 最近一次成功保存的载荷原文：内容未变（撤销/重做/视口回位）时跳过重复上传。 */
+  const lastSavedBodyRef = useRef<string | null>(null)
   const initialCenterRef = useRef(false)
   const clipboardRef = useRef<{ nodes: LocalNode[]; connections: LocalConnection[] } | null>(null)
   const viewportAnimationRef = useRef<number | null>(null)
@@ -397,6 +405,9 @@ export function InfiniteCanvasWorkspace({
   const restoreProject = useCallback((nextProject: CanvasProject): void => {
     const graph = localGraphFromProject(nextProject)
     skipPersistRef.current = true
+    savedNodeCountRef.current = nextProject.nodes.length
+    lastSavedBodyRef.current = null
+    setSaveError(null)
     setProject(nextProject)
     setSelectedProjectId(nextProject.id)
     setNodes(graph.nodes)
@@ -491,16 +502,40 @@ export function InfiniteCanvasWorkspace({
     if (persistTimerRef.current) clearTimeout(persistTimerRef.current)
     persistTimerRef.current = setTimeout(() => {
       persistTimerRef.current = null
-      void saveCanvasGraph(
-        projectId,
-        graphPayload(
-          nodesRef.current,
-          connectionsRef.current,
-          viewportRef.current,
-          settingsRef.current
-        )
+      // 整图保存会先删光服务端节点：本地为空且服务端有节点时必须是用户显式清空，
+      // 否则一次失败的加载就会把画布内容永久删掉。历史栈非空代表加载后有过用户编辑。
+      if (
+        !shouldPersistGraph({
+          localNodeCount: nodesRef.current.length,
+          savedNodeCount: savedNodeCountRef.current,
+          allowEmpty:
+            historyRef.current.past.length > 0 || historyRef.current.future.length > 0
+        })
+      ) {
+        setSaveError('画布内容未加载完整，已跳过本次保存以避免覆盖已保存的节点。')
+        return
+      }
+      const payload = graphPayload(
+        nodesRef.current,
+        connectionsRef.current,
+        viewportRef.current,
+        settingsRef.current
       )
+      // 只序列化一次：体积检查与请求体共用同一份字符串（大画布 stringify 可观）
+      const body = JSON.stringify(payload)
+      // 内容与上次保存一致（如仅撤销/重做到已存状态）则跳过 9MB 级的重复上传
+      if (body === lastSavedBodyRef.current) return
+      if (body.length > GRAPH_PAYLOAD_LIMIT_BYTES) {
+        setSaveError(
+          `画布内容约 ${formatBytes(body.length)}，超过单次保存上限 ${formatBytes(GRAPH_PAYLOAD_LIMIT_BYTES)}，本次未保存。请删除或压缩体积最大的图片后重试。`
+        )
+        return
+      }
+      void saveCanvasGraphBody(projectId, body)
         .then((saved) => {
+          savedNodeCountRef.current = saved.nodes.length
+          lastSavedBodyRef.current = body
+          setSaveError(null)
           setProject(saved)
           setProjects((current) =>
             current.map((item) =>
@@ -517,7 +552,11 @@ export function InfiniteCanvasWorkspace({
             )
           )
         })
-        .catch(() => undefined)
+        .catch((reason) =>
+          setSaveError(
+            `画布保存失败：${reason instanceof Error ? reason.message : '未知错误'}（本地修改仍在，请重试）`
+          )
+        )
     }, 400)
     return () => {
       if (persistTimerRef.current) clearTimeout(persistTimerRef.current)
@@ -581,6 +620,38 @@ export function InfiniteCanvasWorkspace({
     }
     return map
   }, [connections, nodeMap])
+
+  /**
+   * 每个节点的参考图顺序预览：与 buildCanvasGenerationContext 的输出完全一致
+   * （自身图排第一、上游按连线顺序、@引用过滤），保证"看到的顺序 = 发送的顺序"。
+   */
+  const orderedReferencesByNode = useMemo(() => {
+    const map = new Map<
+      string,
+      Array<{ nodeId: string; title: string; src: string; isSelf: boolean }>
+    >()
+    const configLikeNodes = nodes.filter(
+      (node) => node.type === 'config' || node.type === 'image'
+    )
+    for (const node of configLikeNodes) {
+      const built = buildCanvasGenerationContext(
+        node.id,
+        nodes,
+        connections,
+        String(node.metadata?.prompt ?? '')
+      )
+      map.set(
+        node.id,
+        built.context.images.map((reference, index) => ({
+          nodeId: reference.nodeId,
+          title: reference.title || `参考图${index + 1}`,
+          src: reference.dataUrl || reference.url || '',
+          isSelf: reference.nodeId === node.id
+        }))
+      )
+    }
+    return map
+  }, [nodes, connections])
 
   /** 把 @[node:id] 标记解析为「标题: 内容」；未知标记移除。 */
   const resolvePromptReferences = useCallback((text: string): string => {
@@ -737,19 +808,33 @@ export function InfiniteCanvasWorkspace({
   )
 
   useEffect(() => {
+    // 高报告率鼠标（1000Hz）下每个 mousemove 都全量重建节点数组会掉帧：
+    // 拖拽移动按 rAF 合帧，每帧最多提交一次
+    let dragFrame = 0
+    let dragEvent: MouseEvent | null = null
+    const flushDragFrame = (): void => {
+      dragFrame = 0
+      const event = dragEvent
+      dragEvent = null
+      if (!event) return
+      const drag = dragRef.current
+      if (!drag) return
+      const dx = (event.clientX - drag.startX) / viewportRef.current.k
+      const dy = (event.clientY - drag.startY) / viewportRef.current.k
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true
+      const movedIds = new Set(drag.initial.map((item) => item.id))
+      const preview = nodesRef.current.map((node) => {
+        const initial = drag.initial.find((item) => item.id === node.id)
+        return initial ? { ...node, position: { x: initial.x + dx, y: initial.y + dy } } : node
+      })
+      setDropTargetGroupId(findGroupDropTarget(movedIds, preview)?.id ?? null)
+      setNodes(preview)
+    }
     const onMouseMove = (event: MouseEvent): void => {
       const drag = dragRef.current
       if (drag) {
-        const dx = (event.clientX - drag.startX) / viewportRef.current.k
-        const dy = (event.clientY - drag.startY) / viewportRef.current.k
-        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true
-        const movedIds = new Set(drag.initial.map((item) => item.id))
-        const preview = nodesRef.current.map((node) => {
-          const initial = drag.initial.find((item) => item.id === node.id)
-          return initial ? { ...node, position: { x: initial.x + dx, y: initial.y + dy } } : node
-        })
-        setDropTargetGroupId(findGroupDropTarget(movedIds, preview)?.id ?? null)
-        setNodes(preview)
+        dragEvent = event
+        if (!dragFrame) dragFrame = requestAnimationFrame(flushDragFrame)
         return
       }
       const current = connectingRef.current
@@ -761,6 +846,11 @@ export function InfiniteCanvasWorkspace({
       }
     }
     const onMouseUp = (event: MouseEvent): void => {
+      if (dragFrame) {
+        cancelAnimationFrame(dragFrame)
+        dragFrame = 0
+        dragEvent = null
+      }
       if (dragRef.current) finishNodeDrag(event.clientX, event.clientY)
       const current = connectingRef.current
       if (!current) return
@@ -803,6 +893,7 @@ export function InfiniteCanvasWorkspace({
     return () => {
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
+      if (dragFrame) cancelAnimationFrame(dragFrame)
     }
   }, [findConnectionTarget, finishNodeDrag, pushHistory, screenToWorld])
 
@@ -999,10 +1090,13 @@ export function InfiniteCanvasWorkspace({
   const downloadNode = useCallback((node: LocalNode): void => {
     const content = node.metadata?.content
     if (typeof content !== 'string' || !content) return
-    const anchor = document.createElement('a')
-    anchor.href = content
-    anchor.download = node.title || `canvas-${node.type}`
-    anchor.click()
+    void resolveDownloadBlob(content)
+      .then((blob) =>
+        downloadUrl(withImageExtension(node.title || `canvas-${node.type}`, imageFileExtension(blob.type)), blob)
+      )
+      .catch((reason) =>
+        setSaveError(reason instanceof Error ? reason.message : '下载失败，请稍后重试')
+      )
   }, [])
 
   function readBatchImages(node: LocalNode): string[] {
@@ -1028,12 +1122,16 @@ export function InfiniteCanvasWorkspace({
   )
 
   const handleBatchDownload = useCallback((node: LocalNode, index: number): void => {
-    const image = readBatchImages(node)[index]
+    const images = readBatchImages(node)
+    const image = images[index]
     if (!image) return
-    const anchor = document.createElement('a')
-    anchor.href = image
-    anchor.download = `${node.title}-${index + 1}.png`
-    anchor.click()
+    // 单张结果不加序号后缀；多张时用序号区分
+    const base = images.length > 1 ? `${node.title}-${index + 1}` : node.title
+    void resolveDownloadBlob(image)
+      .then((blob) => downloadUrl(withImageExtension(base, imageFileExtension(blob.type)), blob))
+      .catch((reason) =>
+        setSaveError(reason instanceof Error ? reason.message : '下载失败，请稍后重试')
+      )
   }, [])
 
   const addDerivedImage = useCallback(
@@ -1104,7 +1202,7 @@ export function InfiniteCanvasWorkspace({
 
   // 对齐参考 maskEditImageNode：先挂载 loading 子节点，编辑成功后回填内容。
   const maskEditImage = useCallback(
-    async (source: LocalNode, payload: { prompt: string; maskDataUrl: string }): Promise<void> => {
+    async (source: LocalNode, payload: { prompt: string; maskDataUrl: string; size?: string }): Promise<void> => {
       const content = source.metadata?.content
       if (!project || typeof content !== 'string' || !content) return
       const child = createNodeData(
@@ -1135,7 +1233,8 @@ export function InfiniteCanvasWorkspace({
           image: content,
           mask: payload.maskDataUrl,
           model: typeof source.metadata?.model === 'string' ? source.metadata.model : undefined,
-          size: typeof source.metadata?.size === 'string' ? source.metadata.size : undefined
+          // 原图真实尺寸优先：蒙版重绘结果不应比原图降档
+          size: payload.size ?? (typeof source.metadata?.size === 'string' ? source.metadata.size : undefined)
         })
         const image = proxyExternalImageUrl(result.images[0])
         if (!image) throw new Error('没有返回编辑结果')
@@ -1431,9 +1530,16 @@ export function InfiniteCanvasWorkspace({
 
   const insertFile = useCallback(
     async (file: File, position: Position): Promise<void> => {
-      const dataUrl = await fileAsDataUrl(file)
       const isImage = file.type.startsWith('image/')
       const isVideo = file.type.startsWith('video/')
+      // 原图 data URL 会整段进入画布保存载荷：一张 12MB 照片就约 16M 字符，
+      // 两张即顶穿 /graph 的 32MB 上限，因此大图先按最长边重编码；
+      // 重编码后立即入库为服务端资产——节点只存短路径，拖动/保存才不卡
+      const compressed = isImage
+        ? await compressImageDataUrl(await fileAsDataUrl(file))
+        : await fileAsDataUrl(file)
+      const uploaded = isImage && project ? await uploadCanvasAsset(compressed, project.id) : null
+      const dataUrl = uploaded ?? compressed
       const type = isImage ? 'image' : isVideo ? 'video' : 'audio'
       const dimensions =
         isImage || isVideo
@@ -1457,7 +1563,7 @@ export function InfiniteCanvasWorkspace({
       setNodes((current) => [...current, node])
       setSelectedNodeIds(new Set([node.id]))
     },
-    [pushHistory]
+    [project, pushHistory]
   )
 
   const replaceMedia = useCallback(
@@ -1465,7 +1571,12 @@ export function InfiniteCanvasWorkspace({
       if (!file) return
       const node = nodesRef.current.find((item) => item.id === nodeId)
       if (!node) return
-      const dataUrl = await fileAsDataUrl(file)
+      const isImage = file.type.startsWith('image/')
+      const compressed = isImage
+        ? await compressImageDataUrl(await fileAsDataUrl(file))
+        : await fileAsDataUrl(file)
+      const uploaded = isImage && project ? await uploadCanvasAsset(compressed, project.id) : null
+      const dataUrl = uploaded ?? compressed
       const mediaType = file.type.startsWith('image/')
         ? 'image'
         : file.type.startsWith('video/')
@@ -1500,7 +1611,7 @@ export function InfiniteCanvasWorkspace({
       )
       setReplaceMediaNodeId(null)
     },
-    [pushHistory]
+    [project, pushHistory]
   )
 
   const handleDropFiles = useCallback(
@@ -1650,13 +1761,7 @@ export function InfiniteCanvasWorkspace({
       viewport: { x: viewport.x, y: viewport.y, zoom: viewport.k },
       settings
     }
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `${project.title || 'canvas'}.json`
-    anchor.click()
-    URL.revokeObjectURL(url)
+    downloadJson(`${project.title || 'canvas'}.json`, payload)
   }, [connections, nodes, project, settings, viewport])
 
   const exportSelected = useCallback((): void => {
@@ -1683,13 +1788,7 @@ export function InfiniteCanvasWorkspace({
       viewport: { x: viewport.x, y: viewport.y, zoom: viewport.k },
       settings
     }
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `${project.title || 'canvas'}-selection.json`
-    anchor.click()
-    URL.revokeObjectURL(url)
+    downloadJson(`${project.title || 'canvas'}-selection.json`, payload)
   }, [connections, nodes, project, selectedNodeIds, settings, viewport])
 
   const duplicateProject = useCallback(async (): Promise<void> => {
@@ -1698,9 +1797,9 @@ export function InfiniteCanvasWorkspace({
       title: `${project.title} 副本`,
       description: project.description
     })
-    await saveCanvasGraph(
+    await saveCanvasGraphBody(
       created.id,
-      graphPayload(cloneNodes(nodes), cloneConnections(connections), viewport, settings)
+      JSON.stringify(graphPayload(cloneNodes(nodes), cloneConnections(connections), viewport, settings))
     )
     setProjects((current) => [created, ...current])
     await loadProject(created.id)
@@ -2225,6 +2324,21 @@ export function InfiniteCanvasWorkspace({
           onToggleAgent={() => setAgentPanelOpen((value) => !value)}
           agentOpen={agentPanelOpen}
         />
+        {saveError && (
+          <div className="pointer-events-auto absolute top-16 left-1/2 z-50 w-[min(680px,90%)] -translate-x-1/2">
+            <div className="flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs text-red-600 shadow-lg backdrop-blur dark:text-red-300">
+              <span className="flex-1 leading-relaxed">{saveError}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => setSaveError(null)}
+              >
+                关闭
+              </Button>
+            </div>
+          </div>
+        )}
         <InfiniteCanvas
           containerRef={canvasRef}
           viewport={viewport}
@@ -2319,6 +2433,7 @@ export function InfiniteCanvasWorkspace({
                   onConfigChange={handleExtensionMetadataChange}
                   upstreamSummary={upstreamSummaries.get(panelNode.id)}
                   mentionReferences={upstreamMentions.get(panelNode.id)}
+                  orderedReferences={orderedReferencesByNode.get(panelNode.id) ?? []}
                   onOpenPromptLibrary={() => setAssetLibraryState({ open: true, tab: 'prompts' })}
                 />
               )}
@@ -2630,6 +2745,7 @@ export function InfiniteCanvasWorkspace({
           onClear={() => setClearConfirmOpen(true)}
           onSettingsChange={updateSettings}
           onOpenMediaConfig={() => setMediaConfigOpen(true)}
+          onOpenMediaLogs={() => setMediaLogsOpen(true)}
         />
         {mediaConfigOpen && (
           <MediaConfigDialog
@@ -2637,6 +2753,7 @@ export function InfiniteCanvasWorkspace({
             onClose={() => setMediaConfigOpen(false)}
           />
         )}
+        {mediaLogsOpen && <MediaLogPanel theme={theme} onClose={() => setMediaLogsOpen(false)} />}
         {miniMapOpen && (
           <Minimap
             theme={theme}

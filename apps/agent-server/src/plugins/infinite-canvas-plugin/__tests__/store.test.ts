@@ -160,6 +160,28 @@ describe('InfiniteCanvasStore', () => {
     expect(store.replaceGraph('missing', { nodes: [], connections: [] })).toBeUndefined()
   })
 
+  it('stores oversized image data URLs without silent truncation', () => {
+    const project = store.createProject({ title: '大图' })
+    const content = `data:image/jpeg;base64,${'A'.repeat(2_100_000)}`
+    const graph = store.replaceGraph(project.id, {
+      nodes: [
+        {
+          id: 'big',
+          type: 'image',
+          title: '照片.jpg',
+          content,
+          x: 0,
+          y: 0,
+          width: 340,
+          height: 240,
+          metadata: {}
+        }
+      ],
+      connections: []
+    })!
+    expect(graph.nodes[0].content).toHaveLength(content.length)
+  })
+
   it('keeps extension node types and supplies a safe title', () => {
     const project = store.createProject({ title: '插件节点' })
     const graph = store.replaceGraph(project.id, {

@@ -88,5 +88,50 @@ export const infiniteCanvasMigrations: MigrationDefinition[] = [
       ALTER TABLE infinite_canvas_media_settings ADD COLUMN image_resolution TEXT NOT NULL DEFAULT '';
       ALTER TABLE infinite_canvas_media_settings ADD COLUMN image_language TEXT NOT NULL DEFAULT 'en';
     `
+  },
+  {
+    id: '121_create_infinite_canvas_assets',
+    sql: `
+      CREATE TABLE IF NOT EXISTS infinite_canvas_assets (
+        id TEXT PRIMARY KEY,
+        project_id TEXT REFERENCES infinite_canvas_projects(id) ON DELETE CASCADE,
+        file_path TEXT NOT NULL,
+        mime TEXT NOT NULL,
+        bytes INTEGER NOT NULL,
+        source_url TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_infinite_canvas_assets_project ON infinite_canvas_assets(project_id);
+    `
+  },
+  {
+    id: '122_add_infinite_canvas_assets_status',
+    sql: `ALTER TABLE infinite_canvas_assets ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'`
+  },
+  {
+    id: '123_create_infinite_canvas_media_logs',
+    sql: `
+      ALTER TABLE infinite_canvas_assets ADD COLUMN content_hash TEXT;
+      CREATE INDEX IF NOT EXISTS idx_infinite_canvas_assets_hash ON infinite_canvas_assets(content_hash);
+      CREATE TABLE IF NOT EXISTS infinite_canvas_media_logs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        project_id TEXT,
+        endpoint TEXT NOT NULL,
+        model TEXT,
+        size TEXT,
+        prompt TEXT NOT NULL DEFAULT '',
+        references_json TEXT NOT NULL DEFAULT '[]',
+        mask_path TEXT,
+        response_json TEXT NOT NULL DEFAULT '[]',
+        error TEXT,
+        status TEXT NOT NULL,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        trace_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_infinite_canvas_media_logs_created
+        ON infinite_canvas_media_logs(created_at DESC);
+    `
   }
 ]

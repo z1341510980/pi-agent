@@ -1,9 +1,11 @@
 import type { ReactElement } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { BookOpen, MessageSquare, Settings, ArrowRight } from 'lucide-react'
+import { BookOpen, MessageSquare, RefreshCw, Settings, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { getApi } from '@/api/http-client'
+import { initEmbeddedServerPort } from '@repo/config/browser'
 import { SlotRenderer } from '@/components/slot'
 import { useOptionalSlotRegistry } from '@/core/slot-context-value'
 import { BUILTIN_SLOTS } from '@/ui/slot-types'
@@ -47,9 +49,22 @@ export function HomePage({ onOpenChat, onOpenNovel, onOpenSettings }: HomePagePr
   const healthQuery = useQuery<HealthData>({
     queryKey: ['health'],
     queryFn: () => getApi<HealthData>('/api/health'),
-    refetchInterval: 30_000
+    refetchInterval: 30_000,
+    retry: 2
   })
   const isOnline = healthQuery.data?.status === 'online'
+
+  // 离线自愈：重新向后主进程要端口（服务崩溃自动重启后端口会变）再重试健康检查
+  const [retrying, setRetrying] = useState(false)
+  const retryConnection = async (): Promise<void> => {
+    setRetrying(true)
+    try {
+      await initEmbeddedServerPort()
+      await healthQuery.refetch()
+    } finally {
+      setRetrying(false)
+    }
+  }
 
   // 最近会话
   const sessionsQuery = useQuery<SessionSummary[]>({
@@ -115,6 +130,18 @@ export function HomePage({ onOpenChat, onOpenNovel, onOpenSettings }: HomePagePr
               />
               {isOnline ? '服务在线' : '服务离线'}
             </p>
+            {!isOnline && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 gap-1 rounded-full px-2.5 text-xs"
+                disabled={retrying}
+                onClick={() => void retryConnection()}
+              >
+                <RefreshCw className={`size-3 ${retrying ? 'animate-spin' : ''}`} aria-hidden="true" />
+                {retrying ? '重连中…' : '重试连接'}
+              </Button>
+            )}
             <SlotRenderer name={BUILTIN_SLOTS.HOME_HERO_ASIDE} fallback={null} />
           </div>
           <h1 className="pi-rise pi-rise-1 m-0 mt-6 text-balance text-[44px] font-bold leading-[1.1] tracking-tight text-text sm:text-[56px]">

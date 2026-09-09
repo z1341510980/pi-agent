@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>wenglang-Agent · 宣传海报</title>
+<style>
+  :root{
+    --bg:#07070B;
+    --panel:rgba(255,255,255,.045);
+    --panel-2:rgba(255,255,255,.028);
+    --line:rgba(255,255,255,.10);
+    --line-soft:rgba(255,255,255,.06);
+    --text:#F3F4F8;
+    --muted:rgba(243,244,248,.56);
+    --faint:rgba(243,244,248,.34);
+    --violet:#7C5CFF;
+    --cyan:#5FE9DE;
+    --blue:#5B8CFF;
+    --amber:#F0C880;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:#0B0B10;
+    color:var(--text);
+    font-family:"PingFang SC","HarmonyOS Sans SC","Noto Sans SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    display:flex;flex-direction:column;align-items:center;
+    padding:28px 0 48px;
+  }
+
+  /* ---------- 屏幕专用工具条（不打印、不入海报） ---------- */
+  .toolbar{
+    display:flex;gap:10px;align-items:center;margin-bottom:22px;
+    font-size:13px;color:var(--faint);
+  }
+  .toolbar button{
+    background:rgba(255,255,255,.05);border:1px solid var(--line);
+    color:var(--muted);padding:7px 16px;border-radius:999px;cursor:pointer;
+    font-family:inherit;font-size:13px;transition:.2s;
+  }
+  .toolbar button:hover{color:#fff;border-color:rgba(255,255,255,.28);background:rgba(255,255,255,.09)}
+  .toolbar button.on{color:#0A0A0F;background:linear-gradient(100deg,var(--cyan),var(--violet));border-color:transparent;font-weight:600}
+
+  /* ---------- 海报画布 ---------- */
+  .stage{width:var(--w);height:var(--h);}
+  .poster{
+    width:940px;height:1330px;transform-origin:top left;position:relative;overflow:hidden;
+    background:
+      radial-gradient(120% 80% at 12% 4%, rgba(124,92,255,.22) 0%, transparent 55%),
+      radial-gradient(100% 70% at 92% 18%, rgba(95,233,222,.14) 0%, transparent 52%),
+      radial-gradient(120% 90% at 50% 108%, rgba(91,140,255,.18) 0%, transparent 60%),
+      var(--bg);
+    border-radius:6px;
+    box-shadow:0 60px 140px -30px rgba(0,0,0,.9), 0 0 0 1px rgba(255,255,255,.07) inset;
+    display:flex;flex-direction:column;
+    padding:66px 68px 0;
+  }
+
+  /* 背景装饰层 */
+  .deco{position:absolute;inset:0;pointer-events:none}
+  .grid{
+    position:absolute;inset:0;
+    background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);
+    background-size:58px 58px;
+    mask-image:radial-gradient(90% 65% at 50% 32%, #000 0%, transparent 78%);
+    -webkit-mask-image:radial-gradient(90% 65% at 50% 32%, #000 0%, transparent 78%);
+  }
+  .orb{position:absolute;border-radius:50%;filter:blur(90px);opacity:.55}
+  .orb.a{width:420px;height:420px;left:-120px;top:-140px;background:#6A4BFF;animation:float1 16s ease-in-out infinite}
+  .orb.b{width:360px;height:360px;right:-110px;top:120px;background:#1FA9A0;opacity:.38;animation:float2 20s ease-in-out infinite}
+  .orb.c{width:520px;height:520px;left:180px;bottom:-260px;background:#3D5BE0;opacity:.30;animation:float1 24s ease-in-out infinite reverse}
+  @keyframes float1{0%,100%{transform:translate(0,0)}50%{transform:translate(38px,44px)}}
+  @keyframes float2{0%,100%{transform:translate(0,0)}50%{transform:translate(-32px,30px)}}
+  .noise{
+    position:absolute;inset:0;opacity:.16;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/></filter><rect width='160' height='160' filter='url(%23n)' opacity='.55'/></svg>");
+  }
+  .vignette{position:absolute;inset:0;background:radial-gradient(100% 75% at 50% 45%, transparent 40%, rgba(0,0,0,.55) 100%)}
+
+  .content{position:relative;z-index:2;display:flex;flex-direction:column;height:100%}
+
+  /* ---------- 顶部品牌 ---------- */
+  header{display:flex;align-items:center;justify-content:space-between}
+  .brand{display:flex;align-items:center;gap:14px}
+  .mark{
+    width:42px;height:42px;position:relative;flex:none;
+  }
+  .brand-name{font-size:25px;font-weight:600;letter-spacing:.5px}
+  .brand-name span{color:var(--faint);font-weight:400}
+  .kicker{
+    font-size:12px;letter-spacing:.34em;color:var(--faint);text-transform:uppercase;
+    border:1px solid var(--line);padding:9px 16px;border-radius:999px;background:var(--panel-2);
+    white-space:nowrap;
+  }
+
+  /* ---------- 主标题 ---------- */
+  .hero{margin-top:74px}
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:9px;font-size:13px;color:var(--cyan);
+    letter-spacing:.16em;margin-bottom:26px;
+  }
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 12px var(--cyan)}
+  h1{
+    font-size:74px;line-height:1.16;font-weight:700;letter-spacing:-1px;
+  }
+  h1 .grad{
+    background:linear-gradient(96deg,#FFFFFF 0%,#C6B7FF 42%,var(--cyan) 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .sub{
+    margin-top:30px;font-size:19px;line-height:1.85;color:var(--muted);max-width:600px;font-weight:300;
+  }
+  .sub b{color:rgba(243,244,248,.9);font-weight:500}
+
+  /* ---------- 自迭代循环 ---------- */
+  .loop{margin-top:62px;position:relative}
+  .loop-label{
+    font-size:12px;letter-spacing:.3em;color:var(--faint);margin-bottom:22px;
+  }
+  .nodes{display:flex;align-items:stretch;gap:0}
+  .node{
+    flex:1;padding:16px 14px 18px;border-radius:14px;text-align:center;position:relative;
+    background:linear-gradient(180deg,rgba(255,255,255,.075),rgba(255,255,255,.02));
+    border:1px solid var(--line);
+    backdrop-filter:blur(6px);
+  }
+  .node .n-i{font-size:11px;color:var(--faint);letter-spacing:.2em;margin-bottom:9px}
+  .node .n-t{font-size:17px;font-weight:600;letter-spacing:.5px}
+  .node.hi{
+    border-color:rgba(124,92,255,.55);
+    background:linear-gradient(180deg,rgba(124,92,255,.26),rgba(124,92,255,.05));
+    box-shadow:0 0 34px -8px rgba(124,92,255,.6);
+  }
+  .node.hi .n-t{color:#DCD3FF}
+  .arrow{flex:none;width:34px;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.28);font-size:17px}
+  .arc{display:block;margin:6px auto 0;width:100%;height:56px;overflow:visible}
+
+  /* ---------- 特性条 ---------- */
+  .chips{display:flex;gap:10px;margin-top:44px;flex-wrap:wrap}
+  .chip{
+    font-size:13px;color:var(--muted);padding:8px 15px;border-radius:8px;
+    background:var(--panel-2);border:1px solid var(--line-soft);letter-spacing:.04em;
+  }
+  .chip::before{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--blue);margin-right:9px;vertical-align:2px}
+
+  /* ---------- 两大插件 ---------- */
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:38px}
+  .card{
+    position:relative;padding:30px 28px 32px;border-radius:20px;overflow:hidden;
+    background:linear-gradient(165deg,rgba(255,255,255,.075),rgba(255,255,255,.018));
+    border:1px solid var(--line);
+    backdrop-filter:blur(10px);
+  }
+  .card::after{
+    content:"";position:absolute;inset:0;border-radius:20px;pointer-events:none;
+    background:radial-gradient(120% 80% at 0% 0%, rgba(255,255,255,.10), transparent 55%);
+  }
+  .card .ico{
+    width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;
+    font-size:21px;margin-bottom:20px;border:1px solid var(--line);
+    background:rgba(255,255,255,.05);
+  }
+  .card h3{font-size:25px;font-weight:600;letter-spacing:.5px;margin-bottom:6px}
+  .card .en{font-size:11px;letter-spacing:.26em;color:var(--faint);margin-bottom:16px;text-transform:uppercase}
+  .card p{font-size:14.5px;line-height:1.9;color:var(--muted);font-weight:300}
+  .card p em{font-style:normal;color:rgba(243,244,248,.92);font-weight:500}
+  .card.c1 .ico{box-shadow:0 0 26px -8px rgba(124,92,255,.9)}
+  .card.c2 .ico{box-shadow:0 0 26px -8px rgba(95,233,222,.9)}
+
+  /* ---------- 页脚 ---------- */
+  footer{
+    position:relative;z-index:2;
+    margin:0 -68px;padding:30px 68px 34px;
+    border-top:1px solid var(--line-soft);
+    background:linear-gradient(180deg,rgba(255,255,255,.028),rgba(255,255,255,0));
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  .f-slogan{font-size:25px;font-weight:600;letter-spacing:1px}
+  .f-slogan small{display:block;font-size:12px;letter-spacing:.24em;color:var(--faint);font-weight:400;margin-top:8px}
+  .cta{
+    display:flex;align-items:center;gap:12px;
+    padding:14px 26px;border-radius:999px;font-size:15px;font-weight:600;color:#08080C;
+    background:linear-gradient(100deg,var(--cyan),#9C87FF);
+    box-shadow:0 16px 40px -14px rgba(124,92,255,.85);
+  }
+
+  /* ---------- 右侧区块（特性条 + 插件卡） ---------- */
+  .right{position:relative;z-index:2;display:flex;flex-direction:column;flex:1;justify-content:flex-end}
+  /* ---------- 横版变体 ---------- */
+  .poster.wide{width:1500px;height:844px;padding:52px 64px 0}
+  .poster.wide .grid{
+    mask-image:radial-gradient(70% 90% at 28% 45%,#000,transparent 82%);
+    -webkit-mask-image:radial-gradient(70% 90% at 28% 45%,#000,transparent 82%);
+  }
+  .poster.wide .content{
+    display:grid;
+    grid-template-columns:1.05fr .95fr;
+    grid-template-rows:auto auto 1fr;
+    column-gap:72px;
+  }
+  .poster.wide header{grid-column:1 / -1}
+  .poster.wide .hero{margin-top:34px;grid-column:1;grid-row:2}
+  .poster.wide h1{font-size:64px}
+  .poster.wide .sub{font-size:17px;margin-top:22px;max-width:540px}
+  .poster.wide .loop{margin-top:46px;grid-column:1;grid-row:3;align-self:start}
+  .poster.wide .node{padding:14px 12px 15px}
+  .poster.wide .n-t{font-size:15.5px}
+  .poster.wide .right{grid-column:2;grid-row:2 / 4;padding-bottom:4px}
+  .poster.wide .chips{margin-top:0;margin-bottom:30px}
+  .poster.wide .cards{margin-bottom:32px;gap:16px}
+  .poster.wide .card{padding:26px 24px 28px}
+  .poster.wide .card h3{font-size:23px}
+  .poster.wide footer{margin:0 -64px;padding:22px 64px 26px}
+  .poster.wide .f-slogan{font-size:23px}
+
+  @media print{
+    body{background:#fff;padding:0}
+    .toolbar{display:none}
+    .stage{width:auto;height:auto}
+    .poster{transform:none!important;box-shadow:none;border-radius:0}
+    @page{size:auto;margin:0}
+  }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <span>版式</span>
+  <button id="btnV" class="on">竖版 940×1330</button>
+  <button id="btnH">横版 1500×844</button>
+  <span style="margin-left:10px">提示：Ctrl/Cmd + P 可直接导出 PDF 或打印</span>
+</div>
+
+<div class="stage" id="stage">
+  <div class="poster" id="poster">
+    <div class="deco">
+      <div class="grid"></div>
+      <div class="orb a"></div><div class="orb b"></div><div class="orb c"></div>
+      <div class="noise"></div><div class="vignette"></div>
+    </div>
+
+    <div class="content">
+      <header>
+        <div class="brand">
+          <svg class="mark" viewBox="0 0 44 44" fill="none">
+            <defs>
+              <linearGradient id="g1" x1="0" y1="0" x2="44" y2="44">
+                <stop offset="0" stop-color="#5FE9DE"/><stop offset="1" stop-color="#7C5CFF"/>
+              </linearGradient>
+            </defs>
+            <path d="M22 3.2 38.5 12.6v18.8L22 40.8 5.5 31.4V12.6L22 3.2Z" stroke="url(#g1)" stroke-width="1.6" fill="rgba(124,92,255,.10)"/>
+            <path d="M13.5 26.5c3.4 0 3.4-9 8.5-9s5.1 9 8.5 9" stroke="url(#g1)" stroke-width="2.2" stroke-linecap="round"/>
+            <circle cx="22" cy="22" r="2.6" fill="#5FE9DE"/>
+          </svg>
+          <div class="brand-name">wenglang<span>-Agent</span></div>
+        </div>
+        <div class="kicker">插件化 Agent 底座 · 自我编程 · 自我迭代</div>
+      </header>
+
+      <section class="hero">
+        <div class="eyebrow"><span class="dot"></span>SELF-EVOLVING AGENT OS</div>
+        <h1>你需要什么，<br/>它就<span class="grad">给自己写</span>什么。</h1>
+        <p class="sub">功能不再等一个版本发布。<br/>你用它一天，它就在自己身上<b>长出一天的能力</b>。</p>
+      </section>
+
+      <section class="loop">
+        <div class="loop-label">自 我 迭 代 循 环</div>
+        <div class="nodes">
+          <div class="node"><div class="n-i">01</div><div class="n-t">你说缺什么</div></div>
+          <div class="arrow">→</div>
+          <div class="node hi"><div class="n-i">02</div><div class="n-t">它自己编程</div></div>
+          <div class="arrow">→</div>
+          <div class="node"><div class="n-i">03</div><div class="n-t">自己插插件</div></div>
+          <div class="arrow">→</div>
+          <div class="node"><div class="n-i">04</div><div class="n-t">变得更强</div></div>
+        </div>
+        <svg class="arc" viewBox="0 0 800 56" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="ag" x1="0" y1="0" x2="800" y2="0">
+              <stop offset="0" stop-color="#7C5CFF"/><stop offset="1" stop-color="#5FE9DE"/>
+            </linearGradient>
+          </defs>
+          <path d="M690 4 C 690 62, 110 62, 110 4" fill="none" stroke="url(#ag)" stroke-width="1.6"
+                stroke-linecap="round" stroke-dasharray="7 8" opacity=".85">
+            <animate attributeName="stroke-dashoffset" from="60" to="0" dur="1.6s" repeatCount="indefinite"/>
+          </path>
+          <path d="M110 4 l -7 -11 M110 4 l 8 -10" stroke="#7C5CFF" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+        </svg>
+      </section>
+
+      <div class="right">
+        <div class="chips">
+          <span class="chip">一切皆插件</span>
+          <span class="chip">服务容器 · 依赖注入</span>
+          <span class="chip">热重载 · 改完即生效</span>
+          <span class="chip">Realm 隔离</span>
+          <span class="chip">builtin / local / npm</span>
+        </div>
+
+        <div class="cards">
+          <div class="card c1">
+            <div class="ico">📖</div>
+            <h3>小说助手</h3>
+            <div class="en">Novel Engine</div>
+            <p>故事线、场景、冲突、线索<em>全域追踪</em>，Director / Reviewer / Reviser 多角色把关，<em>百万字不崩设定</em>。</p>
+          </div>
+          <div class="card c2">
+            <div class="ico">🎨</div>
+            <h3>无限画布</h3>
+            <div class="en">Infinite Canvas</div>
+            <p>无边界工作台，想法与生成物<em>自由排布、任意连接</em>，与 Agent 实时联动。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      <div class="f-slogan">越用，越像你的 Agent
+        <small>USE IT · AND WATCH IT GROW</small>
+      </div>
+      <div class="cta">立即体验 →</div>
+    </footer>
+  </div>
+</div>
+
+<script>
+  const poster = document.getElementById('poster');
+  const stage  = document.getElementById('stage');
+  const btnV = document.getElementById('btnV');
+  const btnH = document.getElementById('btnH');
+
+  function fit(){
+    const wide = poster.classList.contains('wide');
+    const W = wide ? 1500 : 940;
+    const H = wide ? 844 : 1330;
+    const pad = 56;
+    const s = Math.min(1, (window.innerWidth - pad) / W, (window.innerHeight - pad - 90) / H);
+    poster.style.transform = 'scale(' + s + ')';
+    stage.style.width  = (W * s) + 'px';
+    stage.style.height = (H * s) + 'px';
+  }
+
+  function setWide(isWide){
+    poster.classList.toggle('wide', isWide);
+    btnH.classList.toggle('on', isWide);
+    btnV.classList.toggle('on', !isWide);
+    fit();
+  }
+
+  btnV.addEventListener('click', () => setWide(false));
+  btnH.addEventListener('click', () => setWide(true));
+  window.addEventListener('resize', fit);
+  fit();
+</script>
+</body>
+</html>

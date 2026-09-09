@@ -1,7 +1,13 @@
 import 'dotenv/config'
 import { createApp } from './app.js'
+import { setupSystemProxy } from './core/config/system-proxy.js'
 
 async function main(): Promise<void> {
+  // 出站代理"系统模式"读的是环境变量，而 Windows 系统代理存在注册表里；
+  // 启动时把注册表代理注入环境变量，后续代理管理器自然生效
+  const systemProxy = await setupSystemProxy()
+  if (systemProxy) console.info(`[system-proxy] 已接入 Windows 系统代理: ${systemProxy.https}`)
+
   const app = await createApp()
 
   try {
@@ -34,7 +40,7 @@ async function main(): Promise<void> {
     })
 
     // 优雅关闭
-    const shutdown = async (signal: string) => {
+    const shutdown = async (signal: string): Promise<void> => {
       app.log.info(`收到 ${signal}，正在关闭...`)
       await app.close()
       process.exit(0)

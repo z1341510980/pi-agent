@@ -1,4 +1,6 @@
 import { Type } from 'typebox'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { defineTool } from '@earendil-works/pi-coding-agent'
 import type { Plugin, PluginContext } from '../../core/plugin/plugin-types.js'
 import { infiniteCanvasMigrations } from './migrations.js'
@@ -7,10 +9,11 @@ import { InfiniteCanvasStore } from './store.js'
 import type { AnyCanvasNodeType } from './types.js'
 import { createPromptSourceService } from './prompt-source-service.js'
 import { CanvasMediaSettingsService } from './media-settings.js'
+import { CanvasAssetStore, MediaLogStore, referencesToDataUrls } from './canvas-assets.js'
 import {
-  defaultImageModelForBaseUrl,
   defaultImageModelForProtocol,
   normalizeImageBaseUrl,
+  normalizeOpenAiCompatibleSize,
   requestImageEdit,
   requestImageGeneration
 } from '../../core/config/media-generator.js'
@@ -19,10 +22,7 @@ import {
   summarizeCanvasAgentOperations,
   type CanvasAgentOperation
 } from './agent-ops.js'
-import {
-  formatCanvasGenerationContext,
-  type CanvasGenerationContext
-} from './generation-context.js'
+import { formatCanvasGenerationContext } from './generation-context.js'
 
 const NODE_TYPE_LIST: Array<AnyCanvasNodeType> = [
   'image',
@@ -66,9 +66,28 @@ export function createInfiniteCanvasPlugin(): Plugin {
       const promptSourceService = createPromptSourceService(context.db, context)
       const mediaSettings = new CanvasMediaSettingsService(context.db)
       const imageLogger = context.logger.child({ module: 'infinite-canvas-image' })
+      // 生成结果本地资产：落盘后前端拿稳定的 /assets/:id，不再依赖慢 CDN
+      const dataDir = process.env.PI_DATA_DIR ?? join(homedir(), '.pi')
+      const assets = new CanvasAssetStore(context.db, join(dataDir, 'agent', 'canvas-assets'))
+      // 媒体生成日志：请求/响应留痕，画布内"生成日志"面板可查
+      const mediaLogs = new MediaLogStore(context.db)
+
+      /**
+       * 把生成结果统一转成本地资产路径：远程 URL 后台转存（立即返回资产路径），
+       * data URL 同步落盘。转存失败时资产路由会 302 回源，显示不受影响。
+       */
+      const localizeImages = (projectId: string | undefined, images: string[]): string[] =>
+        images.map((image) => {
+          if (image.startsWith('data:')) return assets.storeFromDataUrl(projectId ?? null, image) ?? image
+          if (image.startsWith('http://') || image.startsWith('https://')) {
+            return assets.beginRemoteAsset(projectId ?? '', image)
+          }
+          return image
+        })
 
       /** 画布独立生图：优先用画布自己的 Base URL + Key，否则走宿主 Provider。 */
-      const generateImageWithOverride = async (input: {
+      const generateImageCore = async (input: {
+        projectId?: string
         prompt: string
         references?: string[]
         model?: string
@@ -85,8 +104,15 @@ export function createInfiniteCanvasPlugin(): Plugin {
           settings.imageModel ||
           (hasOverride ? defaultImageModelForProtocol(settings.imageProtocol, baseUrl) : undefined)
 
-        if (input.references?.length && hasOverride) {
-          const [image, ...images] = input.references
+        // 参考图统一归一化成 data URL：本地资产/localhost/内网 URL 服务商取不到，
+        // 直接透传必然被上游拒绝或悄悄忽略
+        const references = input.references?.length
+          ? await referencesToDataUrls(assets, input.references)
+          : input.references
+        const normalizedInput = { ...input, references }
+
+        if (references?.length && hasOverride) {
+          const [image, ...images] = references
           return requestImageEdit({
             context: {
               baseUrl,
@@ -105,12 +131,12 @@ export function createInfiniteCanvasPlugin(): Plugin {
             traceId: input.traceId
           })
         }
-        if (input.references?.length) {
+        if (references?.length) {
           if (!context.media?.editImage) throw new Error('图像编辑 Provider 尚未配置')
           return context.media.editImage({
             prompt: input.prompt,
-            image: input.references[0],
-            images: input.references.slice(1),
+            image: references[0],
+            images: references.slice(1),
             model: input.model,
             size: input.size,
             signal: input.signal
@@ -136,10 +162,61 @@ export function createInfiniteCanvasPlugin(): Plugin {
           })
         }
         if (!context.media) throw new Error('图片 Provider 尚未配置，请在设置中添加 Provider 或在画布中配置生图 API')
-        return context.media.generateImage(input)
+        return context.media.generateImage(normalizedInput)
       }
 
-      const editImageWithOverride = async (input: {
+      /** 对外入口：归一化参考图 → 生图 → 本地化结果 → 记录日志。 */
+      const generateImageWithOverride = async (input: Parameters<typeof generateImageCore>[0]): Promise<{ images: string[] }> => {
+        const startedAt = Date.now()
+        const endpoint = input.references?.length ? '/images/edits' : '/images/generations'
+        // 记录实际生效的 model/size（客户端未传时用画布全局设置兜底）
+        const settingsForLog = mediaSettings.get()
+        const logBase = {
+          kind: 'generate' as const,
+          projectId: input.projectId ?? null,
+          endpoint,
+          model: input.model || settingsForLog.imageModel || null,
+          size: normalizeOpenAiCompatibleSize(input.size || settingsForLog.imageSize) ?? null,
+          prompt: input.prompt,
+          traceId: input.traceId ?? null
+        }
+        let referencePreviews: Array<{ preview: string; bytes: number }> = []
+        try {
+          const references = (await referencesToDataUrls(assets, input.references)) ?? []
+          referencePreviews = references.map((ref) => ({
+            preview: assets.storeFromDataUrl(input.projectId ?? null, ref) ?? '',
+            bytes: ref.length
+          }))
+          const result = await generateImageCore({ ...input, references })
+          let images = result.images
+          try {
+            images = localizeImages(input.projectId, result.images)
+          } catch (error) {
+            imageLogger?.warn?.({ error }, '生成结果本地化失败，保留原始 URL')
+          }
+          mediaLogs?.insert({
+            ...logBase,
+            references: referencePreviews,
+            responseImages: images,
+            status: 'ok',
+            durationMs: Date.now() - startedAt
+          })
+          return { images }
+        } catch (error) {
+          mediaLogs?.insert({
+            ...logBase,
+            references: referencePreviews,
+            responseImages: [],
+            status: 'error',
+            error: error instanceof Error ? error.message : String(error),
+            durationMs: Date.now() - startedAt
+          })
+          throw error
+        }
+      }
+
+      const editImageCore = async (input: {
+        projectId?: string
         prompt: string
         image: string
         images?: string[]
@@ -175,6 +252,68 @@ export function createInfiniteCanvasPlugin(): Plugin {
         return context.media.editImage(input)
       }
 
+      /** 对外编辑入口：归一化原图 → 编辑 → 本地化结果 → 记录日志。 */
+      const editImageLocalized = async (input: Parameters<typeof editImageCore>[0]): Promise<{ images: string[] }> => {
+        const startedAt = Date.now()
+        const settingsForLog = mediaSettings.get()
+        const logBase = {
+          kind: 'edit' as const,
+          projectId: input.projectId ?? null,
+          endpoint: '/images/edits',
+          model: input.model || settingsForLog.imageModel || null,
+          size: normalizeOpenAiCompatibleSize(input.size || settingsForLog.imageSize) ?? null,
+          prompt: input.prompt,
+          traceId: input.traceId ?? null
+        }
+        let referencePreviews: Array<{ preview: string; bytes: number }> = []
+        let maskPath: string | null = null
+        try {
+          // 原图/附加图归一化：本地资产路径服务商取不到
+          const [image, ...images] = (await referencesToDataUrls(assets, [
+            input.image,
+            ...(input.images ?? [])
+          ]))!
+          referencePreviews = [image, ...images].map((ref) => ({
+            preview: assets.storeFromDataUrl(input.projectId ?? null, ref) ?? '',
+            bytes: ref.length
+          }))
+          maskPath = input.mask
+            ? assets.storeFromDataUrl(input.projectId ?? null, input.mask)
+            : null
+          const result = await editImageCore({
+            ...input,
+            image,
+            images: images.length ? images : undefined
+          })
+          let responseImages = result.images
+          try {
+            responseImages = localizeImages(undefined, result.images)
+          } catch (error) {
+            imageLogger?.warn?.({ error }, '编辑结果本地化失败，保留原始 URL')
+          }
+          mediaLogs?.insert({
+            ...logBase,
+            references: referencePreviews,
+            maskPath,
+            responseImages,
+            status: 'ok',
+            durationMs: Date.now() - startedAt
+          })
+          return { images: responseImages }
+        } catch (error) {
+          mediaLogs?.insert({
+            ...logBase,
+            references: referencePreviews,
+            maskPath,
+            responseImages: [],
+            status: 'error',
+            error: error instanceof Error ? error.message : String(error),
+            durationMs: Date.now() - startedAt
+          })
+          throw error
+        }
+      }
+
       for (const route of createInfiniteCanvasRoutes(
         store,
         async ({ prompt, mode, context: graphContext, resourceContext }) => {
@@ -200,13 +339,15 @@ export function createInfiniteCanvasPlugin(): Plugin {
             ? context.media.generateAudio({ prompt, model, voice, format, speed, signal })
             : context.media.generateVideo({ prompt, model, size, seconds, signal })
         },
-        editImageWithOverride,
+        editImageLocalized,
         ({ image, instruction, model, signal }) => {
           if (!context.media?.analyzeImage) throw new Error('视觉理解 Provider 尚未配置')
           return context.media.analyzeImage({ image, instruction, model, signal })
         },
         promptSourceService,
-        mediaSettings
+        mediaSettings,
+        assets,
+        mediaLogs
       ))
         context.registerRoute(route)
 
@@ -261,7 +402,11 @@ export function createInfiniteCanvasPlugin(): Plugin {
                 signal,
                 generate: async ({ prompt, mode, signal: generationSignal }) => {
                   if (mode === 'image')
-                    return generateImageWithOverride({ prompt, signal: generationSignal })
+                    return generateImageWithOverride({
+                      projectId: project.id,
+                      prompt,
+                      signal: generationSignal
+                    })
                   const session = await context.createSession({
                     systemPrompt: '你是画布 Agent，只输出可直接写入节点的结果正文。',
                     userMessage: prompt,
@@ -395,7 +540,7 @@ export function createInfiniteCanvasPlugin(): Plugin {
             signal: toolContext.signal,
             generate: async ({ prompt, mode, signal }) => {
               if (mode === 'image')
-                return generateImageWithOverride({ prompt, signal })
+                return generateImageWithOverride({ projectId: project.id, prompt, signal })
               const session = await context.createSession({
                 systemPrompt: '你是画布 Agent，只输出可直接写入节点的结果正文。',
                 userMessage: prompt,

@@ -20,10 +20,13 @@ import {
 } from 'lucide-react'
 
 import type { CanvasTheme } from './canvas-theme'
+import { toEditableImageUrl } from '@/lib/download'
 
 export interface MaskEditPayload {
   prompt: string
   maskDataUrl: string
+  /** 原图真实像素（宽x高）：服务端按白名单选档，避免 4K 原图被降采样重绘 */
+  size?: string
 }
 
 export type MaskStroke = {
@@ -50,6 +53,7 @@ export function MaskEditDialog({
   const [brushSize, setBrushSize] = useState(48)
   const [mode, setMode] = useState<'paint' | 'erase'>('paint')
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [, setStrokeVersion] = useState(0)
   const imageRef = useRef<HTMLImageElement | null>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
@@ -59,12 +63,32 @@ export function MaskEditDialog({
   const drawingRef = useRef(false)
 
   useEffect(() => {
-    const image = new Image()
-    image.onload = () => {
-      imageRef.current = image
-      setNaturalSize({ width: image.naturalWidth || 1, height: image.naturalHeight || 1 })
+    let cancelled = false
+    let objectUrl: string | null = null
+    void (async () => {
+      try {
+        // 跨域源画上 canvas 会被污染、无法导出蒙版：先转成同源 object URL
+        const url = await toEditableImageUrl(source)
+        if (cancelled) {
+          if (url !== source) URL.revokeObjectURL(url)
+          return
+        }
+        objectUrl = url
+        const image = new Image()
+        image.onload = () => {
+          if (cancelled) return
+          imageRef.current = image
+          setNaturalSize({ width: image.naturalWidth || 1, height: image.naturalHeight || 1 })
+        }
+        image.src = url
+      } catch {
+        if (!cancelled) setLoadError('图片读取失败，请稍后重试')
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-    image.src = source
   }, [source])
 
   useEffect(() => {
@@ -209,7 +233,11 @@ export function MaskEditDialog({
   const confirm = (): void => {
     const maskDataUrl = exportMask()
     if (!maskDataUrl || !prompt.trim()) return
-    onConfirm({ prompt: prompt.trim(), maskDataUrl })
+    onConfirm({
+      prompt: prompt.trim(),
+      maskDataUrl,
+      size: naturalSize ? `${naturalSize.width}x${naturalSize.height}` : undefined
+    })
   }
 
   const controlStyle = { borderColor: theme.toolbar.border, color: theme.node.text }
@@ -221,24 +249,30 @@ export function MaskEditDialog({
       icon={<WandSparkles className="size-4" />}
       onClose={onClose}
     >
-      <div className="relative select-none">
-        <img
-          src={source}
-          alt="待编辑图片"
-          draggable={false}
-          className="pointer-events-none block max-h-[50vh] w-full rounded-xl object-contain"
-        />
-        <canvas
-          ref={overlayRef}
-          className="absolute inset-0 h-full w-full cursor-crosshair touch-none rounded-[inherit]"
-          style={{ width: '100%', height: '100%' }}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={finishStroke}
-          onPointerCancel={finishStroke}
-          onWheel={(event) => event.stopPropagation()}
-        />
-      </div>
+      {loadError ? (
+        <p className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs text-red-500">
+          {loadError}
+        </p>
+      ) : (
+        <div className="relative select-none">
+          <img
+            src={source}
+            alt="待编辑图片"
+            draggable={false}
+            className="pointer-events-none block max-h-[50vh] w-full rounded-xl object-contain"
+          />
+          <canvas
+            ref={overlayRef}
+            className="absolute inset-0 h-full w-full cursor-crosshair touch-none rounded-[inherit]"
+            style={{ width: '100%', height: '100%' }}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={finishStroke}
+            onPointerCancel={finishStroke}
+            onWheel={(event) => event.stopPropagation()}
+          />
+        </div>
+      )}
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
         <button
           type="button"
@@ -579,27 +613,31 @@ export function splitDataUrls(
   source: string,
   params: { rows: number; columns: number }
 ): Promise<string[]> {
-  return new Promise((resolve, reject) => {
-    const image = new Image()
-    image.onload = () => {
-      const width = image.naturalWidth / params.columns
-      const height = image.naturalHeight / params.rows
-      const results: string[] = []
-      for (let row = 0; row < params.rows; row += 1)
-        for (let column = 0; column < params.columns; column += 1) {
-          const canvas = document.createElement('canvas')
-          canvas.width = width
-          canvas.height = height
-          canvas
-            .getContext('2d')
-            ?.drawImage(image, column * width, row * height, width, height, 0, 0, width, height)
-          results.push(canvas.toDataURL('image/png'))
-        }
-      resolve(results)
-    }
-    image.onerror = () => reject(new Error('图片读取失败'))
-    image.src = source
-  })
+  return toEditableImageUrl(source).then((editable) =>
+    new Promise<string[]>((resolve, reject) => {
+      const image = new Image()
+      image.onload = () => {
+        const width = image.naturalWidth / params.columns
+        const height = image.naturalHeight / params.rows
+        const results: string[] = []
+        for (let row = 0; row < params.rows; row += 1)
+          for (let column = 0; column < params.columns; column += 1) {
+            const canvas = document.createElement('canvas')
+            canvas.width = width
+            canvas.height = height
+            canvas
+              .getContext('2d')
+              ?.drawImage(image, column * width, row * height, width, height, 0, 0, width, height)
+            results.push(canvas.toDataURL('image/png'))
+          }
+        resolve(results)
+      }
+      image.onerror = () => reject(new Error('图片读取失败'))
+      image.src = editable
+    }).finally(() => {
+      if (editable !== source) URL.revokeObjectURL(editable)
+    })
+  )
 }
 
 export function upscaleDataUrl(source: string, scale: number): Promise<string> {
@@ -614,14 +652,18 @@ function imageTransform(
   source: string,
   draw: (canvas: HTMLCanvasElement, image: HTMLImageElement) => void
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const image = new Image()
-    image.onload = () => {
-      const canvas = document.createElement('canvas')
-      draw(canvas, image)
-      resolve(canvas.toDataURL('image/png'))
-    }
-    image.onerror = () => reject(new Error('图片读取失败'))
-    image.src = source
-  })
+  return toEditableImageUrl(source).then((editable) =>
+    new Promise<string>((resolve, reject) => {
+      const image = new Image()
+      image.onload = () => {
+        const canvas = document.createElement('canvas')
+        draw(canvas, image)
+        resolve(canvas.toDataURL('image/png'))
+      }
+      image.onerror = () => reject(new Error('图片读取失败'))
+      image.src = editable
+    }).finally(() => {
+      if (editable !== source) URL.revokeObjectURL(editable)
+    })
+  )
 }

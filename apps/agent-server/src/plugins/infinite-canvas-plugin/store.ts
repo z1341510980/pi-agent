@@ -241,11 +241,13 @@ export class InfiniteCanvasStore {
           typeof node.title === 'string' && node.title.trim()
             ? node.title.trim()
             : this.defaultTitle(node.type),
+        // 图片/音视频节点的 data URL 直接落库：这里做长度截断只会把 base64
+        // 截成坏图，而 metadata_json 本来就不受限，截断换不到任何体积保护。
         content:
           typeof node.content === 'string' && node.content.length > 0
-            ? node.content.slice(0, 2_000_000)
+            ? node.content
             : node.metadata && typeof node.metadata.content === 'string'
-              ? node.metadata.content.slice(0, 2_000_000)
+              ? node.metadata.content
               : '',
         x: Number.isFinite(node.x) ? Number(node.x) : 80,
         y: Number.isFinite(node.y) ? Number(node.y) : 80,

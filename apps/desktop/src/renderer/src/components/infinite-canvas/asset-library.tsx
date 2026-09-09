@@ -65,6 +65,9 @@ function PromptCard({
   onUse: () => void
   onView: () => void
 }): ReactElement {
+  // 外部源的封面常有取不回来的（域名不可达、上游 403、返回非图片），
+  // 失败时退回占位图标，别在网格里留一片破图。
+  const [coverFailed, setCoverFailed] = useState(false)
   return (
     <div
       className="group relative cursor-pointer overflow-hidden rounded-xl border transition-shadow hover:shadow-lg"
@@ -78,11 +81,12 @@ function PromptCard({
         className="relative aspect-[4/3] w-full overflow-hidden"
         style={{ background: theme.node.fill }}
       >
-        {item.cover ? (
+        {item.cover && !coverFailed ? (
           <img
             src={item.cover}
             alt={item.title}
             loading="lazy"
+            onError={() => setCoverFailed(true)}
             className="size-full object-cover transition-transform duration-200 group-hover:scale-105"
           />
         ) : (

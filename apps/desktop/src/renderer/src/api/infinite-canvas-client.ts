@@ -1,4 +1,6 @@
-import { deleteApi, getApi, patchApi, postApi, putApi } from './http-client'
+import { browserConfig } from '@repo/config/browser'
+import type { ApiResponse } from '@repo/shared/api'
+import { ApiClientError, apiErrorDetails, deleteApi, getApi, patchApi, postApi, putApi } from './http-client'
 
 export type CanvasNodeType = 'image' | 'text' | 'config' | 'video' | 'audio' | 'group'
 export type CanvasBackgroundMode = 'dots' | 'lines' | 'blank'
@@ -143,13 +145,21 @@ export interface CanvasProject {
 const BASE = '/api/plugins/infinite-canvas'
 
 /**
- * 外部 http(s) 图片会被渲染层 CSP（img-src 'self' data:）拦截，
- * 统一改走服务端代理（服务端下载后本地回传，原图 URL 保留在 query 里）；
- * data:/blob:/相对路径直接放行。
+ * 统一图片地址处理：
+ * - 服务端本地资产（/assets/:id，相对路径）→ 补全为后端绝对地址（file:// 打包环境下相对路径解析不到）
+ * - 外部 http(s) 图片 → 走服务端代理回传（部分域名直连不可达、部分图床拒绝浏览器直连）
+ * - data:/blob:/其他相对路径直接放行
  */
 export function proxyExternalImageUrl(url: string): string {
+  if (url.startsWith(`${BASE}/assets/`)) {
+    return `${browserConfig.apiBaseUrl}${url}`
+  }
+  if (url.startsWith(`${browserConfig.apiBaseUrl}${BASE}/assets/`)) {
+    return url
+  }
   if (url.startsWith('http://') || url.startsWith('https://')) {
-    return `${BASE}/proxy-image?url=${encodeURIComponent(url)}`
+    if (url.startsWith(`${browserConfig.apiBaseUrl}${BASE}/proxy-image`)) return url
+    return `${browserConfig.apiBaseUrl}${BASE}/proxy-image?url=${encodeURIComponent(url)}`
   }
   return url
 }
@@ -387,4 +397,80 @@ export async function updateMediaConfig(payload: {
   imageLanguage?: string
 }): Promise<CanvasMediaConfigStatus> {
   return putApi<CanvasMediaConfigStatus>(`${BASE}/media-config`, payload)
+}
+
+// ── 媒体生成日志 ──
+
+export interface MediaLogReference {
+  preview: string
+  bytes: number
+}
+
+export interface MediaLogEntry {
+  id: string
+  kind: 'generate' | 'edit'
+  projectId: string | null
+  endpoint: string
+  model: string | null
+  size: string | null
+  prompt: string
+  references: MediaLogReference[]
+  maskPath: string | null
+  responseImages: string[]
+  error: string | null
+  status: 'ok' | 'error'
+  durationMs: number
+  traceId: string | null
+  createdAt: number
+}
+
+/** 最近的媒体生成日志（请求/响应留痕，图片可直接预览）。 */
+export async function listMediaLogs(limit = 50): Promise<MediaLogEntry[]> {
+  return getApi<MediaLogEntry[]>(`${BASE}/media-logs?limit=${limit}`)
+}
+
+/** 上传 data URL 图片为服务端资产，返回可在节点里引用的本地路径。 */
+export async function uploadCanvasAsset(
+  dataUrl: string,
+  projectId?: string
+): Promise<string | null> {
+  const response = await fetch(`${browserConfig.apiBaseUrl}${BASE}/assets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataUrl, ...(projectId ? { projectId } : {}) })
+  })
+  const body = (await response.json().catch(() => null)) as {
+    ok: boolean
+    data?: { path: string }
+  } | null
+  if (!response.ok || !body?.ok || !body.data?.path) return null
+  return body.data.path
+}
+
+/**
+ * 画布整图保存（调用方已序列化好的 JSON 字符串）：
+ * 大画布序列化一次要几十毫秒，调用方复用同一份字符串做体积检查与保存，
+ * 避免重复 stringify。
+ */
+export async function saveCanvasGraphBody(
+  id: string,
+  bodyJson: string
+): Promise<CanvasProject> {
+  const response = await fetch(
+    `${browserConfig.apiBaseUrl}${BASE}/projects/${encodeURIComponent(id)}/graph`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: bodyJson
+    }
+  )
+  const parsed = (await response.json().catch(() => null)) as ApiResponse<CanvasProject> | null
+  if (!parsed) {
+    throw new ApiClientError(`API 请求失败: HTTP ${response.status}`, 'API_ERROR')
+  }
+  if (!parsed.ok) {
+    const error = apiErrorDetails(parsed, response.status)
+    throw new ApiClientError(error.message, error.code, error.traceId, error.details)
+  }
+  return parsed.data
 }

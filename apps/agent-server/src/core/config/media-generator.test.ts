@@ -1,9 +1,10 @@
-import { afterAll, describe, expect, it, vi } from 'vitest'
+﻿import { afterAll, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import {
   createMediaGenerator,
   defaultImageModelForBaseUrl,
   normalizeImageBaseUrl,
+  normalizeOpenAiCompatibleSize,
   parseImages,
   requestImageEdit,
   splitModel
@@ -57,7 +58,7 @@ describe('media generator', () => {
     })
     configuredStore.setDefaultProviderId('xkiro')
     const configuredGenerator = createMediaGenerator(configuredStore)
-    const response = (body: unknown, status = 200) =>
+    const response = (body: unknown, status = 200): Response =>
       new Response(JSON.stringify(body), {
         status,
         headers: { 'Content-Type': 'application/json' }
@@ -109,7 +110,7 @@ describe('media generator', () => {
       mediaLanguage: 'zh'
     })
     configuredStore.setDefaultProviderId('apimart')
-    const response = (body: unknown, status = 200) =>
+    const response = (body: unknown, status = 200): Response =>
       new Response(JSON.stringify(body), {
         status,
         headers: { 'Content-Type': 'application/json' }
@@ -155,11 +156,11 @@ describe('media generator', () => {
     }
   })
 
-  it('uses image edits when generation receives reference images', async () => {
+  it('sends reference images as a JSON image array to /images/edits per the aggregator contract', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     vi.useFakeTimers()
-    const response = (body: unknown, status = 200) =>
+    const response = (body: unknown, status = 200): Response =>
       new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
     fetchMock
       .mockResolvedValueOnce(response({ id: 'reference-job', status: 'processing' }, 202))
@@ -179,12 +180,67 @@ describe('media generator', () => {
       await expect(resultPromise).resolves.toEqual({ images: ['https://cdn.xkiro.com/reference-result.png'] })
       expect(fetchMock.mock.calls[0][0]).toBe('https://api.xkiro.com/v1/images/edits')
       const request = fetchMock.mock.calls[0][1] as RequestInit
-      expect(request.body).toBeInstanceOf(FormData)
-      expect((request.body as FormData).getAll('image')).toHaveLength(2)
+      expect((request.headers as Record<string, string>)['Content-Type']).toBe('application/json')
+      const body = JSON.parse(String(request.body))
+      expect(body).toMatchObject({
+        model: 'gpt-image',
+        n: 1,
+        size: '1024x1024',
+        response_format: 'url',
+        image: ['data:image/png;base64,AA==', 'data:image/png;base64,Ag==']
+      })
+      expect(body.prompt).toContain('参考第二张图修改首页样式')
+      expect(body.prompt).toContain('第一张上传图片是需要修改的原图')
     } finally {
       vi.useRealTimers()
       vi.unstubAllGlobals()
     }
+  })
+
+  it('falls back to multipart /images/edits when the JSON contract is rejected with 400', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const json = (body: unknown, status = 200): Response =>
+      new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+    fetchMock
+      .mockResolvedValueOnce(json({ error: { message: 'Image must be a multipart file' }, code: 'invalid_image' }, 400))
+      .mockResolvedValueOnce(json({ data: [{ url: 'https://cdn.openai.com/edited.png' }] }))
+
+    try {
+      await expect(
+        requestImageEdit({
+          context: {
+            baseUrl: 'https://api.openai.com/v1',
+            modelId: 'gpt-image-1',
+            headers: { Authorization: 'Bearer sk-test' }
+          },
+          prompt: 'make the sky a sunset',
+          image: 'data:image/png;base64,AA==',
+          size: '1024x1024'
+        })
+      ).resolves.toEqual({ images: ['https://cdn.openai.com/edited.png'] })
+
+      expect(fetchMock.mock.calls[0][0]).toBe('https://api.openai.com/v1/images/edits')
+      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).image).toBe(
+        'data:image/png;base64,AA=='
+      )
+      expect((fetchMock.mock.calls[1][1] as RequestInit).body).toBeInstanceOf(FormData)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('snaps non-whitelist sizes to the documented OpenAI-compatible size table', () => {
+    expect(normalizeOpenAiCompatibleSize('1024x1024')).toBe('1024x1024')
+    expect(normalizeOpenAiCompatibleSize('2048x1152')).toBe('2048x1152')
+    expect(normalizeOpenAiCompatibleSize('3840x2160')).toBe('3840x2160')
+    // 旧 dall-e 比例吸附到 1k 白名单
+    expect(normalizeOpenAiCompatibleSize('1024x1792')).toBe('864x1536')
+    expect(normalizeOpenAiCompatibleSize('1792x1024')).toBe('1536x864')
+    // 非法自由分辨率按比例吸附（5678px 高 → 4k 档内选最近长宽比）
+    expect(normalizeOpenAiCompatibleSize('1234x5678')).toBe('2160x3840')
+    expect(normalizeOpenAiCompatibleSize(undefined)).toBeUndefined()
+    expect(normalizeOpenAiCompatibleSize('auto')).toBeUndefined()
   })
 
   it('uses the xKiro model default and resolves async edit jobs', async () => {
@@ -196,7 +252,7 @@ describe('media generator', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     vi.useFakeTimers()
-    const response = (body: unknown, status = 200) =>
+    const response = (body: unknown, status = 200): Response =>
       new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
     fetchMock
       .mockResolvedValueOnce(response({ id: 'edit-1', status: 'processing' }, 202))
@@ -218,11 +274,147 @@ describe('media generator', () => {
       await expect(resultPromise).resolves.toEqual({ images: ['https://cdn.xkiro.com/edited.png'] })
       expect(fetchMock.mock.calls[0][0]).toBe('https://api.xkiro.com/v1/images/edits')
       const request = fetchMock.mock.calls[0][1] as RequestInit
-      expect(request.headers).toEqual({ Authorization: 'Bearer xk-test-key' })
-      expect(request.body).toBeInstanceOf(FormData)
-      expect((request.body as FormData).getAll('image')).toHaveLength(2)
+      expect(request.headers).toEqual({
+        Authorization: 'Bearer xk-test-key',
+        'Content-Type': 'application/json'
+      })
+      expect(JSON.parse(String(request.body)).image).toEqual([
+        'data:image/png;base64,AA==',
+        'data:image/png;base64,Ag=='
+      ])
     } finally {
       vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('remembers multipart-only providers and skips the doomed JSON attempt next time', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const ok = (): Response =>
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example.com/mp.png' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: 'json unsupported' } }), { status: 400 }))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+
+    const edit = (): Promise<{ images: string[] }> =>
+      requestImageEdit({
+        context: { baseUrl: 'https://multipart-only.example.com/v1', modelId: 'gpt-image-2', headers: {} },
+        prompt: '按参考图重画',
+        image: 'data:image/png;base64,AA=='
+      })
+
+    try {
+      await expect(edit()).resolves.toEqual({ images: ['https://cdn.example.com/mp.png'] })
+      await expect(edit()).resolves.toEqual({ images: ['https://cdn.example.com/mp.png'] })
+
+      // 第一次：JSON(400) + multipart(200)；第二次：直接 multipart(200)
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+      expect(fetchMock.mock.calls[2][1] as RequestInit).toHaveProperty('body')
+      expect((fetchMock.mock.calls[2][1] as RequestInit).body).toBeInstanceOf(FormData)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('never silently drops reference images when /images/edits fails mid-flight', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockRejectedValueOnce(new DOMException('The operation was aborted', 'AbortError'))
+
+    try {
+      await expect(
+        requestImageEdit({
+          context: {
+            baseUrl: 'https://slow-edits.example.com/v1',
+            modelId: 'gpt-image-2',
+            headers: { Authorization: 'Bearer sk-test' }
+          },
+          prompt: '按参考图重画',
+          image: 'data:image/png;base64,AA=='
+        })
+      ).rejects.toThrow()
+
+      // 超时不代表端点不存在：不能退到不吃参考图的 JSON 生成端点
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(fetchMock.mock.calls[0][0]).toBe('https://slow-edits.example.com/v1/images/edits')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('falls back to JSON image_urls when /images/edits is not implemented', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock
+      .mockResolvedValueOnce(new Response('not found', { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ url: 'https://cdn.example.com/fallback.png' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+      )
+
+    try {
+      await expect(
+        createMediaGenerator(store, () => ({
+          imageBaseUrl: 'https://not-implemented.example.com',
+          imageApiKey: 'sk-test',
+          imageModel: 'gpt-image-2',
+          imageSize: '1024x1792'
+        })).generateImage({
+          prompt: '参考图生图',
+          references: ['data:image/png;base64,AA==', 'data:image/png;base64,Ag==']
+        })
+      ).resolves.toEqual({ images: ['https://cdn.example.com/fallback.png'] })
+
+      expect(fetchMock.mock.calls[0][0]).toBe('https://not-implemented.example.com/v1/images/edits')
+      expect(fetchMock.mock.calls[1][0]).toBe(
+        'https://not-implemented.example.com/v1/images/generations'
+      )
+      expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toMatchObject({
+        image_urls: ['data:image/png;base64,AA==', 'data:image/png;base64,Ag==']
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('remembers providers without /images/edits and goes straight to the JSON endpoint', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const images = (url: string): Response =>
+      new Response(JSON.stringify({ data: [{ url }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    fetchMock
+      .mockResolvedValueOnce(new Response('not found', { status: 404 }))
+      .mockResolvedValueOnce(images('https://cdn.example.com/first.png'))
+      .mockResolvedValueOnce(images('https://cdn.example.com/second.png'))
+
+    const edit = (): Promise<{ images: string[] }> =>
+      requestImageEdit({
+        context: {
+          baseUrl: 'https://json-only.example.com/v1',
+          modelId: 'gpt-image-2',
+          headers: {}
+        },
+        prompt: '参考图生图',
+        image: 'data:image/png;base64,AA=='
+      })
+
+    try {
+      await expect(edit()).resolves.toEqual({ images: ['https://cdn.example.com/first.png'] })
+      await expect(edit()).resolves.toEqual({ images: ['https://cdn.example.com/second.png'] })
+
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+      expect(fetchMock.mock.calls[2][0]).toBe('https://json-only.example.com/v1/images/generations')
+    } finally {
       vi.unstubAllGlobals()
     }
   })

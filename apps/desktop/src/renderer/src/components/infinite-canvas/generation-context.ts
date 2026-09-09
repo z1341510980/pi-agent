@@ -130,11 +130,20 @@ export function buildCanvasGenerationContext(
     .filter((reference): reference is CanvasGenerationReference => Boolean(reference))
   const selected = selectPromptReferences(prompt.trim(), references)
   const active = selected.references
+  // 在媒体节点上直接生图时，节点自身的内容就是编辑对象：
+  // 作为第一张参考图传入（多图提示词约定"第一张是原图"），否则请求退化成纯文字生图
+  const source = nodes.find((node) => node.id === nodeId)
+  const selfReference =
+    source && source.type !== 'text' ? referenceFromNode(source, indexes) : undefined
+  const withSelf = (kind: CanvasGenerationReference['kind']): CanvasGenerationReference[] => {
+    const bucket = active.filter((reference) => reference.kind === kind)
+    return selfReference?.kind === kind ? [selfReference, ...bucket] : bucket
+  }
   const context: CanvasGenerationContext = {
     text: active.filter((reference) => reference.kind === 'text'),
-    images: active.filter((reference) => reference.kind === 'image'),
-    videos: active.filter((reference) => reference.kind === 'video'),
-    audios: active.filter((reference) => reference.kind === 'audio')
+    images: withSelf('image'),
+    videos: withSelf('video'),
+    audios: withSelf('audio')
   }
   const contextText = formatCanvasGenerationContext(context)
   return {

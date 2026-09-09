@@ -12,6 +12,25 @@ export class ApiClientError extends Error {
   }
 }
 
+/** 从 ApiResponse 失败体里提取可读错误；字符串错误（旧插件）兼容。 */
+export function apiErrorDetails(body: ApiResponse<unknown> | null, status: number): {
+  message: string
+  code: string
+  traceId?: string
+  details?: unknown
+} {
+  if (!body || body.ok) return { message: `API 请求失败: HTTP ${status}`, code: 'API_ERROR' }
+  if (typeof body.error === 'string') {
+    return { message: body.error, code: 'API_ERROR', traceId: body.meta?.traceId }
+  }
+  return {
+    message: body.error?.message ?? `API 请求失败: HTTP ${status}`,
+    code: body.error?.code ?? 'API_ERROR',
+    traceId: body.meta?.traceId,
+    details: body.error?.details
+  }
+}
+
 /**
  * 安全解析 JSON 响应体，避免非 JSON 响应导致 SyntaxError
  */
@@ -63,12 +82,12 @@ export async function getApi<T>(path: string): Promise<T> {
   }
 
   if (!body.ok) {
-    const errorMsg = body.error?.message ?? `API 请求失败: HTTP ${response.status}`
+    const error = apiErrorDetails(body, response.status)
     throw new ApiClientError(
-      errorMsg,
-      body.error?.code ?? 'API_ERROR',
-      body.meta?.traceId,
-      body.error?.details
+      error.message,
+      error.code,
+      error.traceId,
+      error.details
     )
   }
 
@@ -130,12 +149,12 @@ export async function putApi<T>(path: string, payload: unknown): Promise<T> {
   }
 
   if (!body.ok) {
-    const errorMsg = body.error?.message ?? `API 请求失败: HTTP ${response.status}`
+    const error = apiErrorDetails(body, response.status)
     throw new ApiClientError(
-      errorMsg,
-      body.error?.code ?? 'API_ERROR',
-      body.meta?.traceId,
-      body.error?.details
+      error.message,
+      error.code,
+      error.traceId,
+      error.details
     )
   }
 
@@ -159,12 +178,12 @@ export async function patchApi<T>(path: string, payload: unknown): Promise<T> {
   }
 
   if (!body.ok) {
-    const errorMsg = body.error?.message ?? `API 请求失败: HTTP ${response.status}`
+    const error = apiErrorDetails(body, response.status)
     throw new ApiClientError(
-      errorMsg,
-      body.error?.code ?? 'API_ERROR',
-      body.meta?.traceId,
-      body.error?.details
+      error.message,
+      error.code,
+      error.traceId,
+      error.details
     )
   }
 
@@ -186,12 +205,12 @@ export async function deleteApi<T>(path: string): Promise<T> {
   }
 
   if (!body.ok) {
-    const errorMsg = body.error?.message ?? `API 请求失败: HTTP ${response.status}`
+    const error = apiErrorDetails(body, response.status)
     throw new ApiClientError(
-      errorMsg,
-      body.error?.code ?? 'API_ERROR',
-      body.meta?.traceId,
-      body.error?.details
+      error.message,
+      error.code,
+      error.traceId,
+      error.details
     )
   }
 
@@ -220,12 +239,12 @@ export async function postApi<T>(
   }
 
   if (!body.ok) {
-    const errorMsg = body.error?.message ?? `API 请求失败: HTTP ${response.status}`
+    const error = apiErrorDetails(body, response.status)
     throw new ApiClientError(
-      errorMsg,
-      body.error?.code ?? 'API_ERROR',
-      body.meta?.traceId,
-      body.error?.details
+      error.message,
+      error.code,
+      error.traceId,
+      error.details
     )
   }
 

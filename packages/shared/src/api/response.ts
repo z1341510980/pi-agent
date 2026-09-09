@@ -11,11 +11,14 @@ export type ApiSuccess<T> = {
 
 export type ApiFailure = {
   ok: false;
-  error: {
-    code: string;
-    message: string;
-    details?: unknown;
-  };
+  /** String errors are accepted for compatibility with older plugin routes. */
+  error:
+    | string
+    | {
+        code: string;
+        message: string;
+        details?: unknown;
+      };
   meta: ApiMeta;
 };
 

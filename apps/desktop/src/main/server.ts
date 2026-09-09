@@ -39,7 +39,6 @@ export async function startEmbeddedServer(): Promise<number> {
   const portPromise = new Promise<number>((resolve) => {
     portResolve = resolve
   })
-
   const isDev = !app.isPackaged
 
   if (isDev) {
@@ -76,14 +75,23 @@ export async function startEmbeddedServer(): Promise<number> {
     })
   }
 
-  // 监听子进程 stdout，解析端口号
+  // 监听子进程 stdout，解析端口号。
+  // 注意：data 事件可能把一条日志行切成多个 chunk，必须先攒缓冲再按行匹配，
+  // 否则 "listening at" 正则可能永远命不中 → 渲染层拿不到端口 → 永远离线。
+  let stdoutBuffer = ''
   serverProcess.stdout?.on('data', (data: Buffer) => {
     const output = data.toString()
-    // Fastify 默认日志格式：{"level":30,"...","msg":"Server listening at http://127.0.0.1:xxxxx"}
-    const portMatch = output.match(/listening at http:\/\/[\d.]+:(\d+)/)
-    if (portMatch) {
-      const port = parseInt(portMatch[1], 10)
-      portResolve?.(port)
+    stdoutBuffer += output
+    const lines = stdoutBuffer.split('\n')
+    // 最后一段可能是被截断的半行，留到下一个 chunk
+    stdoutBuffer = lines.pop() ?? ''
+    for (const line of lines) {
+      const portMatch = line.match(/listening at http:\/\/[\d.]+:(\d+)/)
+      if (portMatch && !portResolved) {
+        const port = parseInt(portMatch[1], 10)
+        portResolved = true
+        void resolveWhenHealthy(port)
+      }
     }
     // 转发日志到主进程控制台
     console.log('[agent-server]', output.trim())
@@ -108,12 +116,50 @@ export async function startEmbeddedServer(): Promise<number> {
     }, 3000)
   })
 
-  // 等待端口解析，超时 15 秒
+  // 等待端口解析 + 健康探测通过，超时 30 秒
   const timeout = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('等待 agent-server 启动超时')), 15_000)
+    setTimeout(() => reject(new Error('等待 agent-server 启动超时')), 30_000)
   })
 
   return Promise.race([portPromise, timeout])
+}
+
+/** 当前嵌入式后端的实际端口（崩溃自动重启后会变化）。 */
+let currentPort: number | null = null
+
+/** 子进程 stdout 是否已解析出端口（每个进程只解析一次）。 */
+let portResolved = false
+
+/**
+ * 端口解析出来 ≠ 服务可用：Fastify listen 之后还有插件初始化。
+ * 这里轮询 /api/health 直到真正 online 才把端口交给渲染层，
+ * 保证"主进程认为就绪 = 渲染层请求一定成功"。
+ */
+async function resolveWhenHealthy(port: number): Promise<void> {
+  const deadline = Date.now() + 25_000
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+        signal: AbortSignal.timeout(1_500)
+      })
+      if (response.ok) {
+        currentPort = port
+        portResolve?.(port)
+        return
+      }
+    } catch {
+      /* 还没就绪，继续等 */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  // 探测超时也放行端口：让渲染层的重试机制接手，而不是无限卡在主进程
+  currentPort = port
+  portResolve?.(port)
+}
+
+/** 读取当前后端端口（可能为 null：尚未就绪）。 */
+export function getEmbeddedServerPort(): number | null {
+  return currentPort
 }
 
 /**

@@ -5,7 +5,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { createTray, attachMinimizeToTray, destroyTray } from './tray'
 import { setupAutoUpdater, destroyAutoUpdater } from './auto-updater'
-import { startEmbeddedServer, stopEmbeddedServer } from './server'
+import { startEmbeddedServer, stopEmbeddedServer, getEmbeddedServerPort } from './server'
 
 /** 当前工作目录 */
 let currentCwd = process.env.PI_CWD ?? process.cwd()
@@ -45,7 +45,8 @@ ipcMain.handle('workspace:getCurrent', async () => {
 
 /** 获取嵌入式后端服务端口 */
 ipcMain.handle('server:getPort', async () => {
-  return serverPort
+  // 实时读取：崩溃自动重启后端口会变化，不能用启动时缓存的旧值
+  return getEmbeddedServerPort()
 })
 
 // ── File IPC handlers ──
@@ -103,26 +104,9 @@ function createWindow(): void {
     }
   })
 
-  // 动态注入 CSP：使用嵌入式服务器的实际端口
-  const port = serverPort ?? 3900
-  const isDev = !app.isPackaged
-  const csp = [
-    "default-src 'self'",
-    // 开发模式允许 Vite HMR 和 @vitejs/plugin-react 的内联脚本
-    isDev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5273" : "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
-    `connect-src 'self' http://127.0.0.1:${port} http://localhost:${port} ws://127.0.0.1:${port} ws://localhost:${port}${isDev ? ' http://localhost:5273 ws://localhost:5273' : ''}`,
-  ].join('; ')
-
-  win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        'Content-Security-Policy': [csp],
-      },
-    })
-  })
+  // CSP 已按产品要求移除：画布需要加载任意外部图片/媒体，且本地代理已覆盖
+  // 不可达域名。renderer 只加载本地内容，contextIsolation 开启、nodeIntegration
+  // 关闭；如需恢复，在 onHeadersReceived 注入 Content-Security-Policy 即可。
 
   win.on('ready-to-show', () => {
     win.show()

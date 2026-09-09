@@ -123,6 +123,7 @@ export interface CanvasToolbarProps {
   onClear: () => void
   onSettingsChange: (patch: Partial<CanvasProjectSettings>) => void
   onOpenMediaConfig?: () => void
+  onOpenMediaLogs?: () => void
 }
 
 /** 底部居中 Dock：工具切换、节点创建、上传、外观、删除与清空。 */
@@ -147,7 +148,8 @@ export function CanvasToolbar({
   onDelete,
   onClear,
   onSettingsChange,
-  onOpenMediaConfig
+  onOpenMediaConfig,
+  onOpenMediaLogs
 }: CanvasToolbarProps): React.ReactElement {
   const [stylePanelOpen, setStylePanelOpen] = useState(false)
   const [extensionsOpen, setExtensionsOpen] = useState(false)
@@ -310,6 +312,9 @@ export function CanvasToolbar({
         </div>
         {onOpenMediaConfig && (
           <DockButton icon={<Key />} label="生图 API 配置" onClick={onOpenMediaConfig} />
+        )}
+        {onOpenMediaLogs && (
+          <DockButton icon={<List />} label="生成日志" onClick={onOpenMediaLogs} />
         )}
         {selectedCount > 0 && (
           <DockButton
