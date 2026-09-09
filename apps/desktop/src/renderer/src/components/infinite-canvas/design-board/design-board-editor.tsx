@@ -482,7 +482,13 @@ export function DesignBoardEditor({
           <Button size="sm" onClick={finish}>
             完成编辑
           </Button>
-          <Button variant="ghost" size="sm" aria-label="关闭" onClick={onClose}>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="保存并关闭"
+            title="保存并关闭"
+            onClick={finish}
+          >
             <X className="size-4" />
           </Button>
         </div>

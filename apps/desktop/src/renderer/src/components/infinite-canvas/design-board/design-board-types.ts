@@ -223,10 +223,6 @@ export function parseDesignBoardDoc(raw: unknown): DesignBoardDoc | null {
   }
 }
 
-export function cloneDesignBoardDoc(doc: DesignBoardDoc): DesignBoardDoc {
-  return JSON.parse(JSON.stringify(doc)) as DesignBoardDoc
-}
-
 export function resolveDesignImageSource(
   source: DesignImageSource,
   nodes: CanvasNodeData[]

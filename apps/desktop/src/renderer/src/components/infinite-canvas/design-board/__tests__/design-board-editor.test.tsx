@@ -55,6 +55,17 @@ describe('DesignBoardEditor', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
+  it('saves and closes via the top-bar X button', () => {
+    const { onCommit, onClose } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存并关闭' }))
+    expect(onCommit).toHaveBeenCalledTimes(1)
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects).toHaveLength(1)
+    expect(doc.objects[0]).toMatchObject({ kind: 'rect' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
   it('preserves text draft when adding a rect mid-edit', () => {
     const { onCommit } = setup()
     fireEvent.click(screen.getByRole('button', { name: '添加文本' }))

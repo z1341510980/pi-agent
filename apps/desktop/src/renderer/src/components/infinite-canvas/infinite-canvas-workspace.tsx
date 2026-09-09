@@ -586,16 +586,20 @@ export function InfiniteCanvasWorkspace({
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes])
   const boardEditorNode = designBoardEditorNodeId ? nodeMap.get(designBoardEditorNodeId) : undefined
 
-  const commitDesignBoard = useCallback((nodeId: string, doc: DesignBoardDoc): void => {
-    invalidateDesignBoardThumbnail(nodeId)
-    setNodes((current) =>
-      current.map((node) =>
-        node.id === nodeId
-          ? { ...node, metadata: { ...node.metadata, design: doc, designUpdatedAt: Date.now() } }
-          : node
+  const commitDesignBoard = useCallback(
+    (nodeId: string, doc: DesignBoardDoc): void => {
+      invalidateDesignBoardThumbnail(nodeId)
+      pushHistory()
+      setNodes((current) =>
+        current.map((node) =>
+          node.id === nodeId
+            ? { ...node, metadata: { ...node.metadata, design: doc, designUpdatedAt: Date.now() } }
+            : node
+        )
       )
-    )
-  }, [])
+    },
+    [pushHistory]
+  )
 
   const exportDesignBoard = useCallback(
     async (nodeId: string, doc: DesignBoardDoc, format: 'png' | 'jpg'): Promise<void> => {
