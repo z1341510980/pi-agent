@@ -314,6 +314,12 @@ export function CanvasToolbar({
             </div>
           )}
         </div>
+        {onOpenMediaConfig && (
+          <DockButton icon={<Key />} label="生图 API 配置" onClick={onOpenMediaConfig} />
+        )}
+        {onOpenMediaLogs && (
+          <DockButton icon={<List />} label="生成日志" onClick={onOpenMediaLogs} />
+        )}
         {selectedCount > 0 && onBatchDownload && (
           <DockButton
             icon={<Download />}
@@ -321,12 +327,6 @@ export function CanvasToolbar({
             disabled={batchDownloading}
             onClick={onBatchDownload}
           />
-        )}
-        {onOpenMediaConfig && (
-          <DockButton icon={<Key />} label="生图 API 配置" onClick={onOpenMediaConfig} />
-        )}
-        {onOpenMediaLogs && (
-          <DockButton icon={<List />} label="生成日志" onClick={onOpenMediaLogs} />
         )}
         {selectedCount > 0 && (
           <DockButton

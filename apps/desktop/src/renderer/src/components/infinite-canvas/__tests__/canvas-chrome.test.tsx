@@ -50,6 +50,28 @@ describe('CanvasToolbar batch download action', () => {
     expect(screen.queryByRole('button', { name: /批量下载选中/ })).toBeNull()
   })
 
+  it('places batch download after generation logs and before delete', () => {
+    render(
+      <CanvasToolbar
+        {...baseProps()}
+        selectedCount={1}
+        onBatchDownload={vi.fn()}
+        onOpenMediaLogs={vi.fn()}
+      />
+    )
+
+    const logsButton = screen.getByRole('button', { name: '生成日志' })
+    const batchDownloadButton = screen.getByRole('button', { name: '批量下载选中 (1)' })
+    const deleteButton = screen.getByRole('button', { name: '删除选中 (1)' })
+
+    expect(logsButton.compareDocumentPosition(batchDownloadButton)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    )
+    expect(batchDownloadButton.compareDocumentPosition(deleteButton)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    )
+  })
+
   it('shows a disabled downloading action while the archive is being prepared', () => {
     render(
       <CanvasToolbar
