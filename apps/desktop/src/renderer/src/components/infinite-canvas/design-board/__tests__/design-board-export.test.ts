@@ -72,6 +72,14 @@ describe('exportDesignBoardImage', () => {
     expect(result.dataUrl.startsWith('data:image/png')).toBe(true)
   })
 
+  it('clamps multiplier to an upper bound of 3', async () => {
+    const result = await exportDesignBoardImage(createDesignBoardDoc(100, 200), [], {
+      format: 'png',
+      multiplier: 99
+    })
+    expect(result).toMatchObject({ width: 300, height: 600 })
+  })
+
   it('uses image/jpeg mime for jpg format', async () => {
     const result = await exportDesignBoardImage(createDesignBoardDoc(50, 50), [], { format: 'jpg' })
     expect(result.dataUrl.startsWith('data:image/jpeg')).toBe(true)

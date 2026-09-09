@@ -84,6 +84,7 @@ export function designTextBaselineOffset(
 }
 
 const imageElementCache = new Map<string, Promise<HTMLImageElement | null>>()
+const IMAGE_ELEMENT_CACHE_LIMIT = 64
 
 export function loadDesignImageElement(rawUrl: string): Promise<HTMLImageElement | null> {
   if (rawUrl === DESIGN_IMAGE_PLACEHOLDER) return Promise.resolve(null)
@@ -101,7 +102,15 @@ export function loadDesignImageElement(rawUrl: string): Promise<HTMLImageElement
   })
   imageElementCache.set(safeUrl, task)
   void task.then((element) => {
-    if (!element) imageElementCache.delete(safeUrl)
+    if (!element) {
+      imageElementCache.delete(safeUrl)
+      return
+    }
+    while (imageElementCache.size > IMAGE_ELEMENT_CACHE_LIMIT) {
+      const oldest = imageElementCache.keys().next().value
+      if (oldest === undefined || oldest === safeUrl) break
+      imageElementCache.delete(oldest)
+    }
   })
   return task
 }
@@ -197,6 +206,7 @@ export async function renderDesignBoardToCanvas(
   ctx.fillStyle = doc.background
   ctx.fillRect(0, 0, doc.width, doc.height)
   for (const object of doc.objects) {
+    // 调用方必须对 ctx 独占（await 交错会损坏状态栈）
     ctx.save()
     ctx.translate(object.x + object.width / 2, object.y + object.height / 2)
     ctx.translate(-object.width / 2, -object.height / 2)

@@ -20,7 +20,7 @@ export async function exportDesignBoardImage(
   nodes: CanvasNodeData[],
   options: DesignBoardExportOptions
 ): Promise<DesignBoardExportResult> {
-  const multiplier = Math.max(1, Math.round(options.multiplier ?? 1))
+  const multiplier = Math.min(3, Math.max(1, Math.round(options.multiplier ?? 1)))
   const width = Math.max(1, Math.round(doc.width * multiplier))
   const height = Math.max(1, Math.round(doc.height * multiplier))
   const canvas = document.createElement('canvas')
