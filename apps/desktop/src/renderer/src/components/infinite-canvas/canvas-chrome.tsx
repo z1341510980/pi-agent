@@ -124,6 +124,8 @@ export interface CanvasToolbarProps {
   onSettingsChange: (patch: Partial<CanvasProjectSettings>) => void
   onOpenMediaConfig?: () => void
   onOpenMediaLogs?: () => void
+  onBatchDownload?: () => void
+  batchDownloading?: boolean
 }
 
 /** 底部居中 Dock：工具切换、节点创建、上传、外观、删除与清空。 */
@@ -149,7 +151,9 @@ export function CanvasToolbar({
   onClear,
   onSettingsChange,
   onOpenMediaConfig,
-  onOpenMediaLogs
+  onOpenMediaLogs,
+  onBatchDownload,
+  batchDownloading = false
 }: CanvasToolbarProps): React.ReactElement {
   const [stylePanelOpen, setStylePanelOpen] = useState(false)
   const [extensionsOpen, setExtensionsOpen] = useState(false)
@@ -310,6 +314,14 @@ export function CanvasToolbar({
             </div>
           )}
         </div>
+        {selectedCount > 0 && onBatchDownload && (
+          <DockButton
+            icon={<Download />}
+            label={batchDownloading ? '正在打包下载' : `批量下载选中 (${selectedCount})`}
+            disabled={batchDownloading}
+            onClick={onBatchDownload}
+          />
+        )}
         {onOpenMediaConfig && (
           <DockButton icon={<Key />} label="生图 API 配置" onClick={onOpenMediaConfig} />
         )}
