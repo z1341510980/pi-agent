@@ -110,6 +110,8 @@ import { CanvasAssetLibrary, saveCanvasAsset, type CanvasAsset } from './asset-l
 import { CanvasAgentPanel } from './canvas-agent-panel'
 import { MediaConfigDialog } from './media-config-dialog'
 import { MediaLogPanel } from './media-log-panel'
+import { createDesignBoardDoc } from './design-board/design-board-types'
+import { DesignBoardCreateDialog } from './design-board/design-board-create-dialog'
 import {
   buildCanvasGenerationContext,
   withHydratedImageReferences
@@ -303,6 +305,7 @@ export function InfiniteCanvasWorkspace({
   const [agentPanelOpen, setAgentPanelOpen] = useState(false)
   const [mediaConfigOpen, setMediaConfigOpen] = useState(false)
   const [mediaLogsOpen, setMediaLogsOpen] = useState(false)
+  const [designBoardCreatePosition, setDesignBoardCreatePosition] = useState<Position | null>(null)
   const [assetLibraryState, setAssetLibraryState] = useState<{
     open: boolean
     tab: 'assets' | 'prompts'
@@ -1002,6 +1005,11 @@ export function InfiniteCanvasWorkspace({
 
   const createNode = useCallback(
     (type: string, position = canvasCenter()): void => {
+      if (type === 'design-board') {
+        setDesignBoardCreatePosition(position)
+        setNodeCreatePosition(null)
+        return
+      }
       pushHistory()
       const node = createNodeData(type, position)
       setNodes((current) => [...current, node])
@@ -2807,6 +2815,23 @@ export function InfiniteCanvasWorkspace({
           <MediaConfigDialog
             theme={theme}
             onClose={() => setMediaConfigOpen(false)}
+          />
+        )}
+        {designBoardCreatePosition && (
+          <DesignBoardCreateDialog
+            onConfirm={({ width, height }) => {
+              const position = designBoardCreatePosition
+              setDesignBoardCreatePosition(null)
+              const doc = createDesignBoardDoc(width, height)
+              const node = createNodeData('design-board', position, {
+                design: doc,
+                designUpdatedAt: Date.now()
+              })
+              node.title = `设计画板 ${width}×${height}`
+              pushHistory()
+              setNodes((current) => [...current, node])
+            }}
+            onCancel={() => setDesignBoardCreatePosition(null)}
           />
         )}
         {mediaLogsOpen && <MediaLogPanel theme={theme} onClose={() => setMediaLogsOpen(false)} />}

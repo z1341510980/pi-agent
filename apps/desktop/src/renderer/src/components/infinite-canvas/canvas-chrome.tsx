@@ -7,6 +7,7 @@ import {
   Download,
   Eraser,
   Focus,
+  Frame,
   Grid2x2,
   Bot,
   Hand,
@@ -1059,6 +1060,15 @@ export function NodeCreateMenu({
             description: '把相关节点圈进一组'
           }}
           onClick={() => onCreate('group')}
+        />
+        <CreateOption
+          theme={theme}
+          spec={{
+            type: 'design-board',
+            icon: <Frame className="size-5" />,
+            title: NODE_DEFAULT_SIZE.designBoard.title
+          }}
+          onClick={() => onCreate('design-board')}
         />
       </div>
     </div>
