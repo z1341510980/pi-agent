@@ -118,6 +118,48 @@ describe('DesignBoardEditor', () => {
     expect(await screen.findByText('画布上暂无图片资源')).toBeTruthy()
   })
 
+  it('invokes export callback with current doc and default png format', () => {
+    const onExport = vi.fn().mockResolvedValue(undefined)
+    const { onClose } = setup({ onExport })
+    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    fireEvent.click(screen.getByRole('button', { name: '导出图片' }))
+    expect(onExport).toHaveBeenCalledTimes(1)
+    expect(onExport).toHaveBeenCalledWith(
+      'png',
+      expect.objectContaining({ objects: expect.any(Array) })
+    )
+    const doc = onExport.mock.calls[0][1] as DesignBoardDoc
+    expect(doc.objects).toHaveLength(1)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('exports jpg when the jpg format radio is selected', () => {
+    const onExport = vi.fn().mockResolvedValue(undefined)
+    setup({ onExport })
+    fireEvent.click(screen.getByRole('radio', { name: 'JPG' }))
+    fireEvent.click(screen.getByRole('button', { name: '导出图片' }))
+    expect(onExport).toHaveBeenCalledWith(
+      'jpg',
+      expect.objectContaining({ objects: expect.any(Array) })
+    )
+  })
+
+  it('merges pending text draft into the exported doc', () => {
+    const onExport = vi.fn().mockResolvedValue(undefined)
+    setup({ onExport })
+    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '导出文本' } })
+    fireEvent.click(screen.getByRole('button', { name: '导出图片' }))
+    const doc = onExport.mock.calls[0][1] as DesignBoardDoc
+    expect(doc.objects[0]).toMatchObject({ kind: 'text', text: '导出文本' })
+  })
+
+  it('hides export controls when onExport is not provided', () => {
+    setup()
+    expect(screen.queryByRole('button', { name: '导出图片' })).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'PNG' })).toBeNull()
+  })
+
   it('inserts image object from resource panel', async () => {
     const imageNode: CanvasNodeData = {
       id: 'img1',

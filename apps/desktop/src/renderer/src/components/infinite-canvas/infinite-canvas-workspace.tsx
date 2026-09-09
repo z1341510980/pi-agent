@@ -111,6 +111,7 @@ import { CanvasAgentPanel } from './canvas-agent-panel'
 import { MediaConfigDialog } from './media-config-dialog'
 import { MediaLogPanel } from './media-log-panel'
 import { createDesignBoardDoc, type DesignBoardDoc } from './design-board/design-board-types'
+import { exportDesignBoardImage } from './design-board/design-board-export'
 import { DesignBoardCreateDialog } from './design-board/design-board-create-dialog'
 import { DesignBoardEditor } from './design-board/design-board-editor'
 import {
@@ -595,6 +596,42 @@ export function InfiniteCanvasWorkspace({
       )
     )
   }, [])
+
+  const exportDesignBoard = useCallback(
+    async (nodeId: string, doc: DesignBoardDoc, format: 'png' | 'jpg'): Promise<void> => {
+      const source = nodes.find((item) => item.id === nodeId)
+      if (!source) return
+      try {
+        const result = await exportDesignBoardImage(doc, nodes, { format })
+        const imageNode = createNodeData(
+          'image',
+          { x: source.position.x + source.width + 96, y: source.position.y },
+          {
+            content: result.dataUrl,
+            status: 'success',
+            mimeType: format === 'jpg' ? 'image/jpeg' : 'image/png',
+            naturalWidth: result.width,
+            naturalHeight: result.height
+          }
+        )
+        imageNode.title = `${source.title}-导出`
+        pushHistory()
+        setNodes((current) => [...current, imageNode])
+        setConnections((current) => [
+          ...current,
+          {
+            id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            fromNodeId: nodeId,
+            toNodeId: imageNode.id
+          }
+        ])
+        setSaveError(null)
+      } catch (reason) {
+        setSaveError(reason instanceof Error ? reason.message : '画板导出失败，请稍后重试')
+      }
+    },
+    [nodes, pushHistory]
+  )
 
   useEffect(() => {
     if (designBoardEditorNodeId) return
@@ -2898,6 +2935,7 @@ export function InfiniteCanvasWorkspace({
             nodes={nodes}
             onCommit={(doc) => commitDesignBoard(boardEditorNode.id, doc)}
             onClose={() => setDesignBoardEditorNodeId(null)}
+            onExport={(format, doc) => exportDesignBoard(boardEditorNode.id, doc, format)}
           />
         )}
         {mediaLogsOpen && <MediaLogPanel theme={theme} onClose={() => setMediaLogsOpen(false)} />}

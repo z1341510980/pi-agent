@@ -58,6 +58,7 @@ export interface DesignBoardEditorProps {
   nodes: CanvasNodeData[]
   onCommit: (doc: DesignBoardDoc) => void
   onClose: () => void
+  onExport?: (format: 'png' | 'jpg', doc: DesignBoardDoc) => Promise<void>
 }
 
 /** 全屏设计编辑器：DOM 对象视图 + 交互引擎接线 + 撤销栈 + 资源面板。 */
@@ -65,7 +66,8 @@ export function DesignBoardEditor({
   node,
   nodes,
   onCommit,
-  onClose
+  onClose,
+  onExport
 }: DesignBoardEditorProps): ReactElement {
   const theme = useCanvasTheme()
   const [doc, setDoc] = useState<DesignBoardDoc>(
@@ -73,6 +75,7 @@ export function DesignBoardEditor({
   )
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [zoomPercent, setZoomPercent] = useState(100)
+  const [exportFormat, setExportFormat] = useState<'png' | 'jpg'>('png')
   const [textEditingId, setTextEditingId] = useState<string | null>(null)
   const [textDraft, setTextDraft] = useState('')
   const [snapGuides, setSnapGuides] = useState<{ x: number | null; y: number | null }>({
@@ -171,6 +174,15 @@ export function DesignBoardEditor({
     setTextEditingId(null)
     return finalDoc
   }, [doc, textDraft, textEditingId])
+
+  // 导出用当前 doc（含未提交文本草稿）；编辑器保持打开，错误提示由调用方负责。
+  const handleExport = useCallback((): void => {
+    if (!onExport) return
+    const finalDoc = commitTextDraft()
+    void onExport(exportFormat, finalDoc).catch((reason) => {
+      console.error('设计画板导出失败', reason)
+    })
+  }, [commitTextDraft, exportFormat, onExport])
 
   // 对象操作
   const updateObject = useCallback(
@@ -438,6 +450,35 @@ export function DesignBoardEditor({
           重做
         </Button>
         <div className="ml-auto flex items-center gap-2">
+          {onExport && (
+            <>
+              <div className="flex items-center gap-2 text-xs opacity-80">
+                <label className="flex cursor-pointer items-center gap-1">
+                  <input
+                    type="radio"
+                    name="design-board-export-format"
+                    className="accent-current"
+                    checked={exportFormat === 'png'}
+                    onChange={() => setExportFormat('png')}
+                  />
+                  PNG
+                </label>
+                <label className="flex cursor-pointer items-center gap-1">
+                  <input
+                    type="radio"
+                    name="design-board-export-format"
+                    className="accent-current"
+                    checked={exportFormat === 'jpg'}
+                    onChange={() => setExportFormat('jpg')}
+                  />
+                  JPG
+                </label>
+              </div>
+              <Button variant="outline" size="sm" onClick={handleExport}>
+                导出图片
+              </Button>
+            </>
+          )}
           <Button size="sm" onClick={finish}>
             完成编辑
           </Button>
