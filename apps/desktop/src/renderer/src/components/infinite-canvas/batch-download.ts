@@ -15,6 +15,13 @@ export type BatchDownloadCollection = {
   items: BatchDownloadItem[]
   emptyNodeTitles: string[]
 }
+export type BatchDownloadArchiveResult = {
+  archive: Blob | null
+  files: BatchZipFile[]
+  failures: string[]
+  emptyNodeTitles: string[]
+}
+export type BatchDownloadNotice = { variant: 'success' | 'error'; message: string }
 
 const WINDOWS_INVALID = /[<>:"/\\|?*]/g
 const WINDOWS_RESERVED_NAMES = new Set([
@@ -185,4 +192,77 @@ export function buildZipBlob(files: BatchZipFile[]): Blob {
     entries[uniqueBatchFilename(file.filename, used)] = file.data
   }
   return new Blob([zipSync(entries)], { type: 'application/zip' })
+}
+
+export async function buildBatchDownloadArchive(
+  collection: BatchDownloadCollection,
+  resolveMedia: (content: string) => Promise<Blob>
+): Promise<BatchDownloadArchiveResult> {
+  const files: BatchZipFile[] = []
+  const failures: string[] = []
+  const usedNames = new Set<string>()
+
+  for (const item of collection.items) {
+    try {
+      const blob =
+        item.kind === 'media'
+          ? await resolveMedia(item.content)
+          : new Blob([item.content], {
+              type: item.extension === '.json' ? 'application/json' : 'text/plain;charset=utf-8'
+            })
+      const extension =
+        item.kind === 'media' ? mediaFileExtension(blob.type, item.mediaType) : item.extension
+      const filename = uniqueBatchFilename(`${item.baseName}${extension}`, usedNames)
+      files.push({ filename, data: new Uint8Array(await blob.arrayBuffer()) })
+    } catch (reason) {
+      failures.push(`${item.baseName}: ${reason instanceof Error ? reason.message : '读取失败'}`)
+    }
+  }
+
+  return {
+    archive: files.length ? buildZipBlob(files) : null,
+    files,
+    failures,
+    emptyNodeTitles: collection.emptyNodeTitles
+  }
+}
+
+export function formatBatchDownloadNotice(result: BatchDownloadArchiveResult): BatchDownloadNotice {
+  if (!result.archive) {
+    const details = [
+      ...result.failures,
+      ...(result.emptyNodeTitles.length
+        ? [`无有效内容节点：${result.emptyNodeTitles.join('、')}`]
+        : [])
+    ]
+    return {
+      variant: 'error',
+      message: details.length
+        ? `没有可下载的文件：${details.join('；')}`
+        : '选中的节点没有可下载内容'
+    }
+  }
+
+  const emptySummary = result.emptyNodeTitles.length
+    ? `，${result.emptyNodeTitles.length} 个节点无有效内容：${result.emptyNodeTitles.join('、')}`
+    : ''
+  const failureSummary = result.failures.length
+    ? `，${result.failures.length} 个文件失败：${result.failures.join('；')}`
+    : ''
+  return {
+    variant: result.failures.length ? 'error' : 'success',
+    message: `已打包 ${result.files.length} 个文件${failureSummary}${emptySummary}`
+  }
+}
+
+export async function withBatchDownloading<T>(
+  operation: () => Promise<T>,
+  setDownloading: (value: boolean) => void
+): Promise<T> {
+  setDownloading(true)
+  try {
+    return await operation()
+  } finally {
+    setDownloading(false)
+  }
 }

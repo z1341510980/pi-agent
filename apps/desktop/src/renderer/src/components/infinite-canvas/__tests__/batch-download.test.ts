@@ -1,13 +1,16 @@
 import { strFromU8, unzipSync } from 'fflate'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { CanvasNodeData } from '@/api/infinite-canvas-client'
 import {
   buildZipBlob,
+  buildBatchDownloadArchive,
   collectBatchDownloadItems,
   collectBatchDownloadItemsWithEmptyNodes,
+  formatBatchDownloadNotice,
   mediaFileExtension,
   sanitizeBatchFilename,
-  uniqueBatchFilename
+  uniqueBatchFilename,
+  withBatchDownloading
 } from '../batch-download'
 
 const node = (overrides: Partial<CanvasNodeData>): CanvasNodeData => ({
@@ -141,6 +144,153 @@ describe('batch download item collection', () => {
 })
 
 describe('batch download filenames and archive', () => {
+  it('continues after a media failure and builds an archive from successful files', async () => {
+    const collection = collectBatchDownloadItemsWithEmptyNodes([
+      node({ type: 'image', title: '失败图片', metadata: { content: 'bad-image' } }),
+      node({ type: 'text', title: '空文本', metadata: { content: ' ' } }),
+      node({ type: 'text', title: '成功文本', metadata: { content: 'hello' } })
+    ])
+
+    const result = await buildBatchDownloadArchive(collection, async (content) => {
+      if (content === 'bad-image') throw new Error('网络失败')
+      return new Blob(['unexpected'], { type: 'application/octet-stream' })
+    })
+
+    expect(result.failures).toEqual(['失败图片: 网络失败'])
+    expect(result.emptyNodeTitles).toEqual(['空文本'])
+    expect(result.files.map((file) => file.filename)).toEqual(['成功文本.txt'])
+    expect(result.archive).not.toBeNull()
+    const archive = unzipSync(new Uint8Array(await result.archive!.arrayBuffer()))
+    expect(strFromU8(archive['成功文本.txt'])).toBe('hello')
+  })
+
+  it('does not build an archive when every media file fails', async () => {
+    const result = await buildBatchDownloadArchive(
+      collectBatchDownloadItemsWithEmptyNodes([
+        node({ type: 'video', title: '失败视频', metadata: { content: 'bad-video' } })
+      ]),
+      async () => {
+        throw new Error('HTTP 502')
+      }
+    )
+
+    expect(result.archive).toBeNull()
+    expect(result.files).toEqual([])
+    expect(result.failures).toEqual(['失败视频: HTTP 502'])
+  })
+
+  it('does not invoke media resolution or build an archive for empty nodes and groups', async () => {
+    const resolveMedia = vi.fn()
+    const result = await buildBatchDownloadArchive(
+      collectBatchDownloadItemsWithEmptyNodes([
+        node({ type: 'text', title: '空文本', metadata: { content: '' } }),
+        node({ type: 'group', title: '分组' })
+      ]),
+      resolveMedia
+    )
+
+    expect(resolveMedia).not.toHaveBeenCalled()
+    expect(result.archive).toBeNull()
+    expect(result.files).toEqual([])
+    expect(result.failures).toEqual([])
+    expect(result.emptyNodeTitles).toEqual(['空文本'])
+  })
+
+  it('formats success, partial failure, and empty-result notices', async () => {
+    const success = await buildBatchDownloadArchive(
+      collectBatchDownloadItemsWithEmptyNodes([
+        node({ type: 'text', title: '成功', metadata: { content: 'ok' } })
+      ]),
+      vi.fn()
+    )
+    const partial = await buildBatchDownloadArchive(
+      collectBatchDownloadItemsWithEmptyNodes([
+        node({ type: 'image', title: '失败', metadata: { content: 'bad' } }),
+        node({ type: 'text', title: '成功', metadata: { content: 'ok' } })
+      ]),
+      async (content) => {
+        if (content === 'bad') {
+          throw new Error('读取失败')
+        }
+        return new Blob(['unused'])
+      }
+    )
+    const empty = await buildBatchDownloadArchive(
+      collectBatchDownloadItemsWithEmptyNodes([
+        node({ type: 'text', title: '空节点', metadata: { content: '' } })
+      ]),
+      vi.fn()
+    )
+
+    expect(formatBatchDownloadNotice(success)).toEqual({
+      variant: 'success',
+      message: '已打包 1 个文件'
+    })
+    expect(formatBatchDownloadNotice(partial)).toEqual({
+      variant: 'error',
+      message: '已打包 1 个文件，1 个文件失败：失败: 读取失败'
+    })
+    expect(formatBatchDownloadNotice(empty)).toEqual({
+      variant: 'error',
+      message: '没有可下载的文件：无有效内容节点：空节点'
+    })
+  })
+
+  it('reports all failed media as an error notice', async () => {
+    const result = await buildBatchDownloadArchive(
+      collectBatchDownloadItemsWithEmptyNodes([
+        node({ type: 'image', title: '失败', metadata: { content: 'bad' } })
+      ]),
+      async () => {
+        throw new Error('读取失败')
+      }
+    )
+
+    expect(formatBatchDownloadNotice(result)).toEqual({
+      variant: 'error',
+      message: '没有可下载的文件：失败: 读取失败'
+    })
+  })
+
+  it('waits for media resolution before returning a successful archive', async () => {
+    let resolveMedia!: (blob: Blob) => void
+    const pending = new Promise<Blob>((resolve) => {
+      resolveMedia = resolve
+    })
+    const resultPromise = buildBatchDownloadArchive(
+      collectBatchDownloadItemsWithEmptyNodes([
+        node({ type: 'audio', title: '音频', metadata: { content: 'audio-url' } })
+      ]),
+      () => pending
+    )
+
+    await Promise.resolve()
+    resolveMedia(new Blob(['audio'], { type: 'audio/mpeg' }))
+    const result = await resultPromise
+
+    expect(result.archive).not.toBeNull()
+    expect(result.files).toHaveLength(1)
+    expect(result.files[0]?.filename).toBe('音频.mp3')
+    expect(Array.from(result.files[0]?.data ?? [])).toEqual(
+      Array.from(new TextEncoder().encode('audio'))
+    )
+  })
+
+  it('tracks downloading state until the async operation settles', async () => {
+    const states: boolean[] = []
+    let resolveOperation!: () => void
+    const operation = withBatchDownloading(
+      () => new Promise<void>((resolve) => (resolveOperation = resolve)),
+      (value) => states.push(value)
+    )
+
+    await Promise.resolve()
+    expect(states).toEqual([true])
+    resolveOperation()
+    await operation
+    expect(states).toEqual([true, false])
+  })
+
   it('removes path separators and Windows-invalid characters', () => {
     expect(sanitizeBatchFilename('  A/B:C*D?  ')).toBe('A-B-C-D')
     expect(sanitizeBatchFilename('A\u0001B')).toBe('A-B')

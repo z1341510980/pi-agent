@@ -115,11 +115,12 @@ import {
   withHydratedImageReferences
 } from './generation-context'
 import {
-  buildZipBlob,
+  buildBatchDownloadArchive,
   collectBatchDownloadItemsWithEmptyNodes,
-  mediaFileExtension,
-  uniqueBatchFilename
+  formatBatchDownloadNotice,
+  withBatchDownloading
 } from './batch-download'
+import type { BatchDownloadNotice } from './batch-download'
 
 type LocalNode = ApiCanvasNodeData
 type LocalConnection = { id: string; fromNodeId: string; toNodeId: string }
@@ -287,6 +288,7 @@ export function InfiniteCanvasWorkspace({
   /** 整图保存失败/被跳过的提示：不能用 error，那会整屏替换掉还没落库的画布。 */
   const [saveError, setSaveError] = useState<string | null>(null)
   const [batchDownloading, setBatchDownloading] = useState(false)
+  const [batchDownloadNotice, setBatchDownloadNotice] = useState<BatchDownloadNotice | null>(null)
   const [canvasSize, setCanvasSize] = useState({ width: 1200, height: 720 })
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false })
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
@@ -1800,57 +1802,23 @@ export function InfiniteCanvasWorkspace({
 
   const downloadSelectedBatch = useCallback(async (): Promise<void> => {
     if (!project || !selectedNodeIds.size || batchDownloading) return
-    setBatchDownloading(true)
     setSaveError(null)
-    const files: Array<{ filename: string; data: Uint8Array }> = []
-    const failures: string[] = []
-    const usedNames = new Set<string>()
-    try {
-      const { items, emptyNodeTitles } = collectBatchDownloadItemsWithEmptyNodes(
-        nodes.filter((node) => selectedNodeIds.has(node.id))
-      )
-      for (const item of items) {
-        try {
-          const blob =
-            item.kind === 'media'
-              ? await resolveDownloadBlob(item.content)
-              : new Blob([item.content], {
-                  type: item.extension === '.json' ? 'application/json' : 'text/plain;charset=utf-8'
-                })
-          const extension =
-            item.kind === 'media' ? mediaFileExtension(blob.type, item.mediaType) : item.extension
-          const filename = uniqueBatchFilename(`${item.baseName}${extension}`, usedNames)
-          files.push({ filename, data: new Uint8Array(await blob.arrayBuffer()) })
-        } catch (reason) {
-          failures.push(
-            `${item.baseName}: ${reason instanceof Error ? reason.message : '读取失败'}`
-          )
-        }
-      }
-      if (!files.length) {
-        const details = [
-          ...failures,
-          ...(emptyNodeTitles.length ? [`无有效内容节点：${emptyNodeTitles.join('、')}`] : [])
-        ]
-        setSaveError(
-          details.length ? `没有可下载的文件：${details.join('；')}` : '选中的节点没有可下载内容'
+    setBatchDownloadNotice(null)
+    await withBatchDownloading(async () => {
+      try {
+        const collection = collectBatchDownloadItemsWithEmptyNodes(
+          nodes.filter((node) => selectedNodeIds.has(node.id))
         )
-        return
+        const result = await buildBatchDownloadArchive(collection, resolveDownloadBlob)
+        setBatchDownloadNotice(formatBatchDownloadNotice(result))
+        if (result.archive) downloadUrl(`${project.title || 'canvas'}-selected.zip`, result.archive)
+      } catch (reason) {
+        setBatchDownloadNotice({
+          variant: 'error',
+          message: reason instanceof Error ? reason.message : '批量下载失败，请稍后重试'
+        })
       }
-      const archive = buildZipBlob(files)
-      downloadUrl(`${project.title || 'canvas'}-selected.zip`, archive)
-      const emptySummary = emptyNodeTitles.length
-        ? `，${emptyNodeTitles.length} 个节点无有效内容：${emptyNodeTitles.join('、')}`
-        : ''
-      const failureSummary = failures.length
-        ? `，${failures.length} 个文件失败：${failures.join('；')}`
-        : ''
-      setSaveError(`已打包 ${files.length} 个文件${failureSummary}${emptySummary}`)
-    } catch (reason) {
-      setSaveError(reason instanceof Error ? reason.message : '批量下载失败，请稍后重试')
-    } finally {
-      setBatchDownloading(false)
-    }
+    }, setBatchDownloading)
   }, [batchDownloading, nodes, project, selectedNodeIds])
 
   const duplicateProject = useCallback(async (): Promise<void> => {
@@ -2395,6 +2363,27 @@ export function InfiniteCanvasWorkspace({
                 size="sm"
                 className="h-6 px-2 text-xs"
                 onClick={() => setSaveError(null)}
+              >
+                关闭
+              </Button>
+            </div>
+          </div>
+        )}
+        {batchDownloadNotice && (
+          <div className="pointer-events-auto absolute top-16 left-1/2 z-50 w-[min(680px,90%)] -translate-x-1/2">
+            <div
+              className={
+                batchDownloadNotice.variant === 'success'
+                  ? 'flex items-start gap-3 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-700 shadow-lg backdrop-blur dark:text-emerald-300'
+                  : 'flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs text-red-600 shadow-lg backdrop-blur dark:text-red-300'
+              }
+            >
+              <span className="flex-1 leading-relaxed">{batchDownloadNotice.message}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => setBatchDownloadNotice(null)}
               >
                 关闭
               </Button>
