@@ -9,6 +9,7 @@ import {
   resolveDesignImageSource,
   DESIGN_IMAGE_PLACEHOLDER
 } from '../design-board-types'
+import type { DesignImageSource } from '../design-board-types'
 import { findDesignBoardPreset, DESIGN_BOARD_PRESETS } from '../design-board-presets'
 
 describe('design board document', () => {
@@ -62,6 +63,24 @@ describe('design board document', () => {
     expect(parsed?.objects[1]).toMatchObject({ fontSize: 64 })
   })
 
+  it('clamps text styling bounds and drops images with invalid sources', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    doc.objects.push({ ...createTextObject(0, 0, 200), fontSize: 700, fontWeight: 1000 })
+    doc.objects.push({
+      ...createImageObject({ kind: 'node-ref', nodeId: 'n1', index: 0 }, 0, 0, 10, 10),
+      source: { kind: 'bogus' } as unknown as DesignImageSource
+    })
+    const parsed = parseDesignBoardDoc(JSON.parse(JSON.stringify(doc)))
+    expect(parsed?.objects).toHaveLength(1)
+    expect(parsed?.objects[0]).toMatchObject({ fontSize: 512, fontWeight: 900 })
+  })
+
+  it('rejects future doc versions', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    const raw = { ...JSON.parse(JSON.stringify(doc)), version: 2 }
+    expect(parseDesignBoardDoc(raw)).toBeNull()
+  })
+
   it('rejects non-doc payloads', () => {
     expect(parseDesignBoardDoc(null)).toBeNull()
     expect(parseDesignBoardDoc({})).toBeNull()
@@ -84,12 +103,30 @@ describe('design board document', () => {
             { id: 'x', content: 'data:image/png;base64,CCC', status: 'success' }
           ]
         }
+      },
+      {
+        id: 'n2',
+        type: 'image',
+        title: '无主图',
+        position: { x: 0, y: 0 },
+        width: 10,
+        height: 10,
+        metadata: { images: ['data:image/png;base64,DDD'] }
       }
     ]
     expect(resolveDesignImageSource({ kind: 'node-ref', nodeId: 'n1', index: 0 }, nodes)).toBe(
       'data:image/png;base64,AAA'
     )
+    expect(resolveDesignImageSource({ kind: 'node-ref', nodeId: 'n1', index: 1 }, nodes)).toBe(
+      'data:image/png;base64,BBB'
+    )
     expect(resolveDesignImageSource({ kind: 'node-ref', nodeId: 'n1', index: 2 }, nodes)).toBe(
+      'data:image/png;base64,CCC'
+    )
+    expect(resolveDesignImageSource({ kind: 'node-ref', nodeId: 'n1', index: 3 }, nodes)).toBe(
+      DESIGN_IMAGE_PLACEHOLDER
+    )
+    expect(resolveDesignImageSource({ kind: 'node-ref', nodeId: 'n2', index: 0 }, nodes)).toBe(
       DESIGN_IMAGE_PLACEHOLDER
     )
     expect(resolveDesignImageSource({ kind: 'node-ref', nodeId: 'gone', index: 0 }, nodes)).toBe(
@@ -98,6 +135,9 @@ describe('design board document', () => {
     expect(resolveDesignImageSource({ kind: 'url', url: 'https://x/y.png' }, nodes)).toBe(
       'https://x/y.png'
     )
+    expect(
+      resolveDesignImageSource({ kind: 'data', dataUrl: 'data:image/png;base64,EEE' }, nodes)
+    ).toBe('data:image/png;base64,EEE')
   })
 })
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CanvasGeneratedImage, CanvasNodeData } from '@/api/infinite-canvas-client'
 import { collectCanvasImageResources } from '../design-board-resources'
+import { resolveDesignImageSource } from '../design-board-types'
 
 const imageNode = (
   id: string,
@@ -39,5 +40,28 @@ describe('collectCanvasImageResources', () => {
       title: '节点a',
       url: 'https://ext/img.png'
     })
+  })
+
+  it('round-trips every resource index through resolveDesignImageSource', () => {
+    const nodes = [
+      imageNode('a', 'data:main', ['data:one', 'data:two']),
+      imageNode('b', 'data:same', ['data:same', 'data:other'])
+    ]
+    const resources = collectCanvasImageResources(nodes)
+    expect(resources.map((r) => `${r.nodeId}:${r.index}`)).toEqual([
+      'a:0',
+      'a:1',
+      'a:2',
+      'b:0',
+      'b:2'
+    ])
+    for (const resource of resources) {
+      expect(
+        resolveDesignImageSource(
+          { kind: 'node-ref', nodeId: resource.nodeId, index: resource.index },
+          nodes
+        )
+      ).toBe(resource.url)
+    }
   })
 })

@@ -235,12 +235,13 @@ export function resolveDesignImageSource(
   if (source.kind === 'data') return source.dataUrl
   const node = nodes.find((item) => item.id === source.nodeId)
   if (!node) return DESIGN_IMAGE_PLACEHOLDER
-  if (source.index === 0 && typeof node.metadata?.content === 'string' && node.metadata.content) {
-    return node.metadata.content
+  if (source.index === 0) {
+    const content = node.metadata?.content
+    return typeof content === 'string' && content ? content : DESIGN_IMAGE_PLACEHOLDER
   }
   const images = Array.isArray(node.metadata?.images) ? node.metadata.images : []
-  const entry = images[source.index]
-  if (entry === undefined && source.index === 0) return DESIGN_IMAGE_PLACEHOLDER
-  const content = entry === undefined ? undefined : canvasGeneratedImageContent(entry)
+  const entry = images[source.index - 1]
+  if (entry === undefined) return DESIGN_IMAGE_PLACEHOLDER
+  const content = canvasGeneratedImageContent(entry)
   return typeof content === 'string' && content ? content : DESIGN_IMAGE_PLACEHOLDER
 }
