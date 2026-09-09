@@ -11,6 +11,10 @@ export type BatchDownloadItem =
   | { baseName: string; kind: 'text'; extension: '.txt' | '.json'; content: string }
 
 export type BatchZipFile = { filename: string; data: Uint8Array }
+export type BatchDownloadCollection = {
+  items: BatchDownloadItem[]
+  emptyNodeTitles: string[]
+}
 
 const WINDOWS_INVALID = /[<>:"/\\|?*]/g
 const WINDOWS_RESERVED_NAMES = new Set([
@@ -108,12 +112,20 @@ function textNodeContent(metadata: NonNullable<CanvasNodeData['metadata']>): str
 }
 
 export function collectBatchDownloadItems(nodes: CanvasNodeData[]): BatchDownloadItem[] {
+  return collectBatchDownloadItemsWithEmptyNodes(nodes).items
+}
+
+export function collectBatchDownloadItemsWithEmptyNodes(
+  nodes: CanvasNodeData[]
+): BatchDownloadCollection {
   const items: BatchDownloadItem[] = []
+  const emptyNodeTitles: string[] = []
 
   for (const node of nodes) {
     if (node.type === 'group') continue
 
     const baseName = sanitizeBatchFilename(node.title || `canvas-${node.type}`)
+    const itemCount = items.length
     const metadata = node.metadata ?? {}
 
     if (node.type === 'image') {
@@ -131,6 +143,7 @@ export function collectBatchDownloadItems(nodes: CanvasNodeData[]): BatchDownloa
           content
         })
       })
+      if (items.length === itemCount) emptyNodeTitles.push(node.title || `canvas-${node.type}`)
       continue
     }
 
@@ -143,6 +156,7 @@ export function collectBatchDownloadItems(nodes: CanvasNodeData[]): BatchDownloa
           content: metadata.content
         })
       }
+      if (items.length === itemCount) emptyNodeTitles.push(node.title || `canvas-${node.type}`)
       continue
     }
 
@@ -158,9 +172,10 @@ export function collectBatchDownloadItems(nodes: CanvasNodeData[]): BatchDownloa
 
     const content = textNodeContent(metadata)
     if (content) items.push({ baseName, kind: 'text', extension: '.txt', content })
+    else emptyNodeTitles.push(node.title || `canvas-${node.type}`)
   }
 
-  return items
+  return { items, emptyNodeTitles }
 }
 
 export function buildZipBlob(files: BatchZipFile[]): Blob {

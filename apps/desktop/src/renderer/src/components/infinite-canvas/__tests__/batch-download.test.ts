@@ -4,6 +4,7 @@ import type { CanvasNodeData } from '@/api/infinite-canvas-client'
 import {
   buildZipBlob,
   collectBatchDownloadItems,
+  collectBatchDownloadItemsWithEmptyNodes,
   mediaFileExtension,
   sanitizeBatchFilename,
   uniqueBatchFilename
@@ -123,6 +124,19 @@ describe('batch download item collection', () => {
         node({ type: 'image', title: '无内容' })
       ])
     ).toEqual([])
+  })
+
+  it('reports empty node titles without reporting groups', () => {
+    expect(
+      collectBatchDownloadItemsWithEmptyNodes([
+        node({ id: 'empty-text', title: '空文本', metadata: { content: '  ' } }),
+        node({ id: 'empty-image', type: 'image', title: '空图片' }),
+        node({ id: 'group', type: 'group', title: '分组' })
+      ])
+    ).toEqual({
+      items: [],
+      emptyNodeTitles: ['空文本', '空图片']
+    })
   })
 })
 

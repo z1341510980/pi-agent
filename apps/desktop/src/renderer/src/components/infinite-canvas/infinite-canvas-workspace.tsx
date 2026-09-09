@@ -116,7 +116,7 @@ import {
 } from './generation-context'
 import {
   buildZipBlob,
-  collectBatchDownloadItems,
+  collectBatchDownloadItemsWithEmptyNodes,
   mediaFileExtension,
   uniqueBatchFilename
 } from './batch-download'
@@ -1806,7 +1806,9 @@ export function InfiniteCanvasWorkspace({
     const failures: string[] = []
     const usedNames = new Set<string>()
     try {
-      const items = collectBatchDownloadItems(nodes.filter((node) => selectedNodeIds.has(node.id)))
+      const { items, emptyNodeTitles } = collectBatchDownloadItemsWithEmptyNodes(
+        nodes.filter((node) => selectedNodeIds.has(node.id))
+      )
       for (const item of items) {
         try {
           const blob =
@@ -1826,18 +1828,24 @@ export function InfiniteCanvasWorkspace({
         }
       }
       if (!files.length) {
+        const details = [
+          ...failures,
+          ...(emptyNodeTitles.length ? [`无有效内容节点：${emptyNodeTitles.join('、')}`] : [])
+        ]
         setSaveError(
-          failures.length ? `没有可下载的文件：${failures.join('；')}` : '选中的节点没有可下载内容'
+          details.length ? `没有可下载的文件：${details.join('；')}` : '选中的节点没有可下载内容'
         )
         return
       }
       const archive = buildZipBlob(files)
       downloadUrl(`${project.title || 'canvas'}-selected.zip`, archive)
-      setSaveError(
-        failures.length
-          ? `已打包 ${files.length} 个文件，${failures.length} 个文件失败：${failures.join('；')}`
-          : `已打包 ${files.length} 个文件`
-      )
+      const emptySummary = emptyNodeTitles.length
+        ? `，${emptyNodeTitles.length} 个节点无有效内容：${emptyNodeTitles.join('、')}`
+        : ''
+      const failureSummary = failures.length
+        ? `，${failures.length} 个文件失败：${failures.join('；')}`
+        : ''
+      setSaveError(`已打包 ${files.length} 个文件${failureSummary}${emptySummary}`)
     } catch (reason) {
       setSaveError(reason instanceof Error ? reason.message : '批量下载失败，请稍后重试')
     } finally {
