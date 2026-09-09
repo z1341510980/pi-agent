@@ -177,6 +177,19 @@ export function collectBatchDownloadItemsWithEmptyNodes(
       continue
     }
 
+    if (node.type === 'design-board') {
+      const design = metadata.design
+      if (design && typeof design === 'object') {
+        items.push({
+          baseName,
+          kind: 'text',
+          extension: '.json',
+          content: JSON.stringify(design, null, 2)
+        })
+      }
+      continue
+    }
+
     const content = textNodeContent(metadata)
     if (content) items.push({ baseName, kind: 'text', extension: '.txt', content })
     else emptyNodeTitles.push(node.title || `canvas-${node.type}`)

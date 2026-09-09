@@ -11,7 +11,8 @@ export const NODE_DEFAULT_SIZE: Record<string, { width: number; height: number; 
   config: { width: 340, height: 240, title: '生成配置' },
   video: { width: 420, height: 236, title: '视频' },
   audio: { width: 340, height: 120, title: '音频' },
-  group: { width: 760, height: 480, title: '分组' }
+  group: { width: 760, height: 480, title: '分组' },
+  designBoard: { width: 340, height: 240, title: '设计画板' }
 }
 
 const NODE_SPECS: Record<
@@ -26,7 +27,8 @@ const NODE_SPECS: Record<
   },
   video: { ...NODE_DEFAULT_SIZE.video, metadata: { content: '', status: 'idle' } },
   audio: { ...NODE_DEFAULT_SIZE.audio, metadata: { content: '', status: 'idle' } },
-  group: { ...NODE_DEFAULT_SIZE.group, metadata: { status: 'idle' } }
+  group: { ...NODE_DEFAULT_SIZE.group, metadata: { status: 'idle' } },
+  'design-board': { ...NODE_DEFAULT_SIZE.designBoard, metadata: { status: 'idle' } }
 }
 
 export function getNodeSpec(type: string): {

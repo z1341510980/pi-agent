@@ -12,6 +12,7 @@ import {
   uniqueBatchFilename,
   withBatchDownloading
 } from '../batch-download'
+import { getNodeSpec } from '../geometry'
 
 const node = (overrides: Partial<CanvasNodeData>): CanvasNodeData => ({
   id: 'node-1',
@@ -139,6 +140,40 @@ describe('batch download item collection', () => {
     ).toEqual({
       items: [],
       emptyNodeTitles: ['空文本', '空图片']
+    })
+  })
+
+  it('exports design-board nodes as formatted json', () => {
+    const design = { version: 1, width: 1080, height: 1440, background: '#ffffff', objects: [] }
+    const items = collectBatchDownloadItems([
+      node({ id: 'board', type: 'design-board', title: '画板', metadata: { design } })
+    ])
+    expect(items).toEqual([
+      {
+        baseName: '画板',
+        kind: 'text',
+        extension: '.json',
+        content: JSON.stringify(design, null, 2)
+      }
+    ])
+  })
+
+  it('skips design-board nodes without design metadata and does not report them as empty', () => {
+    const items = collectBatchDownloadItemsWithEmptyNodes([
+      node({ id: 'board', type: 'design-board', title: '画板', metadata: {} })
+    ])
+    expect(items.items).toEqual([])
+    expect(items.emptyNodeTitles).toEqual([])
+  })
+})
+
+describe('node registration', () => {
+  it('registers the design-board node spec', () => {
+    expect(getNodeSpec('design-board')).toEqual({
+      width: 340,
+      height: 240,
+      title: '设计画板',
+      metadata: { status: 'idle' }
     })
   })
 })
