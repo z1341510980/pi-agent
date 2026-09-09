@@ -114,6 +114,12 @@ import {
   buildCanvasGenerationContext,
   withHydratedImageReferences
 } from './generation-context'
+import {
+  buildZipBlob,
+  collectBatchDownloadItems,
+  mediaFileExtension,
+  uniqueBatchFilename
+} from './batch-download'
 
 type LocalNode = ApiCanvasNodeData
 type LocalConnection = { id: string; fromNodeId: string; toNodeId: string }
@@ -280,6 +286,7 @@ export function InfiniteCanvasWorkspace({
   const [error, setError] = useState<string | null>(null)
   /** 整图保存失败/被跳过的提示：不能用 error，那会整屏替换掉还没落库的画布。 */
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [batchDownloading, setBatchDownloading] = useState(false)
   const [canvasSize, setCanvasSize] = useState({ width: 1200, height: 720 })
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false })
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
@@ -1791,6 +1798,53 @@ export function InfiniteCanvasWorkspace({
     downloadJson(`${project.title || 'canvas'}-selection.json`, payload)
   }, [connections, nodes, project, selectedNodeIds, settings, viewport])
 
+  const downloadSelectedBatch = useCallback(async (): Promise<void> => {
+    if (!project || !selectedNodeIds.size || batchDownloading) return
+    setBatchDownloading(true)
+    setSaveError(null)
+    const files: Array<{ filename: string; data: Uint8Array }> = []
+    const failures: string[] = []
+    const usedNames = new Set<string>()
+    try {
+      const items = collectBatchDownloadItems(nodes.filter((node) => selectedNodeIds.has(node.id)))
+      for (const item of items) {
+        try {
+          const blob =
+            item.kind === 'media'
+              ? await resolveDownloadBlob(item.content)
+              : new Blob([item.content], {
+                  type: item.extension === '.json' ? 'application/json' : 'text/plain;charset=utf-8'
+                })
+          const extension =
+            item.kind === 'media' ? mediaFileExtension(blob.type, item.mediaType) : item.extension
+          const filename = uniqueBatchFilename(`${item.baseName}${extension}`, usedNames)
+          files.push({ filename, data: new Uint8Array(await blob.arrayBuffer()) })
+        } catch (reason) {
+          failures.push(
+            `${item.baseName}: ${reason instanceof Error ? reason.message : '读取失败'}`
+          )
+        }
+      }
+      if (!files.length) {
+        setSaveError(
+          failures.length ? `没有可下载的文件：${failures.join('；')}` : '选中的节点没有可下载内容'
+        )
+        return
+      }
+      const archive = buildZipBlob(files)
+      downloadUrl(`${project.title || 'canvas'}-selected.zip`, archive)
+      setSaveError(
+        failures.length
+          ? `已打包 ${files.length} 个文件，${failures.length} 个文件失败：${failures.join('；')}`
+          : `已打包 ${files.length} 个文件`
+      )
+    } catch (reason) {
+      setSaveError(reason instanceof Error ? reason.message : '批量下载失败，请稍后重试')
+    } finally {
+      setBatchDownloading(false)
+    }
+  }, [batchDownloading, nodes, project, selectedNodeIds])
+
   const duplicateProject = useCallback(async (): Promise<void> => {
     if (!project) return
     const created = await createCanvasProject({
@@ -2746,6 +2800,8 @@ export function InfiniteCanvasWorkspace({
           onSettingsChange={updateSettings}
           onOpenMediaConfig={() => setMediaConfigOpen(true)}
           onOpenMediaLogs={() => setMediaLogsOpen(true)}
+          onBatchDownload={() => void downloadSelectedBatch()}
+          batchDownloading={batchDownloading}
         />
         {mediaConfigOpen && (
           <MediaConfigDialog
