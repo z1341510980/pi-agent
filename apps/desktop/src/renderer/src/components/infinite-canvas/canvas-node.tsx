@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils'
 import type { CanvasTheme } from './canvas-theme'
 import type { ConnectionHandleType, Position } from './types'
 import { getCanvasExtensionDefinition } from './node-registry'
+import { parseDesignBoardDoc } from './design-board/design-board-types'
 
 const SELECTION_BLUE = '#2f80ff'
 const MIN_NODE_WIDTH = 220
@@ -66,6 +67,8 @@ export interface CanvasNodeProps {
   onBatchSelect?: (nodeId: string, index: number) => void
   onBatchDownload?: (node: CanvasNodeData, index: number) => void
   onContextMenu: (event: React.MouseEvent, nodeId: string) => void
+  boardPreviewUrl?: string
+  onOpenBoard?: (node: CanvasNodeData) => void
 }
 
 interface ResizeState {
@@ -140,7 +143,9 @@ export const CanvasNode = memo(function CanvasNode({
   onDownloadImage,
   onBatchSelect,
   onBatchDownload,
-  onContextMenu
+  onContextMenu,
+  boardPreviewUrl,
+  onOpenBoard
 }: CanvasNodeProps): React.ReactElement {
   const [hovered, setHovered] = useState(false)
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -173,6 +178,10 @@ export const CanvasNode = memo(function CanvasNode({
   const isGroup = data.type === 'group'
   const extension = getCanvasExtensionDefinition(data.type)
   const isActive = isConnectionTarget || isSelected || isFocusRelated
+  const boardDoc = data.type === 'design-board' ? parseDesignBoardDoc(metadata.design) : null
+  const boardWidth = boardDoc?.width ?? 0
+  const boardHeight = boardDoc?.height ?? 0
+  const docObjectCount = boardDoc?.objects.length ?? 0
 
   useEffect(() => {
     if (!isEditingTitle) setTitleDraft(data.title)
@@ -556,6 +565,34 @@ export const CanvasNode = memo(function CanvasNode({
               className="mt-3 flex-1 rounded-2xl border border-dashed"
               style={{ borderColor: theme.node.stroke, background: `${theme.node.fill}55` }}
             />
+          </div>
+        )
+      case 'design-board':
+        return (
+          <div
+            className="relative h-full w-full overflow-hidden rounded-[inherit]"
+            onDoubleClick={() => onOpenBoard?.(data)}
+          >
+            {boardPreviewUrl ? (
+              <img
+                src={boardPreviewUrl}
+                alt="画板预览"
+                draggable={false}
+                className="h-full w-full select-none object-contain"
+              />
+            ) : (
+              <div
+                className="grid h-full w-full place-items-center text-xs"
+                style={{ color: theme.node.muted }}
+              >
+                {docObjectCount > 0 ? `${docObjectCount} 个对象` : '双击开始设计'}
+              </div>
+            )}
+            {boardDoc && (
+              <span className="absolute right-1.5 bottom-1.5 rounded bg-black/40 px-1.5 py-0.5 text-[10px] text-white">
+                {boardWidth}×{boardHeight}
+              </span>
+            )}
           </div>
         )
       default:

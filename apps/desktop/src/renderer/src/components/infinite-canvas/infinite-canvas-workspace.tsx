@@ -110,8 +110,13 @@ import { CanvasAssetLibrary, saveCanvasAsset, type CanvasAsset } from './asset-l
 import { CanvasAgentPanel } from './canvas-agent-panel'
 import { MediaConfigDialog } from './media-config-dialog'
 import { MediaLogPanel } from './media-log-panel'
-import { createDesignBoardDoc } from './design-board/design-board-types'
+import { createDesignBoardDoc, type DesignBoardDoc } from './design-board/design-board-types'
 import { DesignBoardCreateDialog } from './design-board/design-board-create-dialog'
+import { DesignBoardEditor } from './design-board/design-board-editor'
+import {
+  getDesignBoardThumbnail,
+  invalidateDesignBoardThumbnail
+} from './design-board/design-board-thumbnail'
 import {
   buildCanvasGenerationContext,
   withHydratedImageReferences
@@ -306,6 +311,8 @@ export function InfiniteCanvasWorkspace({
   const [mediaConfigOpen, setMediaConfigOpen] = useState(false)
   const [mediaLogsOpen, setMediaLogsOpen] = useState(false)
   const [designBoardCreatePosition, setDesignBoardCreatePosition] = useState<Position | null>(null)
+  const [designBoardEditorNodeId, setDesignBoardEditorNodeId] = useState<string | null>(null)
+  const [boardPreviewUrls, setBoardPreviewUrls] = useState<Record<string, string>>({})
   const [assetLibraryState, setAssetLibraryState] = useState<{
     open: boolean
     tab: 'assets' | 'prompts'
@@ -576,6 +583,40 @@ export function InfiniteCanvasWorkspace({
   }, [nodes, connections, viewport, settings, project?.id, loading])
 
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes])
+  const boardEditorNode = designBoardEditorNodeId ? nodeMap.get(designBoardEditorNodeId) : undefined
+
+  const commitDesignBoard = useCallback((nodeId: string, doc: DesignBoardDoc): void => {
+    invalidateDesignBoardThumbnail(nodeId)
+    setNodes((current) =>
+      current.map((node) =>
+        node.id === nodeId
+          ? { ...node, metadata: { ...node.metadata, design: doc, designUpdatedAt: Date.now() } }
+          : node
+      )
+    )
+  }, [])
+
+  useEffect(() => {
+    if (designBoardEditorNodeId) return
+    const boardNodes = nodes.filter((node) => node.type === 'design-board')
+    if (!boardNodes.length) return
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      for (const node of boardNodes) {
+        const url = await getDesignBoardThumbnail(node, nodes)
+        if (cancelled) return
+        if (url)
+          setBoardPreviewUrls((current) =>
+            current[node.id] === url ? current : { ...current, [node.id]: url }
+          )
+      }
+    }, 200)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [nodes, designBoardEditorNodeId])
+
   const groupChildCount = useMemo(() => {
     const counts = new Map<string, number>()
     nodes.forEach((node) => {
@@ -1468,6 +1509,7 @@ export function InfiniteCanvasWorkspace({
   const handleKeyDown = useCallback(
     (event: KeyboardEvent): void => {
       if (!active) return
+      if (designBoardEditorNodeId) return
       const target = event.target
       if (
         target instanceof HTMLInputElement ||
@@ -1525,7 +1567,16 @@ export function InfiniteCanvasWorkspace({
         setSelectionBox(null)
       }
     },
-    [active, copySelected, deleteSelected, pasteCopied, pasteFromSystemClipboard, redo, undo]
+    [
+      active,
+      copySelected,
+      deleteSelected,
+      designBoardEditorNodeId,
+      pasteCopied,
+      pasteFromSystemClipboard,
+      redo,
+      undo
+    ]
   )
 
   useEffect(() => {
@@ -2518,6 +2569,8 @@ export function InfiniteCanvasWorkspace({
               onDownloadImage={downloadNode}
               onBatchSelect={handleBatchSelect}
               onBatchDownload={handleBatchDownload}
+              boardPreviewUrl={boardPreviewUrls[node.id]}
+              onOpenBoard={(item) => setDesignBoardEditorNodeId(item.id)}
               onContextMenu={(event, nodeId) => {
                 event.preventDefault()
                 event.stopPropagation()
@@ -2589,10 +2642,14 @@ export function InfiniteCanvasWorkspace({
             >
               <button
                 type="button"
-                title="编辑 / 打开面板"
+                title={toolbarNode.type === 'design-board' ? '打开画板编辑器' : '编辑 / 打开面板'}
                 className="grid size-7 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
                 style={{ color: theme.toolbar.item }}
                 onClick={() => {
+                  if (toolbarNode.type === 'design-board') {
+                    setDesignBoardEditorNodeId(toolbarNode.id)
+                    return
+                  }
                   setSelectedNodeIds(new Set([toolbarNode.id]))
                   setPanelNodeId(toolbarNode.id)
                 }}
@@ -2830,8 +2887,17 @@ export function InfiniteCanvasWorkspace({
               node.title = `设计画板 ${width}×${height}`
               pushHistory()
               setNodes((current) => [...current, node])
+              setDesignBoardEditorNodeId(node.id)
             }}
             onCancel={() => setDesignBoardCreatePosition(null)}
+          />
+        )}
+        {boardEditorNode && (
+          <DesignBoardEditor
+            node={boardEditorNode}
+            nodes={nodes}
+            onCommit={(doc) => commitDesignBoard(boardEditorNode.id, doc)}
+            onClose={() => setDesignBoardEditorNodeId(null)}
           />
         )}
         {mediaLogsOpen && <MediaLogPanel theme={theme} onClose={() => setMediaLogsOpen(false)} />}
