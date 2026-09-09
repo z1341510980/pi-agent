@@ -76,6 +76,31 @@ describe('batch download item collection', () => {
       ])
     ).toEqual([{ baseName: '主图', kind: 'media', mediaType: 'image', content: 'blob:image' }])
   })
+
+  it('maps video, audio, and extended text nodes while skipping empty content', () => {
+    expect(
+      collectBatchDownloadItems([
+        node({ type: 'video', title: '演示', metadata: { content: 'video-url' } }),
+        node({ type: 'audio', title: '旁白', metadata: { content: 'audio-url' } }),
+        node({ type: 'prompt', title: '扩展文本', metadata: { content: '文本结果' } }),
+        node({ type: 'text', title: '空文本', metadata: { content: '' } }),
+        node({ type: 'video', title: '空视频', metadata: { content: '' } })
+      ])
+    ).toEqual([
+      { baseName: '演示', kind: 'media', mediaType: 'video', content: 'video-url' },
+      { baseName: '旁白', kind: 'media', mediaType: 'audio', content: 'audio-url' },
+      { baseName: '扩展文本', kind: 'text', extension: '.txt', content: '文本结果' }
+    ])
+  })
+
+  it('skips image results and primary content when both are empty', () => {
+    expect(
+      collectBatchDownloadItems([
+        node({ type: 'image', title: '空图片', metadata: { images: [''] } }),
+        node({ type: 'image', title: '无内容' })
+      ])
+    ).toEqual([])
+  })
 })
 
 describe('batch download filenames and archive', () => {
@@ -92,8 +117,19 @@ describe('batch download filenames and archive', () => {
 
   it('maps common media MIME types to extensions', () => {
     expect(mediaFileExtension('image/jpeg', 'image')).toBe('.jpg')
+    expect(mediaFileExtension('image/webp', 'image')).toBe('.webp')
+    expect(mediaFileExtension('image/gif', 'image')).toBe('.gif')
+    expect(mediaFileExtension('image/avif', 'image')).toBe('.avif')
+    expect(mediaFileExtension('video/mp4', 'video')).toBe('.mp4')
+    expect(mediaFileExtension('video/mpeg', 'video')).toBe('.mpeg')
     expect(mediaFileExtension('video/webm', 'video')).toBe('.webm')
+    expect(mediaFileExtension('video/quicktime', 'video')).toBe('.mov')
     expect(mediaFileExtension('audio/mpeg', 'audio')).toBe('.mp3')
+    expect(mediaFileExtension('audio/ogg', 'audio')).toBe('.ogg')
+    expect(mediaFileExtension('audio/wav', 'audio')).toBe('.wav')
+    expect(mediaFileExtension('audio/x-m4a', 'audio')).toBe('.m4a')
+    expect(mediaFileExtension('audio/webm', 'audio')).toBe('.webm')
+    expect(mediaFileExtension('video/mpeg', 'audio')).toBe('.mp3')
     expect(mediaFileExtension('', 'video')).toBe('.mp4')
   })
 
@@ -105,5 +141,16 @@ describe('batch download filenames and archive', () => {
     const archive = unzipSync(new Uint8Array(await blob.arrayBuffer()))
     expect(strFromU8(archive['note.txt'])).toBe('hello')
     expect(strFromU8(archive['data.json'])).toBe('{"ok":true}')
+  })
+
+  it('keeps duplicate filenames as separate archive entries', async () => {
+    const blob = buildZipBlob([
+      { filename: 'same.txt', data: new TextEncoder().encode('first') },
+      { filename: 'same.txt', data: new TextEncoder().encode('second') }
+    ])
+    const archive = unzipSync(new Uint8Array(await blob.arrayBuffer()))
+
+    expect(strFromU8(archive['same.txt'])).toBe('first')
+    expect(strFromU8(archive['same-2.txt'])).toBe('second')
   })
 })

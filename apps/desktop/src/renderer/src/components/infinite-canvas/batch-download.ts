@@ -42,25 +42,33 @@ export function mediaFileExtension(
   mime: string | undefined,
   mediaType: 'image' | 'video' | 'audio'
 ): string {
-  const subtype = (mime ?? '')
-    .toLowerCase()
-    .replace(/^\w+\//, '')
-    .split(';')[0]
-    .trim()
-  const known: Record<string, string> = {
-    jpeg: '.jpg',
-    'svg+xml': '.svg',
-    'x-icon': '.ico',
-    mpeg: '.mp3',
-    mp4: '.mp4',
-    webm: '.webm',
-    quicktime: '.mov',
-    wav: '.wav',
-    ogg: '.ogg',
-    'x-m4a': '.m4a'
+  const subtype = (mime ?? '').toLowerCase().split(';')[0].split('/')[1]?.trim()
+  const known: Record<typeof mediaType, Record<string, string>> = {
+    image: {
+      jpeg: '.jpg',
+      png: '.png',
+      webp: '.webp',
+      gif: '.gif',
+      avif: '.avif',
+      'svg+xml': '.svg',
+      'x-icon': '.ico'
+    },
+    video: {
+      mp4: '.mp4',
+      mpeg: '.mpeg',
+      webm: '.webm',
+      quicktime: '.mov'
+    },
+    audio: {
+      mpeg: '.mp3',
+      ogg: '.ogg',
+      wav: '.wav',
+      'x-m4a': '.m4a',
+      webm: '.webm'
+    }
   }
 
-  if (subtype && known[subtype]) return known[subtype]
+  if (subtype && known[mediaType][subtype]) return known[mediaType][subtype]
   return mediaType === 'image' ? '.png' : mediaType === 'video' ? '.mp4' : '.mp3'
 }
 
@@ -124,6 +132,9 @@ export function collectBatchDownloadItems(nodes: CanvasNodeData[]): BatchDownloa
 
 export function buildZipBlob(files: BatchZipFile[]): Blob {
   const entries: Record<string, Uint8Array> = {}
-  for (const file of files) entries[file.filename] = file.data
+  const used = new Set<string>()
+  for (const file of files) {
+    entries[uniqueBatchFilename(file.filename, used)] = file.data
+  }
   return new Blob([zipSync(entries)], { type: 'application/zip' })
 }
