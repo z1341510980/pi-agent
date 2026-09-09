@@ -64,12 +64,8 @@ describe('CanvasToolbar batch download action', () => {
     const batchDownloadButton = screen.getByRole('button', { name: '批量下载选中 (1)' })
     const deleteButton = screen.getByRole('button', { name: '删除选中 (1)' })
 
-    expect(logsButton.compareDocumentPosition(batchDownloadButton)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING
-    )
-    expect(batchDownloadButton.compareDocumentPosition(deleteButton)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING
-    )
+    expect(logsButton.nextElementSibling).toBe(batchDownloadButton)
+    expect(batchDownloadButton.nextElementSibling).toBe(deleteButton)
   })
 
   it('shows a disabled downloading action while the archive is being prepared', () => {

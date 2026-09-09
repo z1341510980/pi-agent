@@ -1802,7 +1802,6 @@ export function InfiniteCanvasWorkspace({
 
   const downloadSelectedBatch = useCallback(async (): Promise<void> => {
     if (!project || !selectedNodeIds.size || batchDownloading) return
-    setSaveError(null)
     setBatchDownloadNotice(null)
     await withBatchDownloading(async () => {
       try {
@@ -2354,40 +2353,44 @@ export function InfiniteCanvasWorkspace({
           onToggleAgent={() => setAgentPanelOpen((value) => !value)}
           agentOpen={agentPanelOpen}
         />
-        {saveError && (
-          <div className="pointer-events-auto absolute top-16 left-1/2 z-50 w-[min(680px,90%)] -translate-x-1/2">
-            <div className="flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs text-red-600 shadow-lg backdrop-blur dark:text-red-300">
-              <span className="flex-1 leading-relaxed">{saveError}</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 px-2 text-xs"
-                onClick={() => setSaveError(null)}
-              >
-                关闭
-              </Button>
-            </div>
-          </div>
-        )}
-        {batchDownloadNotice && (
-          <div className="pointer-events-auto absolute top-16 left-1/2 z-50 w-[min(680px,90%)] -translate-x-1/2">
-            <div
-              className={
-                batchDownloadNotice.variant === 'success'
-                  ? 'flex items-start gap-3 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-700 shadow-lg backdrop-blur dark:text-emerald-300'
-                  : 'flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs text-red-600 shadow-lg backdrop-blur dark:text-red-300'
-              }
-            >
-              <span className="flex-1 leading-relaxed">{batchDownloadNotice.message}</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 px-2 text-xs"
-                onClick={() => setBatchDownloadNotice(null)}
-              >
-                关闭
-              </Button>
-            </div>
+        {(saveError || batchDownloadNotice) && (
+          <div className="pointer-events-none absolute top-16 left-1/2 z-50 flex w-[min(680px,90%)] -translate-x-1/2 flex-col gap-2">
+            {saveError && (
+              <div className="pointer-events-auto">
+                <div className="flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs text-red-600 shadow-lg backdrop-blur dark:text-red-300">
+                  <span className="flex-1 leading-relaxed">{saveError}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={() => setSaveError(null)}
+                  >
+                    关闭
+                  </Button>
+                </div>
+              </div>
+            )}
+            {batchDownloadNotice && (
+              <div className="pointer-events-auto">
+                <div
+                  className={
+                    batchDownloadNotice.variant === 'success'
+                      ? 'flex items-start gap-3 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-700 shadow-lg backdrop-blur dark:text-emerald-300'
+                      : 'flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs text-red-600 shadow-lg backdrop-blur dark:text-red-300'
+                  }
+                >
+                  <span className="flex-1 leading-relaxed">{batchDownloadNotice.message}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={() => setBatchDownloadNotice(null)}
+                  >
+                    关闭
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         )}
         <InfiniteCanvas
