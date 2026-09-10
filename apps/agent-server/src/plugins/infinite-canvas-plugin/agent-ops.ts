@@ -65,6 +65,7 @@ const BUILTIN_TYPES = new Set([
   'video',
   'audio',
   'group',
+  'design-board',
   'prompt',
   'file',
   'agent'

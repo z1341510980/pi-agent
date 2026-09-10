@@ -31,6 +31,7 @@ const NODE_TYPE_LIST: Array<AnyCanvasNodeType> = [
   'video',
   'audio',
   'group',
+  'design-board',
   'prompt',
   'file',
   'agent'
@@ -601,10 +602,13 @@ export function createInfiniteCanvasPlugin(): Plugin {
         defineTool({
           name: 'canvas_create_node',
           label: '创建画布节点',
-          description: '在指定无限画布创建节点。类型：image/text/config/video/audio/group。',
+          description:
+            '在指定无限画布创建节点。类型：image/text/config/video/audio/group/design-board。',
           parameters: Type.Object({
             projectId: Type.String({ description: '画布项目 ID' }),
-            nodeType: Type.String({ description: '节点类型：image/text/config/video/audio/group' }),
+            nodeType: Type.String({
+              description: '节点类型：image/text/config/video/audio/group/design-board'
+            }),
             title: Type.Optional(Type.String()),
             content: Type.Optional(Type.String()),
             x: Type.Optional(Type.Number()),
@@ -650,12 +654,16 @@ export function createInfiniteCanvasPlugin(): Plugin {
       })
       context.registerTool({
         name: 'canvas.add_node',
-        description: '向指定无限画布添加节点。类型：image/text/config/video/audio/group。',
+        description:
+          '向指定无限画布添加节点。类型：image/text/config/video/audio/group/design-board。',
         parameters: {
           type: 'object',
           properties: {
             projectId: { type: 'string', description: '画布项目 ID' },
-            type: { type: 'string', description: '节点类型：image/text/config/video/audio/group' },
+            type: {
+              type: 'string',
+              description: '节点类型：image/text/config/video/audio/group/design-board'
+            },
             title: { type: 'string', description: '节点标题' },
             content: { type: 'string', description: '节点内容' },
             x: { type: 'number', description: '画布 X 坐标' },

@@ -463,6 +463,7 @@ export class InfiniteCanvasStore {
       video: '视频',
       audio: '音频',
       group: '分组',
+      'design-board': '设计画板',
       prompt: 'Prompt',
       file: '文件引用',
       agent: 'Agent 结果'

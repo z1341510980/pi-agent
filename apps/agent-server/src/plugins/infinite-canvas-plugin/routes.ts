@@ -82,6 +82,7 @@ const NODE_TYPES = new Set<AnyCanvasNodeType>([
   'video',
   'audio',
   'group',
+  'design-board',
   'prompt',
   'file',
   'agent'

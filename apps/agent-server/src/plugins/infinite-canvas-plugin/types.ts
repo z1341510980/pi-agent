@@ -1,4 +1,11 @@
-export type CanvasNodeType = 'image' | 'text' | 'config' | 'video' | 'audio' | 'group'
+export type CanvasNodeType =
+  | 'image'
+  | 'text'
+  | 'config'
+  | 'video'
+  | 'audio'
+  | 'group'
+  | 'design-board'
 /** 旧版节点类型：不再由 UI 创建，但保留读取兼容。 */
 export type LegacyCanvasNodeType = 'prompt' | 'file' | 'agent'
 export type ExtensionCanvasNodeType = `${string}:${string}`

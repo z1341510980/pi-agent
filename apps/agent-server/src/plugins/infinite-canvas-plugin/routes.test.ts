@@ -249,3 +249,65 @@ describe('infinite canvas route errors', () => {
     })
   })
 })
+
+describe('infinite canvas graph route node types', () => {
+  it('saves design-board nodes on whole-graph sync and reads the type back', async () => {
+    const { default: Database } = await import('better-sqlite3')
+    const { infiniteCanvasMigrations } = await import('./migrations.js')
+    const { InfiniteCanvasStore } = await import('./store.js')
+    const db = new Database(':memory:')
+    for (const migration of infiniteCanvasMigrations) db.exec(migration.sql)
+    const store = new InfiniteCanvasStore(db)
+    const project = store.createProject({ title: '设计画板项目' })
+    const routes = createInfiniteCanvasRoutes(store)
+    const putGraph = routes.find(
+      (route) => route.method === 'PUT' && route.path === '/projects/:projectId/graph'
+    )!
+    const getProject = routes.find(
+      (route) => route.method === 'GET' && route.path === '/projects/:projectId'
+    )!
+    const designDoc = { version: 1, width: 100, height: 100, background: '#ffffff', objects: [] }
+
+    const putReply = replyMock()
+    const saved = (await putGraph.handler(
+      {
+        params: { projectId: project.id },
+        body: {
+          nodes: [
+            {
+              id: 'board-1',
+              type: 'design-board',
+              title: '画板 1',
+              content: '',
+              x: 0,
+              y: 0,
+              width: 640,
+              height: 480,
+              metadata: designDoc
+            }
+          ],
+          connections: []
+        },
+        traceId: 'trace-design-board'
+      },
+      putReply
+    )) as { ok: boolean }
+
+    expect(putReply.statusCode).toBe(200)
+    expect(saved.ok).toBe(true)
+
+    const getReply = replyMock()
+    const fetched = await getProject.handler({ params: { projectId: project.id } }, getReply)
+
+    expect(getReply.statusCode).toBe(200)
+    expect(fetched).toMatchObject({
+      ok: true,
+      data: {
+        nodes: [
+          expect.objectContaining({ id: 'board-1', type: 'design-board', metadata: designDoc })
+        ]
+      }
+    })
+    db.close()
+  })
+})
