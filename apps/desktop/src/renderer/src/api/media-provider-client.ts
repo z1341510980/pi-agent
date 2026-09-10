@@ -1,4 +1,4 @@
-import { deleteApi, getApi, patchApi, postApi } from './http-client'
+import { deleteApi, getApi, patchApi, postApi, putApi } from './http-client'
 
 /**
  * 媒体生成 Provider 客户端（spec §3/§5）
@@ -10,6 +10,8 @@ import { deleteApi, getApi, patchApi, postApi } from './http-client'
  * - PATCH  /media-providers/:id         — 部分更新（空 apiKey 保留旧值）
  * - DELETE /media-providers/:id         — 删除
  * - POST   /media-providers/:id/default — 设为模态默认（同模态唯一）
+ * - GET    /media-prefs                 — 读取媒体偏好（analyzeModel：反推提示词模型）
+ * - PUT    /media-prefs                 — 写入偏好（null/空串清除；非空须 'provider:model'）
  *
  * text 模态不落 media_providers 表（复用 LLM Provider 体系），本客户端不提供 text 写入。
  */
@@ -92,7 +94,9 @@ interface MediaProvidersPayload {
 /** 列出媒体 Provider；指定模态时服务端按模态过滤（text 恒返回空行） */
 export async function listMediaProviders(modality?: MediaModality): Promise<MediaProviderRow[]> {
   const qs = modality ? `?modality=${encodeURIComponent(modality)}` : ''
-  const data = await getApi<MediaProvidersPayload>(`/api/plugins/infinite-canvas/media-providers${qs}`)
+  const data = await getApi<MediaProvidersPayload>(
+    `/api/plugins/infinite-canvas/media-providers${qs}`
+  )
   return data.rows ?? []
 }
 
@@ -112,12 +116,17 @@ export function updateMediaProvider(
   id: string,
   patch: UpdateMediaProviderPatch
 ): Promise<MediaProviderRow> {
-  return patchApi<MediaProviderRow>(`/api/plugins/infinite-canvas/media-providers/${encodeURIComponent(id)}`, patch)
+  return patchApi<MediaProviderRow>(
+    `/api/plugins/infinite-canvas/media-providers/${encodeURIComponent(id)}`,
+    patch
+  )
 }
 
 /** 删除 Provider；默认行删除后模态默认空缺（resolve 时报「未配置」引导） */
 export async function deleteMediaProvider(id: string): Promise<void> {
-  await deleteApi<{ deleted: boolean }>(`/api/plugins/infinite-canvas/media-providers/${encodeURIComponent(id)}`)
+  await deleteApi<{ deleted: boolean }>(
+    `/api/plugins/infinite-canvas/media-providers/${encodeURIComponent(id)}`
+  )
 }
 
 /** 设为模态默认（同模态唯一，服务端事务处理） */
@@ -126,4 +135,38 @@ export async function setMediaProviderDefault(id: string): Promise<void> {
     `/api/plugins/infinite-canvas/media-providers/${encodeURIComponent(id)}/default`,
     {}
   )
+}
+
+// ── 媒体偏好（/media-prefs）与文字模型清单（/api/providers） ──
+
+/** GET/PUT /media-prefs 载荷：analyzeModel 为 'provider:model'，null = 跟随默认文字模型 */
+export interface MediaPrefs {
+  analyzeModel: string | null
+}
+
+/** 读取媒体偏好（当前仅 analyzeModel；缺失/空值由服务端归一为 null） */
+export async function getMediaPrefs(): Promise<MediaPrefs> {
+  return getApi<MediaPrefs>('/api/plugins/infinite-canvas/media-prefs')
+}
+
+/** 写入媒体偏好：analyzeModel 传 null/空串清除，'provider:model' 设置 */
+export async function setMediaPrefs(patch: { analyzeModel?: string | null }): Promise<MediaPrefs> {
+  return putApi<MediaPrefs>('/api/plugins/infinite-canvas/media-prefs', patch)
+}
+
+/** GET /api/providers 行（仅取反推模型下拉需要的字段） */
+export interface TextProviderBrief {
+  id: string
+  name: string
+  models: Array<{ id: string; name: string }>
+}
+
+/**
+ * 列出宿主文字 Provider（GET /api/providers）：响应行内自带 models 数组
+ * （provider-config-store 全量行），一次请求即可汇总全部候选模型；
+ * 无需逐 Provider 打 /api/providers/:id/models（那会请求上游 /v1/models，慢且可失败）。
+ * LLM Provider 无 enabled 概念（注册即可用），models 为空的行由调用方过滤。
+ */
+export async function listTextProviders(): Promise<TextProviderBrief[]> {
+  return getApi<TextProviderBrief[]>('/api/providers')
 }

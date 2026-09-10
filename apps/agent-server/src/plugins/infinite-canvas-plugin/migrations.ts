@@ -192,5 +192,16 @@ export const infiniteCanvasMigrations: MigrationDefinition[] = [
         ON infinite_canvas_media_providers(modality);
     `,
     afterApply: migrateHostMediaProviders
+  },
+  {
+    // 媒体偏好键值对（settings 面板的跨会话 UI 偏好）：key 固定枚举
+    // （如 analyzeModel = 反推提示词模型），value 文本；读写见 media/media-prefs-store.ts。
+    id: '019_create_infinite_canvas_media_prefs',
+    sql: `
+      CREATE TABLE IF NOT EXISTS infinite_canvas_media_prefs (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `
   }
 ]

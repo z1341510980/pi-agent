@@ -12,6 +12,7 @@ import { createPromptSourceService } from './prompt-source-service.js'
 import { CanvasAssetStore, MediaLogStore, referencesToDataUrls } from './canvas-assets.js'
 import { normalizeOpenAiCompatibleSize } from './media/shared.js'
 import { MediaProviderStore } from './media/media-provider-store.js'
+import { MediaPrefsStore } from './media/media-prefs-store.js'
 import { TEXT_BRIDGE_ADAPTER, createMediaProviderRegistry } from './media/registry.js'
 import { createMediaGenerator } from './media/generator.js'
 import {
@@ -66,6 +67,9 @@ export function createInfiniteCanvasPlugin(): Plugin {
       // 媒体 Provider 体系归属本插件：store/Registry/facade 均以 context.db（宿主同库）
       // 自建，配置表 infinite_canvas_media_providers 由本插件迁移 018 创建。
       const mediaProviderStore = new MediaProviderStore(context.db)
+      // 媒体偏好（迁移 019 infinite_canvas_media_prefs）：反推提示词模型等
+      // 设置面板偏好的落库点，generator 经 prefs.getPref 读取第二优先级模型。
+      const mediaPrefsStore = new MediaPrefsStore(context.db)
       const mediaLogger = context.logger.child({ module: 'infinite-canvas-media' })
       const mediaProviderRegistry = createMediaProviderRegistry(mediaProviderStore, {
         logger: mediaLogger,
@@ -90,7 +94,11 @@ export function createInfiniteCanvasPlugin(): Plugin {
           }
         }
       })
-      const media = createMediaGenerator(mediaProviderRegistry, { logger: mediaLogger })
+      // 反推提示词模型优先级：画布 input.model → 偏好 analyzeModel → 默认文字 Provider
+      const media = createMediaGenerator(mediaProviderRegistry, {
+        logger: mediaLogger,
+        prefs: mediaPrefsStore
+      })
       // 旧 media-config 兼容路由的读写入口：本插件自建的媒体 Provider store。
       const getMediaProviderStore = (): MediaProviderStore => mediaProviderStore
       // 生成结果本地资产：落盘后前端拿稳定的 /assets/:id，不再依赖慢 CDN
@@ -369,12 +377,13 @@ export function createInfiniteCanvasPlugin(): Plugin {
       ))
         context.registerRoute(route)
 
-      // 媒体 Provider CRUD（/media-providers、/:id、/:id/default）：
-      // 实际路径为 /api/plugins/infinite-canvas/media-providers…
+      // 媒体 Provider CRUD（/media-providers、/:id、/:id/default）与媒体偏好
+      // （/media-prefs）：实际路径为 /api/plugins/infinite-canvas/media-…
       for (const mediaRoute of createMediaProviderRoutes(
         mediaProviderStore,
         mediaProviderRegistry,
-        mediaLogger
+        mediaLogger,
+        mediaPrefsStore
       )) {
         context.registerRoute(mediaRoute)
       }

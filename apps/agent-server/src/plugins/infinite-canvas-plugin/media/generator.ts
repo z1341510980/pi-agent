@@ -8,6 +8,8 @@
  * - analyzeImage：反推提示词是「视觉理解聊天」，走 Registry text 分支
  *   （宿主 textBridge → LLM Provider 的 /chat/completions 多模态消息），
  *   不再 resolve('image')——图片模型（gpt-image 等）打 chat 端点会被上游拒绝；
+ *   模型按「画布 input.model → 偏好 analyzeModel（infinite_canvas_media_prefs，
+ *   迁移 019）→ 默认文字 Provider 首个模型」三级优先解析；
  * - generateAudio/generateVideo：resolve('audio'/'video') 后委托 adapter
  *   （openai-audio / newapi-video 落位后即为真实生成链路）。
  *
@@ -19,6 +21,7 @@
 import type { FastifyBaseLogger } from 'fastify'
 import { TEXT_PROVIDER_UNCONFIGURED_MESSAGE, type MediaProviderRegistry } from './registry.js'
 import type { MediaModalityContext, MediaProviderAdapter } from './adapter.js'
+import { MEDIA_PREF_ANALYZE_MODEL } from './media-prefs-store.js'
 import { normalizeImageBaseUrl, withAbortGuard } from './shared.js'
 
 export interface MediaGenerator {
@@ -79,8 +82,15 @@ export interface MediaGenerator {
   }): Promise<{ text: string }>
 }
 
+export interface MediaPrefsReader {
+  /** 按 key 读取偏好；缺失返回 null（实现见 media-prefs-store.ts）。 */
+  getPref(key: string): string | null
+}
+
 export interface MediaGeneratorOptions {
   logger?: FastifyBaseLogger
+  /** 媒体偏好（analyzeModel 等）：反推提示词模型的第二优先级来源。 */
+  prefs?: MediaPrefsReader
 }
 
 /** 反推提示词默认指令（与迁移前 openai-images adapter 的 analyzeImage 一致）。 */
@@ -97,6 +107,17 @@ function splitTextModel(model: string | undefined): { providerId?: string; model
   if (!value) return {}
   const index = value.indexOf(':')
   if (index <= 0) return { model: value }
+  return { providerId: value.slice(0, index), model: value.slice(index + 1) }
+}
+
+/**
+ * 反推模型偏好解析：偏好值只认 'provider:model'（写入路由已按此校验），
+ * 拆不出两段非空（缺失/裸 model id/残缺）一律视为未设置，回落默认文字模型。
+ */
+function parseAnalyzeModelPref(value: string | null): { providerId?: string; model?: string } {
+  if (!value) return {}
+  const index = value.indexOf(':')
+  if (index <= 0 || index === value.length - 1) return {}
   return { providerId: value.slice(0, index), model: value.slice(index + 1) }
 }
 
@@ -209,14 +230,20 @@ export function createMediaGenerator(
     async analyzeImage({ image, instruction, model, signal }) {
       // 反推是视觉理解聊天：经 Registry text 分支走宿主文字模型桥接，
       // 不再 resolve('image')（旧实现把图片模型打到 chat 端点被上游拒绝）。
-      const { providerId, model: modelOverride } = splitTextModel(model)
+      // 模型优先级：input.model（画布透传，支持 'provider:model' 与裸 model id）
+      //   → 偏好 analyzeModel（'provider:model'）→ 默认文字 Provider 首个模型。
+      const fromInput = splitTextModel(model)
+      const resolved =
+        fromInput.providerId || fromInput.model
+          ? fromInput
+          : parseAnalyzeModelPref(options?.prefs?.getPref(MEDIA_PREF_ANALYZE_MODEL) ?? null)
       let ctx: MediaModalityContext
       try {
-        const resolved = await registry.resolve('text', { providerId })
+        const bridged = await registry.resolve('text', { providerId: resolved.providerId })
         ctx = {
-          ...resolved.ctx,
-          ...(modelOverride ? { model: modelOverride } : {}),
-          logger: resolved.ctx.logger ?? options?.logger
+          ...bridged.ctx,
+          ...(resolved.model ? { model: resolved.model } : {}),
+          logger: bridged.ctx.logger ?? options?.logger
         }
       } catch {
         // textBridge 缺失 / 返回 null / 解析抛错 → 统一引导到文字模型配置

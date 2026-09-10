@@ -316,3 +316,90 @@ describe('media generator facade (registry-backed)', () => {
     emptyDb.close()
   })
 })
+
+describe('analyzeImage analyzeModel 偏好优先级', () => {
+  const db = new Database(':memory:')
+  applyPluginMediaMigration(db)
+  afterAll(() => db.close())
+
+  const jsonResponse = (body: unknown, status = 200): Response =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+
+  /**
+   * 构造带偏好与 textBridge 桩的 generator（bridge 默认模型 vision-model），
+   * 执行 analyzeImage 并回传 bridge 收到的 providerId 与 chat 请求体模型。
+   */
+  async function runAnalyze(
+    pref: string | null,
+    inputModel?: string
+  ): Promise<{ bridgeProviderId: string | undefined; requestModel: string }> {
+    const bridge = vi.fn(async (providerId?: string) => ({
+      providerId: providerId ?? 'llm-default',
+      adapter: TEXT_BRIDGE_ADAPTER,
+      ctx: {
+        providerId: providerId ?? 'llm-default',
+        baseUrl: 'https://llm.example.com/v1',
+        apiKey: 'sk-llm',
+        model: 'vision-model',
+        params: {}
+      }
+    }))
+    const generator = createMediaGenerator(
+      createMediaProviderRegistry(new MediaProviderStore(db), { textBridge: bridge }),
+      { prefs: { getPref: (key: string) => (key === 'analyzeModel' ? pref : null) } }
+    )
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockResolvedValue(jsonResponse({ choices: [{ message: { content: 'ok' } }] }))
+    try {
+      await generator.analyzeImage({
+        image: 'data:image/png;base64,AA==',
+        ...(inputModel !== undefined ? { model: inputModel } : {})
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('https://llm.example.com/v1/chat/completions')
+    return {
+      bridgeProviderId: bridge.mock.calls[0]?.[0],
+      requestModel: JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+        .model as string
+    }
+  }
+
+  it('input.model（provider:model）覆盖偏好', async () => {
+    const { bridgeProviderId, requestModel } = await runAnalyze(
+      'pref-llm:pref-model',
+      'input-llm:input-model'
+    )
+    expect(bridgeProviderId).toBe('input-llm')
+    expect(requestModel).toBe('input-model')
+  })
+
+  it('input.model（裸 model id）覆盖偏好并走默认 Provider', async () => {
+    const { bridgeProviderId, requestModel } = await runAnalyze('pref-llm:pref-model', 'bare-model')
+    expect(bridgeProviderId).toBe(undefined)
+    expect(requestModel).toBe('bare-model')
+  })
+
+  it('偏好覆盖默认：analyzeModel 解析为 bridge providerId + model 覆盖', async () => {
+    const { bridgeProviderId, requestModel } = await runAnalyze('pref-llm:pref-model')
+    expect(bridgeProviderId).toBe('pref-llm')
+    expect(requestModel).toBe('pref-model')
+  })
+
+  it('input.model 与偏好都空时走默认（bridge 首个模型）', async () => {
+    const { bridgeProviderId, requestModel } = await runAnalyze(null)
+    expect(bridgeProviderId).toBe(undefined)
+    expect(requestModel).toBe('vision-model')
+  })
+
+  it('偏好格式非法（缺冒号/空段）视为未设置，回落默认', async () => {
+    for (const invalid of ['no-colon-model', 'pref-llm:', ':model', '']) {
+      const { bridgeProviderId, requestModel } = await runAnalyze(invalid)
+      expect(bridgeProviderId).toBe(undefined)
+      expect(requestModel).toBe('vision-model')
+    }
+  })
+})

@@ -4,7 +4,8 @@
  *
  * 覆盖：图片/视频/音频三模态 tab 渲染与切换懒加载、图片 Provider 卡片渲染
  * （名称/默认徽标/keyHint 掩码）、空态引导卡、formSchema 驱动的动态表单字段
- * （openai-images ↔ apimart）、设为默认调用客户端。
+ * （openai-images ↔ apimart）、设为默认调用客户端、反推提示词模型选择
+ * （回显/选择触发 PUT/清除/失败回退）。
  * （文字生成属宿主 LLM 体系，留在「模型与 Provider」页，不在本面板范围。）
  *
  * mock 策略：媒体客户端整体替换（@/api/media-provider-client）。
@@ -12,7 +13,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { MediaAdapterMeta, MediaProviderRow } from '@/api/media-provider-client'
+import type {
+  MediaAdapterMeta,
+  MediaProviderRow,
+  TextProviderBrief
+} from '@/api/media-provider-client'
 import { InfiniteCanvasMediaSettings } from '../media-settings-panel'
 
 const mediaApi = vi.hoisted(() => ({
@@ -21,7 +26,10 @@ const mediaApi = vi.hoisted(() => ({
   createMediaProvider: vi.fn(),
   updateMediaProvider: vi.fn(),
   deleteMediaProvider: vi.fn(),
-  setMediaProviderDefault: vi.fn()
+  setMediaProviderDefault: vi.fn(),
+  getMediaPrefs: vi.fn(),
+  setMediaPrefs: vi.fn(),
+  listTextProviders: vi.fn()
 }))
 
 vi.mock('@/api/media-provider-client', () => mediaApi)
@@ -117,6 +125,9 @@ beforeEach(() => {
   mediaApi.updateMediaProvider.mockResolvedValue(DEFAULT_ROW)
   mediaApi.deleteMediaProvider.mockResolvedValue(undefined)
   mediaApi.setMediaProviderDefault.mockResolvedValue(undefined)
+  mediaApi.getMediaPrefs.mockResolvedValue({ analyzeModel: null })
+  mediaApi.setMediaPrefs.mockResolvedValue({ analyzeModel: null })
+  mediaApi.listTextProviders.mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -256,9 +267,17 @@ describe('媒体生成设置面板', () => {
               key: 'voice',
               label: '音色',
               type: 'select',
-              options: [{ value: 'alloy', label: 'alloy' }, { value: 'nova', label: 'nova' }]
+              options: [
+                { value: 'alloy', label: 'alloy' },
+                { value: 'nova', label: 'nova' }
+              ]
             },
-            { key: 'format', label: '音频格式', type: 'select', options: [{ value: 'mp3', label: 'mp3' }] },
+            {
+              key: 'format',
+              label: '音频格式',
+              type: 'select',
+              options: [{ value: 'mp3', label: 'mp3' }]
+            },
             { key: 'speed', label: '语速 (0.25-4)', type: 'number', placeholder: '1' }
           ]
         }
@@ -284,5 +303,99 @@ describe('媒体生成设置面板', () => {
     fireEvent.click(screen.getByRole('tab', { name: '音频' }))
     expect(await screen.findByText('配音库')).toBeTruthy()
     expect(screen.getByText(/OpenAI 语音合成 · tts-1/)).toBeTruthy()
+  })
+})
+
+describe('反推提示词模型选择', () => {
+  const TEXT_PROVIDERS: TextProviderBrief[] = [
+    {
+      id: 'p1',
+      name: '供应商一',
+      models: [
+        { id: 'm1', name: 'M1' },
+        { id: 'm2', name: 'M2' }
+      ]
+    },
+    { id: 'p2', name: '供应商二', models: [{ id: 'v1', name: 'V1' }] },
+    { id: 'p3', name: '空模型', models: [] }
+  ]
+
+  function openAnalyzeSelect(): void {
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '反推提示词模型' }), {
+      key: 'Enter'
+    })
+  }
+
+  it('渲染图片 tab 顶部小节：标题/说明/下拉，models 为空的 Provider 不出现', async () => {
+    mediaApi.listTextProviders.mockResolvedValue(TEXT_PROVIDERS)
+    renderMediaSettings()
+
+    expect(await screen.findByText('反推提示词模型')).toBeTruthy()
+    expect(screen.getByText('用于图片反推提示词的视觉理解模型；留空跟随默认文字模型')).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: '反推提示词模型' })).toBeTruthy()
+
+    // 打开下拉验证选项清单：'provider:model' value 的 label 为 `{provider 名} / {model}`
+    openAnalyzeSelect()
+    expect(await screen.findByRole('option', { name: '跟随默认文字模型' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: '供应商一 / m1' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: '供应商一 / m2' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: '供应商二 / v1' })).toBeTruthy()
+    expect(screen.queryByRole('option', { name: /空模型/ })).toBeNull()
+  })
+
+  it('挂载时 GET 回显已保存偏好（触发器显示选中模型）', async () => {
+    mediaApi.getMediaPrefs.mockResolvedValue({ analyzeModel: 'p1:m2' })
+    mediaApi.listTextProviders.mockResolvedValue(TEXT_PROVIDERS)
+    renderMediaSettings()
+
+    expect(await screen.findByText('供应商一 / m2')).toBeTruthy()
+    expect(mediaApi.getMediaPrefs).toHaveBeenCalledTimes(1)
+  })
+
+  it('选择模型立即 PUT 保存（乐观 UI 更新触发器显示）', async () => {
+    mediaApi.listTextProviders.mockResolvedValue(TEXT_PROVIDERS)
+    mediaApi.setMediaPrefs.mockResolvedValue({ analyzeModel: 'p2:v1' })
+    renderMediaSettings()
+
+    // 等偏好加载完成（哨兵 value 对应项「跟随默认文字模型」出现在触发器）再打开下拉
+    await screen.findByText('跟随默认文字模型')
+    openAnalyzeSelect()
+    fireEvent.click(await screen.findByRole('option', { name: '供应商二 / v1' }))
+
+    await waitFor(() => {
+      expect(mediaApi.setMediaPrefs).toHaveBeenCalledWith({ analyzeModel: 'p2:v1' })
+    })
+    expect(await screen.findByText('供应商二 / v1')).toBeTruthy()
+  })
+
+  it('选择「跟随默认文字模型」清除偏好（PUT null）', async () => {
+    mediaApi.getMediaPrefs.mockResolvedValue({ analyzeModel: 'p1:m1' })
+    mediaApi.listTextProviders.mockResolvedValue(TEXT_PROVIDERS)
+    mediaApi.setMediaPrefs.mockResolvedValue({ analyzeModel: null })
+    renderMediaSettings()
+
+    await screen.findByText('供应商一 / m1')
+    openAnalyzeSelect()
+    fireEvent.click(await screen.findByRole('option', { name: '跟随默认文字模型' }))
+
+    await waitFor(() => {
+      expect(mediaApi.setMediaPrefs).toHaveBeenCalledWith({ analyzeModel: null })
+    })
+  })
+
+  it('保存失败回退到旧值并提示', async () => {
+    mediaApi.getMediaPrefs.mockResolvedValue({ analyzeModel: 'p1:m1' })
+    mediaApi.listTextProviders.mockResolvedValue(TEXT_PROVIDERS)
+    mediaApi.setMediaPrefs.mockRejectedValue(new Error('网络错误'))
+    renderMediaSettings()
+
+    expect(await screen.findByText('供应商一 / m1')).toBeTruthy()
+    openAnalyzeSelect()
+    fireEvent.click(await screen.findByRole('option', { name: '供应商二 / v1' }))
+
+    // 失败后回退显示旧值 + 错误提示（err.message 透传）
+    expect(await screen.findByText('供应商一 / m1')).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toContain('网络错误')
+    expect(mediaApi.setMediaPrefs).toHaveBeenCalledWith({ analyzeModel: 'p2:v1' })
   })
 })

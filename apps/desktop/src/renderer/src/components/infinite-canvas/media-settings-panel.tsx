@@ -34,8 +34,11 @@ import { SettingsPageHeader } from '../settings/setting-primitives'
 import {
   createMediaProvider,
   deleteMediaProvider,
+  getMediaPrefs,
   listMediaAdapters,
   listMediaProviders,
+  listTextProviders,
+  setMediaPrefs,
   setMediaProviderDefault,
   updateMediaProvider,
   type MediaAdapterMeta,
@@ -211,6 +214,9 @@ export function InfiniteCanvasMediaSettings(): ReactElement {
         />
       </div>
 
+      {/* 反推提示词模型：图片 tab 顶部（Provider 列表之上）的全局视觉理解模型选择 */}
+      {tab === 'image' && <AnalyzeModelSection />}
+
       {error && (
         <p className="text-danger text-sm" role="alert">
           {error}
@@ -291,6 +297,96 @@ export function InfiniteCanvasMediaSettings(): ReactElement {
         />
       )}
     </section>
+  )
+}
+
+// ── 反推提示词模型（analyzeModel 偏好，仅图片 tab 展示） ──
+
+/** 「跟随默认文字模型」的哨兵值：Radix Select 不接受空串 value */
+const ANALYZE_MODEL_DEFAULT_OPTION = '__default__'
+
+/**
+ * 反推提示词模型小节：选项来自宿主 GET /api/providers（行内自带 models 数组，
+ * 一次请求汇总全部文字模型），value 为 'provider:model'，label 为 `{provider 名} / {model}`；
+ * 选择即 PUT /media-prefs（乐观更新，失败回退旧值并提示），挂载时 GET 回显。
+ */
+function AnalyzeModelSection(): ReactElement {
+  const [analyzeModel, setAnalyzeModel] = useState<string | null>(null)
+  const [options, setOptions] = useState<Array<{ value: string; label: string }>>([])
+  const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([getMediaPrefs(), listTextProviders()])
+      .then(([prefs, providers]) => {
+        if (cancelled) return
+        setAnalyzeModel(prefs.analyzeModel ?? null)
+        // models 为空的 Provider（未配置模型）无可用候选，跳过
+        setOptions(
+          providers.flatMap((provider) =>
+            (provider.models ?? []).map((model) => ({
+              value: `${provider.id}:${model.id}`,
+              label: `${provider.name} / ${model.id}`
+            }))
+          )
+        )
+        setLoaded(true)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : '加载反推提示词模型偏好失败')
+        setLoaded(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  async function handleChange(value: string): Promise<void> {
+    const next = value === ANALYZE_MODEL_DEFAULT_OPTION ? null : value
+    const previous = analyzeModel
+    setAnalyzeModel(next)
+    setError(null)
+    try {
+      const saved = await setMediaPrefs({ analyzeModel: next })
+      setAnalyzeModel(saved.analyzeModel ?? null)
+    } catch (err) {
+      setAnalyzeModel(previous)
+      setError(err instanceof Error ? err.message : '保存反推提示词模型失败')
+    }
+  }
+
+  return (
+    <div
+      className="bg-surface-2 border-border grid gap-2 rounded-lg border p-4"
+      aria-label="反推提示词模型"
+    >
+      <Label htmlFor="analyze-model-select">反推提示词模型</Label>
+      <p className="text-hint text-xs">用于图片反推提示词的视觉理解模型；留空跟随默认文字模型</p>
+      <Select
+        value={analyzeModel ?? ANALYZE_MODEL_DEFAULT_OPTION}
+        onValueChange={(value) => void handleChange(value)}
+        disabled={!loaded}
+      >
+        <SelectTrigger id="analyze-model-select" className="w-full">
+          <SelectValue placeholder={loaded ? '选择反推模型...' : '正在加载...'} />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ANALYZE_MODEL_DEFAULT_OPTION}>跟随默认文字模型</SelectItem>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {error && (
+        <p className="text-danger text-xs" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   )
 }
 
