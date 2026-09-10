@@ -9,6 +9,7 @@ import {
   ShieldIcon,
   SlidersHorizontalIcon,
   InfoIcon,
+  ImageIcon,
   ClockIcon,
   SparklesIcon,
   UsersIcon,
@@ -25,6 +26,7 @@ import { CronPage } from './cron-page'
 import { AssistantSettings } from './assistant-settings'
 import { SkillsSettings } from './skills-settings'
 import { ProviderSettings } from './provider-settings'
+import { MediaSettings } from './media-settings'
 import { PluginPage } from './plugin-page'
 import { PluginSettingsSection, usePluginSettingsEntries } from './plugin-settings-section'
 
@@ -34,6 +36,7 @@ export type SettingsSection =
   | 'assistants'
   | 'skills'
   | 'providers'
+  | 'media'
   | 'models'
   | 'plugins'
   | 'agents'
@@ -60,7 +63,7 @@ interface NavGroup {
 
 /**
  * 左侧导航分组（对齐 AionUi SettingsSider 的 GROUP_HEADER_BEFORE 风格）
- * - AI 核心：助手 / 技能 / 模型与 Provider / Agent / 权限与安全 / 定时任务
+ * - AI 核心：助手 / 技能 / 模型与 Provider / 媒体生成 / Agent / 权限与安全 / 定时任务
  * - 插件设置：由插件声明（registerSettings / plugin-settings slot）动态生成
  * - 应用：通用设置 / 关于
  */
@@ -71,6 +74,7 @@ const hostNavGroups: NavGroup[] = [
       { id: 'assistants', label: '助手', icon: UsersIcon },
       { id: 'skills', label: '技能', icon: SparklesIcon },
       { id: 'providers', label: '模型与 Provider', icon: PlugIcon },
+      { id: 'media', label: '媒体生成', icon: ImageIcon },
       { id: 'models', label: '模型管理', icon: LayersIcon },
       { id: 'plugins', label: '插件', icon: PlugIcon },
       { id: 'agents', label: 'Agent 管理', icon: BotIcon },
@@ -175,7 +179,7 @@ export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
           {section.startsWith('plugin:') ? (
             (() => {
               const entry = pluginSettingEntries.find(
-                (candidate) => `plugin:${candidate.pluginId}` === section,
+                (candidate) => `plugin:${candidate.pluginId}` === section
               )
               return entry ? (
                 <PluginSettingsSection entry={entry} />
@@ -189,6 +193,7 @@ export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
               {section === 'assistants' && <AssistantSettings />}
               {section === 'skills' && <SkillsSettings />}
               {section === 'providers' && <ProviderSettings />}
+              {section === 'media' && <MediaSettings />}
               {section === 'models' && <ModelsPage />}
               {section === 'plugins' && <PluginPage />}
               {section === 'agents' && <AgentPage />}
