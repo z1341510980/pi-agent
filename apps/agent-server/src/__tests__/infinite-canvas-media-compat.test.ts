@@ -2,7 +2,7 @@
  * 画布媒体链路经 Registry 的集成测试（spec §6）：
  * - generate-image：画布 providerId 命中 / 默认回退 / 未配置引导文案
  * - generate-media：audio/video 阶段一未配置的按模态命名文案
- * - reverse-prompt：analyze 能力门禁（方案 A）
+ * - reverse-prompt：宿主文字模型桥接（未配置 → 引导；配置 → /chat/completions）
  * - 旧 media-config GET/PUT：与 image 默认 Provider 的兼容字段映射（deprecated）
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -10,13 +10,12 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createApp } from '../app.js'
+import { TEXT_PROVIDER_UNCONFIGURED_MESSAGE } from '../plugins/infinite-canvas-plugin/media/registry.js'
 import { MediaProviderStore } from '../plugins/infinite-canvas-plugin/media/media-provider-store.js'
 import type { MediaProviderRow } from '../plugins/infinite-canvas-plugin/media/adapter.js'
 
 const CANVAS_PREFIX = '/api/plugins/infinite-canvas'
 const IMAGE_UNCONFIGURED = '图片尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
-const ANALYZE_UNSUPPORTED =
-  '该图片 Provider 不支持图像反推提示词，请到 设置 → 媒体生成 更换支持视觉理解的 Provider'
 
 describe('infinite canvas media × media provider registry', () => {
   let app: Awaited<ReturnType<typeof createApp>>
@@ -308,8 +307,12 @@ describe('infinite canvas media × media provider registry', () => {
         response_format: 'url'
       })
       // 轮询端点
-      expect(fetchMock.mock.calls[1][0]).toBe('https://video.example.com/v1/video/generations/task-1')
-      expect(fetchMock.mock.calls[2][0]).toBe('https://video.example.com/v1/video/generations/task-1')
+      expect(fetchMock.mock.calls[1][0]).toBe(
+        'https://video.example.com/v1/video/generations/task-1'
+      )
+      expect(fetchMock.mock.calls[2][0]).toBe(
+        'https://video.example.com/v1/video/generations/task-1'
+      )
     } finally {
       vi.unstubAllGlobals()
     }
@@ -341,17 +344,12 @@ describe('infinite canvas media × media provider registry', () => {
     }
   })
 
-  it('reverse-prompt 在 analyze=false 的默认 Provider 上被门禁拦截', async () => {
+  it('reverse-prompt 在宿主未配置文字模型时引导设置', async () => {
     clearImageProviders()
-    const apimart = mediaStore.create({
-      name: 'APIMart',
-      modality: 'image',
-      adapter: 'apimart',
-      baseUrl: 'https://api.apimart.example',
-      apiKey: 'am-key',
-      model: 'gpt-image-2'
-    })
-    mediaStore.setDefault(apimart.id)
+    // 文字模型桥接读宿主 provider-config-store：清空后 bridge 返回 null
+    app.providerConfigStore
+      .list()
+      .forEach((provider) => app.providerConfigStore.delete(provider.id))
 
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -362,7 +360,7 @@ describe('infinite canvas media × media provider registry', () => {
         body: { image: 'data:image/png;base64,AA==' }
       })
       expect(response.statusCode).toBe(502)
-      expect(response.json().error.message).toBe(ANALYZE_UNSUPPORTED)
+      expect(response.json().error.message).toBe(TEXT_PROVIDER_UNCONFIGURED_MESSAGE)
       expect(response.json().error.code).toBe('REVERSE_PROMPT_FAILED')
       expect(fetchMock).not.toHaveBeenCalled()
     } finally {
@@ -370,15 +368,17 @@ describe('infinite canvas media × media provider registry', () => {
     }
   })
 
-  it('reverse-prompt 在 analyze=true 的默认 Provider 上走多模态理解', async () => {
+  it('reverse-prompt 经宿主文字模型桥接走多模态聊天', async () => {
     clearImageProviders()
-    const vision = createImageProvider({
-      name: '视觉行',
-      baseUrl: 'https://vision.example.com/v1',
-      apiKey: 'sk-vision',
-      model: 'm-vision'
+    // 反推提示词是视觉理解聊天：模型/端点/鉴权来自宿主 LLM Provider，与图片 Provider 无关
+    app.providerConfigStore.upsert({
+      id: 'llm-default',
+      name: 'LLM Provider',
+      baseUrl: 'https://llm.example.com',
+      apiKey: 'sk-llm',
+      api: 'openai-completions',
+      models: [{ id: 'vision-model', name: 'Vision Model' }]
     })
-    mediaStore.setDefault(vision.id)
 
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -393,7 +393,14 @@ describe('infinite canvas media × media provider registry', () => {
       })
       expect(response.statusCode).toBe(200)
       expect(response.json().data.text).toBe('灯塔水彩画')
-      expect(fetchMock.mock.calls[0][0]).toBe('https://vision.example.com/v1/chat/completions')
+      // openai 兼容 api 归一 /v1 根 + chat 端点；模型与鉴权来自 Provider 行
+      expect(fetchMock.mock.calls[0][0]).toBe('https://llm.example.com/v1/chat/completions')
+      const request = fetchMock.mock.calls[0][1] as RequestInit
+      expect(request.headers).toMatchObject({ Authorization: 'Bearer sk-llm' })
+      expect(JSON.parse(String(request.body))).toMatchObject({
+        model: 'vision-model',
+        max_tokens: 800
+      })
     } finally {
       vi.unstubAllGlobals()
     }

@@ -54,7 +54,7 @@ describe('media provider route', () => {
       id: 'openai-images',
       label: 'OpenAI Images 兼容',
       modality: 'image',
-      capabilities: { generate: true, edit: true, mask: true, analyze: true }
+      capabilities: { generate: true, edit: true, mask: true }
     })
     expect(payload.adapters[0].formSchema).toEqual([
       expect.objectContaining({ key: 'size', type: 'select' })

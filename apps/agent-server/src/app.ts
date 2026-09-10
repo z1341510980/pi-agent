@@ -43,6 +43,7 @@ import { createPiSubagentsBridge } from './core/agent/pi-subagents-bridge.js'
 import { Gate } from './core/tool/gate.js'
 import { ConfirmationManager } from './core/tool/confirmation-manager.js'
 import { createPiSession } from './core/agent/pi-session.js'
+import { normalizeProviderBaseUrl } from './core/config/provider-base-url.js'
 import { Tracer, SqliteTraceStore, createTraceTables } from './core/tracer/index.js'
 
 export async function createApp(): Promise<Fastify.FastifyInstance> {
@@ -161,6 +162,31 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   app.pluginManager?.setModelRegistry(app.modelRegistry)
   // 注入 ProviderConfigStore（供 onPayload 读取 stream_options 屏蔽开关等应用级配置）
   app.pluginManager?.setProviderConfigStore(app.providerConfigStore)
+  // 注入宿主文字模型桥接：反推提示词等视觉理解属于「文字模型聊天」，
+  // 必须走 LLM Provider（provider-config-store），不能误接图片模态。
+  // 解析链恢复自旧 resolveRequestContext：providerId 精确 → 默认 Provider → list[0]；
+  // null = 无可用文字模型（插件侧统一给出「配置文字模型」引导文案）。
+  app.pluginManager?.setTextBridge(async (providerId) => {
+    const store = app.providerConfigStore
+    let provider = providerId ? store.get(providerId) : undefined
+    if (!provider) {
+      const defaultId = store.getDefaultProviderId()
+      provider = defaultId ? store.get(defaultId) : undefined
+    }
+    if (!provider) provider = store.list()[0]
+    // 聊天模型取 Provider 模型列表首个（旧 modelId 兜底链在文字场景的等价物）；
+    // 连模型都没配的 Provider 视为不可用，走统一引导文案
+    const model = provider?.models[0]?.id ?? ''
+    if (!provider || !model) return null
+    const headers: Record<string, string> =
+      provider.authHeader !== false ? { Authorization: `Bearer ${provider.apiKey}` } : {}
+    return {
+      baseUrl: normalizeProviderBaseUrl(provider.api, provider.baseUrl),
+      apiKey: provider.apiKey,
+      model,
+      headers
+    }
+  })
   // 媒体 Provider 体系已迁入 infinite-canvas 插件（plugin/media/）：store、Registry
   // 与 /media-providers 路由均由插件自建，宿主不再装配媒体能力。
 

@@ -470,7 +470,6 @@ function MediaProviderFormDialog({
               <p className="text-[10px] text-muted-foreground">
                 能力：生成{selectedAdapter.capabilities.edit ? ' / 图生图' : ''}
                 {selectedAdapter.capabilities.mask === true ? ' / 蒙版重绘' : ''}
-                {selectedAdapter.capabilities.analyze ? ' / 反推提示词' : ''}
               </p>
             )}
           </div>

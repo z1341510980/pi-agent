@@ -32,7 +32,7 @@ const ADAPTERS: MediaAdapterMeta[] = [
     id: 'openai-images',
     label: 'OpenAI Images 兼容',
     modality: 'image',
-    capabilities: { generate: true, edit: true, mask: true, analyze: true },
+    capabilities: { generate: true, edit: true, mask: true },
     formSchema: [
       {
         key: 'size',

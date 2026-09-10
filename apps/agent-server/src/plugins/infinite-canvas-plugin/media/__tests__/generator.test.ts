@@ -1,18 +1,19 @@
 ﻿import { afterAll, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3'
-import {
-  createMediaGenerator,
-  IMAGE_ANALYZE_UNSUPPORTED_MESSAGE
-} from '../generator.js'
+import { createMediaGenerator } from '../generator.js'
 import { MediaProviderStore } from '../media-provider-store.js'
-import { createMediaProviderRegistry } from '../registry.js'
+import {
+  TEXT_BRIDGE_ADAPTER,
+  TEXT_PROVIDER_UNCONFIGURED_MESSAGE,
+  createMediaProviderRegistry
+} from '../registry.js'
 import type { MediaProviderRow } from '../adapter.js'
 import { applyPluginMediaMigration } from './plugin-media-db.js'
 
 /**
  * 插件媒体 facade（registry-backed）用例：协议级行为由
  * media/__tests__/{openai-images,apimart}-adapter.test.ts 覆盖，
- * 此处只验证 facade 的 resolve/门禁/委托语义。
+ * 此处只验证 facade 的 resolve/门禁/委托语义（analyzeImage 走文字模型桥接）。
  */
 describe('media generator facade (registry-backed)', () => {
   const db = new Database(':memory:')
@@ -139,48 +140,162 @@ describe('media generator facade (registry-backed)', () => {
     }
   })
 
-  it('gates analyzeImage on adapter capabilities with the settings guidance message', async () => {
-    // analyze=false 的 apimart 默认行 → 门禁文案，且不发起请求
-    const apimart = mediaStore.create({
-      name: 'APIMart',
-      modality: 'image',
-      adapter: 'apimart',
-      baseUrl: 'https://api.apimart.example',
-      apiKey: 'am-key',
-      model: 'gpt-image-2'
-    })
-    mediaStore.setDefault(apimart.id)
+  it('routes analyzeImage through the host text bridge chat endpoint', async () => {
+    const bridge = vi.fn(async (providerId?: string) => ({
+      providerId: providerId ?? 'llm-default',
+      adapter: TEXT_BRIDGE_ADAPTER,
+      ctx: {
+        providerId: providerId ?? 'llm-default',
+        baseUrl: 'https://llm.example.com/v1',
+        apiKey: 'sk-llm',
+        model: 'vision-model',
+        params: {},
+        headers: { Authorization: 'Bearer sk-llm' }
+      }
+    }))
+    const generator = createMediaGenerator(
+      createMediaProviderRegistry(mediaStore, { textBridge: bridge })
+    )
+
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    try {
-      await expect(
-        generator.analyzeImage!({ image: 'data:image/png;base64,AA==' })
-      ).rejects.toThrow(IMAGE_ANALYZE_UNSUPPORTED_MESSAGE)
-      expect(fetchMock).not.toHaveBeenCalled()
-    } finally {
-      vi.unstubAllGlobals()
-    }
-
-    // analyze=true 的 openai-images 行 → 走 /chat/completions 多模态理解
-    const vision = createImageProvider({
-      name: '视觉行',
-      baseUrl: 'https://vision.example.com/v1',
-      apiKey: 'sk-v',
-      model: 'm-v'
-    })
-    mediaStore.setDefault(vision.id)
-    const fetchMock2 = vi.fn()
-    vi.stubGlobal('fetch', fetchMock2)
-    fetchMock2.mockResolvedValueOnce(
+    fetchMock.mockResolvedValueOnce(
       jsonResponse({ choices: [{ message: { content: '一只纸鹤' } }] })
     )
     try {
       await expect(
-        generator.analyzeImage!({ image: 'data:image/png;base64,AA==' })
-      ).resolves.toEqual({
-        text: '一只纸鹤'
+        generator.analyzeImage({ image: 'data:image/png;base64,AA==' })
+      ).resolves.toEqual({ text: '一只纸鹤' })
+
+      // 无 providerId → bridge 收到 undefined；chat 请求用 bridge 的 baseUrl/model/headers
+      expect(bridge).toHaveBeenCalledWith(undefined)
+      expect(fetchMock.mock.calls[0][0]).toBe('https://llm.example.com/v1/chat/completions')
+      const request = fetchMock.mock.calls[0][1] as RequestInit
+      expect(request.headers).toEqual({
+        Authorization: 'Bearer sk-llm',
+        'Content-Type': 'application/json'
       })
-      expect(fetchMock2.mock.calls[0][0]).toBe('https://vision.example.com/v1/chat/completions')
+      expect(JSON.parse(String(request.body))).toMatchObject({
+        model: 'vision-model',
+        max_tokens: 800
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('lets input.model override the bridged chat model', async () => {
+    const bridge = vi.fn(async (providerId?: string) => ({
+      providerId: providerId ?? 'llm-default',
+      adapter: TEXT_BRIDGE_ADAPTER,
+      ctx: {
+        providerId: providerId ?? 'llm-default',
+        baseUrl: 'https://llm.example.com/v1',
+        apiKey: 'sk-llm',
+        model: 'vision-model',
+        params: {}
+      }
+    }))
+    const generator = createMediaGenerator(
+      createMediaProviderRegistry(mediaStore, { textBridge: bridge })
+    )
+
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ choices: [{ message: { content: '覆盖模型输出' } }] })
+    )
+    try {
+      await expect(
+        generator.analyzeImage({ image: 'data:image/png;base64,AA==', model: 'custom-vision' })
+      ).resolves.toEqual({ text: '覆盖模型输出' })
+      expect(bridge).toHaveBeenCalledWith(undefined)
+      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).model).toBe(
+        'custom-vision'
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('splits provider:model input into a bridge providerId plus model override', async () => {
+    const bridge = vi.fn(async (providerId?: string) => ({
+      providerId: providerId ?? 'llm-default',
+      adapter: TEXT_BRIDGE_ADAPTER,
+      ctx: {
+        providerId: providerId ?? 'llm-default',
+        baseUrl: 'https://llm.example.com/v1',
+        apiKey: 'sk-llm',
+        model: 'vision-model',
+        params: {}
+      }
+    }))
+    const generator = createMediaGenerator(
+      createMediaProviderRegistry(mediaStore, { textBridge: bridge })
+    )
+
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ choices: [{ message: { content: '拆分命中' } }] })
+    )
+    try {
+      await expect(
+        generator.analyzeImage({
+          image: 'data:image/png;base64,AA==',
+          model: 'llm-2:custom-vision'
+        })
+      ).resolves.toEqual({ text: '拆分命中' })
+      expect(bridge).toHaveBeenCalledWith('llm-2')
+      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).model).toBe(
+        'custom-vision'
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('guides to text model settings when the host bridge has no provider', async () => {
+    const bridge = vi.fn(async () => null)
+    const generator = createMediaGenerator(
+      createMediaProviderRegistry(mediaStore, { textBridge: bridge })
+    )
+
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await expect(generator.analyzeImage({ image: 'data:image/png;base64,AA==' })).rejects.toThrow(
+        TEXT_PROVIDER_UNCONFIGURED_MESSAGE
+      )
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('wraps upstream chat failures with the model vision hint', async () => {
+    const bridge = vi.fn(async (providerId?: string) => ({
+      providerId: providerId ?? 'llm-default',
+      adapter: TEXT_BRIDGE_ADAPTER,
+      ctx: {
+        providerId: providerId ?? 'llm-default',
+        baseUrl: 'https://llm.example.com/v1',
+        apiKey: 'sk-llm',
+        model: 'vision-model',
+        params: {}
+      }
+    }))
+    const generator = createMediaGenerator(
+      createMediaProviderRegistry(mediaStore, { textBridge: bridge })
+    )
+
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: 'bad image' } }, 500))
+    try {
+      await expect(generator.analyzeImage({ image: 'data:image/png;base64,AA==' })).rejects.toThrow(
+        '图片理解失败（模型 vision-model 可能不支持视觉输入）：{"message":"bad image"}'
+      )
     } finally {
       vi.unstubAllGlobals()
     }

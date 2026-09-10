@@ -6,8 +6,9 @@ import { normalizeImageBaseUrl } from '../shared.js'
 /**
  * 从 core/config/media-generator.test.ts 迁移的 openai-images 行为用例：
  * 构造方式从 createMediaGenerator 改为直接构造 MediaModalityContext 调
- * adapter.generateImage/editImage/analyzeImage，断言逐字等价
+ * adapter.generateImage/editImage，断言逐字等价
  * （payload 字段、headers、URL、轮询序列、错误消息）。
+ * 反推提示词（analyzeImage）已上移到 generator 的文字模型桥接链路。
  */
 describe('openai-images adapter', () => {
   const adapter = openaiImagesAdapter
@@ -323,48 +324,11 @@ describe('openai-images adapter', () => {
     }
   })
 
-  it('analyzes images via the multimodal chat completions endpoint', async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: '一只在灯塔旁飞翔的海鸥' } }] }))
-      .mockResolvedValueOnce(jsonResponse({ error: { message: 'bad image' } }, 500))
-
-    try {
-      await expect(
-        adapter.analyzeImage!(
-          createContext({ providerId: 'analyze', baseUrl: 'https://api.xkiro.com/v1', apiKey: 'xk-test-key', model: 'gpt-image' }),
-          { image: 'data:image/png;base64,AA==' }
-        )
-      ).resolves.toEqual({ text: '一只在灯塔旁飞翔的海鸥' })
-
-      expect(fetchMock.mock.calls[0][0]).toBe('https://api.xkiro.com/v1/chat/completions')
-      const request = fetchMock.mock.calls[0][1] as RequestInit
-      expect(request.headers).toEqual({
-        Authorization: 'Bearer xk-test-key',
-        'Content-Type': 'application/json'
-      })
-      expect(JSON.parse(String(request.body))).toMatchObject({
-        model: 'gpt-image',
-        max_tokens: 800
-      })
-
-      await expect(
-        adapter.analyzeImage!(
-          createContext({ providerId: 'analyze', baseUrl: 'https://api.xkiro.com/v1', apiKey: 'xk-test-key', model: 'gpt-image' }),
-          { image: 'data:image/png;base64,AA==' }
-        )
-      ).rejects.toThrow('图片理解失败: {"message":"bad image"}')
-    } finally {
-      vi.unstubAllGlobals()
-    }
-  })
-
   it('declares image capabilities and the adapter-specific size form schema', () => {
     expect(adapter.id).toBe('openai-images')
     expect(adapter.label).toBe('OpenAI Images 兼容')
     expect(adapter.modality).toBe('image')
-    expect(adapter.capabilities).toEqual({ generate: true, edit: true, mask: true, analyze: true })
+    expect(adapter.capabilities).toEqual({ generate: true, edit: true, mask: true })
     // 约定：formSchema 只声明 adapter 特有参数；baseUrl/apiKey/model 为通用列，由设置页固定渲染
     expect(adapter.formSchema).toEqual([
       {

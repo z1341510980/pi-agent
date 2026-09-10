@@ -10,6 +10,7 @@ import { MediaProviderStore } from '../media-provider-store.js'
 import {
   MEDIA_PROVIDER_ADAPTERS,
   MediaProviderRegistry,
+  TEXT_PROVIDER_UNCONFIGURED_MESSAGE,
   createMediaProviderRegistry
 } from '../registry.js'
 import { applyPluginMediaMigration } from './plugin-media-db.js'
@@ -212,5 +213,10 @@ describe('MediaProviderRegistry', () => {
     await expect(registry.resolve('text')).rejects.toThrow(
       '文字尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
     )
+  })
+
+  it('throws the text model guidance message when the host bridge reports no provider', async () => {
+    const registry = createMediaProviderRegistry(store, { textBridge: async () => null })
+    await expect(registry.resolve('text')).rejects.toThrow(TEXT_PROVIDER_UNCONFIGURED_MESSAGE)
   })
 })

@@ -205,7 +205,7 @@ describe('apimart adapter', () => {
     expect(normalizeApimartSize(undefined)).toBeUndefined()
   })
 
-  it('declares image capabilities without mask/analyze and the apimart form schema', () => {
+  it('declares image capabilities without mask and the apimart form schema', () => {
     expect(adapter.id).toBe('apimart')
     expect(adapter.label).toBe('APIMart 异步任务')
     expect(adapter.modality).toBe('image')
@@ -213,8 +213,7 @@ describe('apimart adapter', () => {
     expect(adapter.capabilities).toEqual({
       generate: true,
       edit: true,
-      mask: false,
-      analyze: false
+      mask: false
     })
     expect(adapter.formSchema).toEqual([
       {

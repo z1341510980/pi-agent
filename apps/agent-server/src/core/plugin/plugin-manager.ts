@@ -72,6 +72,7 @@ import type {
   PluginEffectMetadata,
   PluginEffectRecord,
   PluginSessionOptions,
+  PluginTextBridge,
   AgUiSessionHandle,
   RouteDefinition,
   ToolDefinition,
@@ -175,6 +176,14 @@ export class PluginManager {
    * 与 SessionStore / ModelRegistry 同时期注入。
    */
   private providerConfigStore?: ProviderConfigStore
+  /**
+   * 宿主文字模型桥接（视觉理解聊天用）
+   *
+   * 通过 setTextBridge() 在 app.ts 启动后期注入，
+   * 与 SessionStore / ModelRegistry / ProviderConfigStore 同时期注入。
+   * 插件经 context.textBridge（惰性 getter，media.generate 门控）消费。
+   */
+  private textBridge?: PluginTextBridge
   /** Tracer 在 app 启动后注入；未注入时插件会话保持原有行为。 */
   private tracer?: Tracer
   /**
@@ -344,6 +353,18 @@ export class PluginManager {
   setProviderConfigStore(store: ProviderConfigStore): void {
     this.providerConfigStore = store
     this.logger.debug('已注入 ProviderConfigStore，onPayload 可读取应用级配置')
+  }
+
+  /**
+   * 注入宿主文字模型桥接（在 SessionStore 创建后调用）
+   *
+   * 供插件做视觉理解等「文字模型聊天」调用（如无限画布反推提示词）：
+   * 从 provider-config-store 解析默认（或指定）LLM Provider 的聊天上下文，
+   * 与 SessionStore / ModelRegistry 同时期在 app.ts 注入。
+   */
+  setTextBridge(bridge: PluginTextBridge): void {
+    this.textBridge = bridge
+    this.logger.debug('已注入文字模型桥接，插件可经 context.textBridge 调用 LLM Provider')
   }
 
   /** 注入 Tracer，供显式声明 trace 归属的插件 Session 写入追踪时间线。 */
@@ -1505,6 +1526,7 @@ export class PluginManager {
     // 对象字面量 getter 内的 this 指向字面量自身，因此通过闭包延迟读取。
     const getModelRegistry = (): ModelRegistryLike | undefined =>
       this.modelRegistry as ModelRegistryLike | undefined
+    const getTextBridge = (): PluginTextBridge | undefined => this.textBridge
 
     const registerEffect = (
       kind: string,
@@ -1604,6 +1626,16 @@ export class PluginManager {
       // 直接传 this.modelRegistry 会把 undefined 固化进 context。
       get modelRegistry(): ModelRegistryLike | undefined {
         return getModelRegistry()
+      },
+      // 文字模型桥接按 media.generate capability 条件注入（该 capability 在媒体
+      // 体系迁入插件后成为孤儿，正好复用为「宿主代持的 LLM 调用」门控）。
+      // ⚠️ 必须无条件定义为 getter、在 getter 内判 grant：条件展开
+      // `...(grants.has(...) ? { get textBridge() {...} } : {})` 会在展开时求值
+      // getter 并固化成静态 undefined（object spread 复制的是属性值不是存取器）。
+      // getter 而非直接取值：setTextBridge 在 app.ts 启动后期才调用，晚于插件 setup。
+      get textBridge(): PluginTextBridge | undefined {
+        if (!entry.grants.has('media.generate')) return undefined
+        return getTextBridge()
       },
       effect: registerEffect,
       registerDisposable: (dispose: PluginEffectDisposer, metadata: PluginEffectMetadata = {}) =>

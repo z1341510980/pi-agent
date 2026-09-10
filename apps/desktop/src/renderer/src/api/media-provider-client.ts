@@ -38,7 +38,6 @@ export interface MediaAdapterMeta {
     generate: boolean
     edit?: boolean
     mask?: boolean
-    analyze?: boolean
   }
   formSchema: MediaAdapterFormField[]
 }

@@ -13,7 +13,6 @@
 import type { FastifyBaseLogger } from 'fastify'
 import { mediaDiag } from '../../../../core/config/media-diag.js'
 import type {
-  ImageAnalysisInput,
   ImageEditInput,
   ImageGenerationInput,
   MediaModalityContext,
@@ -482,7 +481,7 @@ export const openaiImagesAdapter: MediaProviderAdapter = {
   id: 'openai-images',
   label: 'OpenAI Images 兼容',
   modality: 'image',
-  capabilities: { generate: true, edit: true, mask: true, analyze: true },
+  capabilities: { generate: true, edit: true, mask: true },
   formSchema: [
     {
       key: 'size',
@@ -547,49 +546,5 @@ export const openaiImagesAdapter: MediaProviderAdapter = {
       signal: input.signal,
       traceId: input.traceId
     })
-  },
-  async analyzeImage(ctx: MediaModalityContext, input: ImageAnalysisInput): Promise<{ text: string }> {
-    const baseUrl = normalizeImageBaseUrl(ctx.baseUrl)
-    const headers: Record<string, string> = ctx.apiKey ? { Authorization: `Bearer ${ctx.apiKey}` } : {}
-    const guard = withAbortGuard(input.signal)
-    try {
-      const response = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: input.model || ctx.model,
-          max_tokens: 800,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text:
-                    input.instruction?.trim() ||
-                    '请反推这张图片的生成提示词：输出一段可直接用于图像生成模型的中文描述，涵盖主体、场景、风格、构图与光线，不要解释。'
-                },
-                { type: 'image_url', image_url: { url: input.image } }
-              ]
-            }
-          ]
-        }),
-        signal: guard.signal
-      })
-      const body = (await response.json().catch(() => null)) as {
-        choices?: Array<{ message?: { content?: unknown } }>
-        error?: unknown
-      } | null
-      if (!response.ok) {
-        const message = body?.error ? JSON.stringify(body.error) : `HTTP ${response.status}`
-        throw new Error(`图片理解失败: ${message}`)
-      }
-      const content = body?.choices?.[0]?.message?.content
-      const text = typeof content === 'string' ? content.trim() : ''
-      if (!text) throw new Error('模型没有返回图片描述')
-      return { text }
-    } finally {
-      guard.dispose()
-    }
   }
 }

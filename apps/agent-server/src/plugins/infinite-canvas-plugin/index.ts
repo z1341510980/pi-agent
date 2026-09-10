@@ -12,8 +12,8 @@ import { createPromptSourceService } from './prompt-source-service.js'
 import { CanvasAssetStore, MediaLogStore, referencesToDataUrls } from './canvas-assets.js'
 import { normalizeOpenAiCompatibleSize } from './media/shared.js'
 import { MediaProviderStore } from './media/media-provider-store.js'
-import { createMediaProviderRegistry } from './media/registry.js'
-import { createMediaGenerator, IMAGE_ANALYZE_UNSUPPORTED_MESSAGE } from './media/generator.js'
+import { TEXT_BRIDGE_ADAPTER, createMediaProviderRegistry } from './media/registry.js'
+import { createMediaGenerator } from './media/generator.js'
 import {
   applyCanvasAgentOperations,
   summarizeCanvasAgentOperations,
@@ -68,7 +68,27 @@ export function createInfiniteCanvasPlugin(): Plugin {
       const mediaProviderStore = new MediaProviderStore(context.db)
       const mediaLogger = context.logger.child({ module: 'infinite-canvas-media' })
       const mediaProviderRegistry = createMediaProviderRegistry(mediaProviderStore, {
-        logger: mediaLogger
+        logger: mediaLogger,
+        // 反推提示词等视觉理解是「文字模型聊天」：经宿主 textBridge 走 LLM
+        // Provider 体系（provider-config-store）；null = 宿主未配置文字模型，
+        // Registry 抛「请先在 设置 → 模型与 Provider 配置文字模型」引导文案。
+        textBridge: async (providerId) => {
+          const bridged = await context.textBridge?.(providerId)
+          if (!bridged) return null
+          const resolvedProviderId = providerId ?? 'default-text'
+          return {
+            providerId: resolvedProviderId,
+            adapter: TEXT_BRIDGE_ADAPTER,
+            ctx: {
+              providerId: resolvedProviderId,
+              baseUrl: bridged.baseUrl,
+              apiKey: bridged.apiKey,
+              model: bridged.model,
+              params: {},
+              headers: bridged.headers
+            }
+          }
+        }
       })
       const media = createMediaGenerator(mediaProviderRegistry, { logger: mediaLogger })
       // 旧 media-config 兼容路由的读写入口：本插件自建的媒体 Provider store。
@@ -340,10 +360,8 @@ export function createInfiniteCanvasPlugin(): Plugin {
         generateImageLocalized,
         generateMediaLocalized,
         editImageLocalized,
-        ({ image, instruction, model, signal }) => {
-          if (!media.analyzeImage) throw new Error(IMAGE_ANALYZE_UNSUPPORTED_MESSAGE)
-          return media.analyzeImage({ image, instruction, model, signal })
-        },
+        ({ image, instruction, model, signal }) =>
+          media.analyzeImage({ image, instruction, model, signal }),
         promptSourceService,
         getMediaProviderStore,
         assets,

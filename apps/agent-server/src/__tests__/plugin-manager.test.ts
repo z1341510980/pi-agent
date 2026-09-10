@@ -801,6 +801,53 @@ describe('PluginManager', () => {
       expect(manager.get('external-manager-test')?.status).toBe('enabled')
     })
 
+    it('textBridge 按 media.generate 授权条件注入并保持惰性求值', async () => {
+      const contexts = new Map<string, PluginContext>()
+      const manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '')
+      // local 插件的 grants 只来自宿主 catalog：显式授予 media.generate
+      manager.setCatalogConfigs([
+        {
+          catalogId: 'text-bridge-granted',
+          source: 'builtin',
+          enabled: true,
+          grants: ['media.generate']
+        }
+      ])
+      await manager.loadPluginEntry(
+        createTestPlugin({
+          name: 'text-bridge-granted',
+          setupFn: (ctx) => {
+            contexts.set('text-bridge-granted', ctx)
+          }
+        }),
+        'local',
+        undefined,
+        undefined,
+        undefined,
+        'text-bridge-granted'
+      )
+      await manager.loadPluginEntry(
+        createTestPlugin({
+          name: 'text-bridge-denied',
+          setupFn: (ctx) => {
+            contexts.set('text-bridge-denied', ctx)
+          }
+        }),
+        'local'
+      )
+      const bridge = vi.fn(async () => null)
+      manager.setTextBridge(bridge)
+      await manager.start()
+
+      // 未授予 media.generate：宿主桥接不可见
+      expect(contexts.get('text-bridge-denied')?.textBridge).toBeUndefined()
+      // 授予后惰性 getter 返回宿主桥接函数（setTextBridge 晚于 setup 注入也生效）
+      const grantedBridge = contexts.get('text-bridge-granted')?.textBridge
+      expect(grantedBridge).toBeTypeOf('function')
+      await expect(grantedBridge!('llm-1')).resolves.toBeNull()
+      expect(bridge).toHaveBeenCalledWith('llm-1')
+    })
+
     it('未获 session.create 时 createSession 抛错且可审计', async () => {
       const manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '')
       let rejection: Error | undefined

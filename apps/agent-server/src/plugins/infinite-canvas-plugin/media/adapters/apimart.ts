@@ -269,7 +269,7 @@ export const apimartAdapter: MediaProviderAdapter = {
   id: 'apimart',
   label: 'APIMart 异步任务',
   modality: 'image',
-  capabilities: { generate: true, edit: true, mask: false, analyze: false },
+  capabilities: { generate: true, edit: true, mask: false },
   formSchema: [
     {
       key: 'resolution',

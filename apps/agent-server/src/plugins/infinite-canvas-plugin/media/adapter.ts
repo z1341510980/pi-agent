@@ -31,8 +31,6 @@ export interface MediaAdapterCapabilities {
   edit?: boolean
   /** 蒙版局部重绘 */
   mask?: boolean
-  /** 反推提示词（多模态） */
-  analyze?: boolean
 }
 
 /** 适配器执行上下文：由 Registry 从 MediaProviderRow 解析而来。 */
@@ -43,6 +41,11 @@ export interface MediaModalityContext {
   model: string
   /** adapter 自有参数（size/resolution/language/voice/format 等） */
   params: Record<string, string>
+  /**
+   * 显式鉴权头（text 桥接链路携带宿主 authHeader 语义）；缺省时 adapter
+   * 按旧约定从 apiKey 推导 Bearer 头（空 Key 不携带）。
+   */
+  headers?: Record<string, string>
   logger?: FastifyBaseLogger
 }
 
@@ -80,14 +83,6 @@ export interface MediaEditInput extends MediaGenerationInput {
   image: string
   images?: string[]
   mask?: string
-}
-
-/** 图片理解输入（反推提示词等）。 */
-export interface ImageAnalysisInput {
-  image: string
-  instruction?: string
-  model?: string
-  signal?: AbortSignal
 }
 
 /** 音频生成输入：openai-audio adapter（/audio/speech）的载荷来源。 */
@@ -134,13 +129,14 @@ export type ImageEditInput = MediaEditInput
 
 /**
  * 媒体 Provider 适配器：按模态收敛协议差异（payload/端点/轮询/错误处理）。
- * 阶段一实现 openai-images 与 apimart 两个适配器。
+ * 阶段一实现 openai-images 与 apimart 两个适配器；text 模态不走协议 adapter，
+ * 仅由 Registry 的 textBridge 占位（见 registry.ts 的 TEXT_BRIDGE_ADAPTER）。
  */
 export interface MediaProviderAdapter {
   /** 与 media_providers.adapter 列对应 */
   id: MediaAdapterId
   label: string
-  modality: Exclude<MediaModality, 'text'>
+  modality: MediaModality
   capabilities: MediaAdapterCapabilities
   /** 声明式表单：驱动设置页动态渲染（含模态特有参数） */
   formSchema: MediaAdapterFormField[]
@@ -149,7 +145,6 @@ export interface MediaProviderAdapter {
     input: ImageGenerationInput
   ): Promise<{ images: string[] }>
   editImage?(ctx: MediaModalityContext, input: ImageEditInput): Promise<{ images: string[] }>
-  analyzeImage?(ctx: MediaModalityContext, input: ImageAnalysisInput): Promise<{ text: string }>
   generateAudio?(
     ctx: MediaModalityContext,
     input: AudioGenerationInput

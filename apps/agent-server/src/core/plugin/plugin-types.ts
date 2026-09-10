@@ -291,6 +291,19 @@ export interface PluginManifest {
 }
 
 /**
+ * 宿主文字模型桥接：按 LLM Provider 解析一次 OpenAI 兼容 /chat/completions
+ * 调用所需的上下文（providerId 精确 → 默认 Provider → list[0]，语义恢复自
+ * 旧 core/config/media-generator.ts 的 resolveRequestContext）。
+ * 返回 null 表示宿主没有可用的文字模型，调用方负责给出设置引导文案。
+ */
+export type PluginTextBridge = (providerId?: string) => Promise<{
+  baseUrl: string
+  apiKey: string
+  model: string
+  headers: Record<string, string>
+} | null>
+
+/**
  * 插件上下文：插件 setup 时获取的运行环境
  * 插件通过 context 注册工具、路由、事件监听、UI 面板
  */
@@ -344,6 +357,16 @@ export interface PluginContext {
    * 实现上为 getter（注入晚于插件 setup，直接取值会拿到 undefined）。
    */
   readonly modelRegistry?: ModelRegistryLike
+  /**
+   * 宿主文字模型桥接（由 PluginManager 透传，app.ts 启动后期经 setTextBridge 注入）
+   *
+   * 需要 `media.generate` capability：未授予时为 undefined（与 process / network
+   * facade 使用同一"条件注入"约定）。供插件做视觉理解等「文字模型聊天」调用
+   * （如无限画布反推提示词）：宿主持有 Provider 配置与 API Key，插件只拿到
+   * 一次请求所需的 baseUrl/model/headers，不暴露 Key 存储细节。
+   * 实现上为 getter（注入晚于插件 setup，直接取值会拿到 undefined）。
+   */
+  readonly textBridge?: PluginTextBridge
   /**
    * ConfirmationManager（chat 底座共享，由 app.ts 注入到 PluginManager）
    *

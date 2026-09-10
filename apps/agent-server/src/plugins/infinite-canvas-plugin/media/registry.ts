@@ -4,7 +4,7 @@
  * - register/listAdapters：适配器注册与按模态查询（驱动路由元数据与设置页表单）。
  * - resolve：image/audio/video 走 media_providers 表（providerId 精确命中 →
  *   模态 enabled 默认 → 未配置引导文案）；text 不走 store（spec §4：复用 LLM
- *   Provider 体系），经 textBridge 桥接（Task 4 接 provider-config-store）。
+ *   Provider 体系），经 textBridge 桥接宿主 provider-config-store。
  * - createMediaProviderRegistry：宿主装配入口，默认注册内置 adapter 清单；
  *   类本身不带默认注册，保持直接构造时为空。
  */
@@ -23,8 +23,26 @@ import { openaiAudioAdapter } from './adapters/openai-audio.js'
 import { openaiImagesAdapter } from './adapters/openai-images.js'
 import type { MediaProviderStore } from './media-provider-store.js'
 
-/** text 模态桥接契约：由宿主接 provider-config-store（Task 4），本阶段仅定义。 */
-export type MediaTextBridge = (providerId?: string) => Promise<ResolvedMediaProvider>
+/**
+ * text 模态桥接契约：由宿主接 provider-config-store（反推提示词等视觉理解
+ * 聊天走 LLM Provider 体系），返回 null 表示宿主没有可用的文字模型。
+ */
+export type MediaTextBridge = (providerId?: string) => Promise<ResolvedMediaProvider | null>
+
+/** 宿主未配置文字模型时的引导文案（reverse-prompt 链路的统一门禁）。 */
+export const TEXT_PROVIDER_UNCONFIGURED_MESSAGE = '请先在 设置 → 模型与 Provider 配置文字模型'
+
+/**
+ * text 模态的桥接占位 adapter：文字模型复用宿主 LLM Provider 体系（spec §4），
+ * 不落 media_providers 表也没有协议 adapter；消费方只使用 resolve 出的 ctx。
+ */
+export const TEXT_BRIDGE_ADAPTER: MediaProviderAdapter = {
+  id: 'text-chat',
+  label: '文字模型桥接',
+  modality: 'text',
+  capabilities: { generate: false },
+  formSchema: []
+}
 
 export interface MediaProviderRegistryOptions {
   textBridge?: MediaTextBridge
@@ -87,14 +105,19 @@ export class MediaProviderRegistry {
     return [...this.adapters.values()].filter((adapter) => adapter.modality === modality)
   }
 
-  /** 解析：providerId 精确命中 → 模态 enabled 默认 → 未配置引导文案。 */
+  /**
+   * 解析：providerId 精确命中 → 模态 enabled 默认 → 未配置引导文案；
+   * text 走宿主 textBridge（返回 null 视为未配置文字模型）。
+   */
   async resolve(
     modality: MediaModality,
     opts?: { providerId?: string }
   ): Promise<ResolvedMediaProvider> {
     if (modality === 'text') {
       if (!this.options.textBridge) throw unconfiguredProviderError(modality)
-      return this.options.textBridge(opts?.providerId)
+      const bridged = await this.options.textBridge(opts?.providerId)
+      if (!bridged) throw new Error(TEXT_PROVIDER_UNCONFIGURED_MESSAGE)
+      return bridged
     }
     const row = this.findRow(modality, opts?.providerId)
     if (!row) throw unconfiguredProviderError(modality)
