@@ -1,8 +1,9 @@
 /**
- * MediaProviderStore：媒体生成 Provider 配置存储（media_providers 表）。
+ * MediaProviderStore：媒体生成 Provider 配置存储（infinite_canvas_media_providers 表）。
  *
  * 与 provider-config-store 同款模式：better-sqlite3 同步语句 + 预编译，
- * DB 由构造注入；表结构由宿主迁移 017_create_media_providers 创建，本 store 只读写。
+ * DB 由构造注入（插件 setup 用 context.db，与宿主同库）；表结构由插件迁移
+ * 018_create_infinite_canvas_media_providers 创建，本 store 只读写。
  * text 模态复用现有 provider-config-store（spec §4），不入本表。
  * params 列以 JSON 字符串存储，读写边界在此转换，坏数据回退空对象。
  */
@@ -15,7 +16,7 @@ import type { MediaModality, MediaProviderRow } from './adapter.js'
 export const STORED_MEDIA_MODALITIES = ['image', 'audio', 'video'] as const
 export type StoredMediaModality = (typeof STORED_MEDIA_MODALITIES)[number]
 
-/** media_providers 表行结构 */
+/** infinite_canvas_media_providers 表行结构 */
 interface MediaProviderDbRow {
   id: string
   name: string
@@ -97,16 +98,16 @@ export class MediaProviderStore {
   constructor(db: Database.Database) {
     this.db = db
     // 预编译 SQL，提升反复执行性能
-    this.stmtSelectAll = db.prepare('SELECT * FROM media_providers ORDER BY created_at, id')
+    this.stmtSelectAll = db.prepare('SELECT * FROM infinite_canvas_media_providers ORDER BY created_at, id')
     this.stmtSelectByModality = db.prepare(
-      'SELECT * FROM media_providers WHERE modality = ? ORDER BY created_at, id'
+      'SELECT * FROM infinite_canvas_media_providers WHERE modality = ? ORDER BY created_at, id'
     )
-    this.stmtSelectById = db.prepare('SELECT * FROM media_providers WHERE id = ?')
+    this.stmtSelectById = db.prepare('SELECT * FROM infinite_canvas_media_providers WHERE id = ?')
     this.stmtSelectDefault = db.prepare(
-      'SELECT * FROM media_providers WHERE modality = ? AND enabled = 1 AND is_default = 1 LIMIT 1'
+      'SELECT * FROM infinite_canvas_media_providers WHERE modality = ? AND enabled = 1 AND is_default = 1 LIMIT 1'
     )
     this.stmtInsert = db.prepare(`
-      INSERT INTO media_providers (
+      INSERT INTO infinite_canvas_media_providers (
         id, name, modality, adapter, base_url, api_key, model, params,
         enabled, is_default, created_at, updated_at
       )
@@ -115,12 +116,12 @@ export class MediaProviderStore {
         @enabled, 0, unixepoch(), unixepoch()
       )
     `)
-    this.stmtDelete = db.prepare('DELETE FROM media_providers WHERE id = ?')
+    this.stmtDelete = db.prepare('DELETE FROM infinite_canvas_media_providers WHERE id = ?')
     this.stmtClearDefault = db.prepare(
-      'UPDATE media_providers SET is_default = 0 WHERE modality = ?'
+      'UPDATE infinite_canvas_media_providers SET is_default = 0 WHERE modality = ?'
     )
     this.stmtSetDefault = db.prepare(
-      'UPDATE media_providers SET is_default = 1, updated_at = unixepoch() WHERE id = ?'
+      'UPDATE infinite_canvas_media_providers SET is_default = 1, updated_at = unixepoch() WHERE id = ?'
     )
   }
 
@@ -142,7 +143,7 @@ export class MediaProviderStore {
   create(input: CreateMediaProviderInput): MediaProviderRow {
     // 运行时兜底：JS 调用方绕过类型时防止 text 行落库
     if ((input.modality as MediaModality) === 'text') {
-      throw new Error('text 模态复用 LLM Provider 体系，不写入 media_providers')
+      throw new Error('text 模态复用 LLM Provider 体系，不写入 infinite_canvas_media_providers')
     }
     const id = randomUUID()
     this.stmtInsert.run({
@@ -205,7 +206,7 @@ export class MediaProviderStore {
     if (sets.length > 0) {
       this.db
         .prepare(
-          `UPDATE media_providers SET ${sets.join(', ')}, updated_at = unixepoch() WHERE id = @id`
+          `UPDATE infinite_canvas_media_providers SET ${sets.join(', ')}, updated_at = unixepoch() WHERE id = @id`
         )
         .run(args)
     }

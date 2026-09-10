@@ -10,7 +10,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createApp } from '../app.js'
-import type { MediaProviderRow } from '../core/media/adapter.js'
+import { MediaProviderStore } from '../plugins/infinite-canvas-plugin/media/media-provider-store.js'
+import type { MediaProviderRow } from '../plugins/infinite-canvas-plugin/media/adapter.js'
 
 const CANVAS_PREFIX = '/api/plugins/infinite-canvas'
 const IMAGE_UNCONFIGURED = '图片尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
@@ -19,6 +20,7 @@ const ANALYZE_UNSUPPORTED =
 
 describe('infinite canvas media × media provider registry', () => {
   let app: Awaited<ReturnType<typeof createApp>>
+  let mediaStore: MediaProviderStore
   let dataDir: string
   let projectId: string
 
@@ -28,6 +30,8 @@ describe('infinite canvas media × media provider registry', () => {
     process.env.PI_CWD = dataDir
     app = await createApp()
     await app.ready()
+    // 插件自建的媒体 Provider store（与 app.db 同库）
+    mediaStore = new MediaProviderStore(app.db)
 
     const project = await app.inject({
       method: 'POST',
@@ -48,13 +52,13 @@ describe('infinite canvas media × media provider registry', () => {
     new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
   const clearImageProviders = (): void => {
-    app.mediaProviderStore.list('image').forEach((row) => app.mediaProviderStore.remove(row.id))
+    mediaStore.list('image').forEach((row) => mediaStore.remove(row.id))
   }
 
   const createImageProvider = (
-    overrides: Partial<Parameters<typeof app.mediaProviderStore.create>[0]> = {}
+    overrides: Partial<Parameters<typeof mediaStore.create>[0]> = {}
   ): MediaProviderRow =>
-    app.mediaProviderStore.create({
+    mediaStore.create({
       name: '生图 Provider',
       modality: 'image',
       adapter: 'openai-images',
@@ -82,7 +86,7 @@ describe('infinite canvas media × media provider registry', () => {
       apiKey: 'sk-def',
       model: 'm-def'
     })
-    app.mediaProviderStore.setDefault(def.id)
+    mediaStore.setDefault(def.id)
 
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -141,6 +145,9 @@ describe('infinite canvas media × media provider registry', () => {
   })
 
   it('generate-media 在阶段一返回按模态命名的统一引导文案', async () => {
+    clearImageProviders()
+    mediaStore.list('audio').forEach((row) => mediaStore.remove(row.id))
+    mediaStore.list('video').forEach((row) => mediaStore.remove(row.id))
     const audio = await app.inject({
       method: 'POST',
       url: `${CANVAS_PREFIX}/projects/${projectId}/generate-media`,
@@ -158,9 +165,182 @@ describe('infinite canvas media × media provider registry', () => {
     expect(video.json().error).toBe('视频尚未配置生成 Provider，请到 设置 → 媒体生成 配置')
   })
 
+  it('generate-media audio：openai-audio 产出的 data URL 经资产链路落盘', async () => {
+    const audioProvider = mediaStore.create({
+      name: '语音合成',
+      modality: 'audio',
+      adapter: 'openai-audio',
+      baseUrl: 'https://tts.example.com',
+      apiKey: 'sk-tts-1',
+      model: 'tts-1'
+    })
+    mediaStore.setDefault(audioProvider.id)
+
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    // TTS 响应是二进制音频（无 JSON 包裹）
+    fetchMock.mockResolvedValueOnce(
+      new Response(Buffer.from('RIFF-fake-audio-bytes'), {
+        status: 200,
+        headers: { 'Content-Type': 'audio/mpeg' }
+      })
+    )
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: `${CANVAS_PREFIX}/projects/${projectId}/generate-media`,
+        body: { mode: 'audio', prompt: '海浪声', voice: 'nova', speed: 1.5 }
+      })
+      expect(response.statusCode).toBe(200)
+      const outputs = response.json().data.outputs as Array<{ url: string; mimeType: string }>
+      // 音频 data URL 被本地化为本地资产（磁盘文件按 audio/mpeg 落 .mp3）
+      expect(outputs[0].mimeType).toBe('audio/mpeg')
+      expect(outputs[0].url).toMatch(/^\/api\/plugins\/infinite-canvas\/assets\/[\w-]+$/)
+      // 请求 payload：/v1 根归一 + 语音字段
+      expect(fetchMock.mock.calls[0][0]).toBe('https://tts.example.com/v1/audio/speech')
+      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toMatchObject({
+        model: 'tts-1',
+        input: '海浪声',
+        voice: 'nova',
+        response_format: 'mp3',
+        speed: 1.5
+      })
+      // 资产可取回，Content-Type 为音频
+      const asset = await app.inject({ method: 'GET', url: outputs[0].url })
+      expect(asset.statusCode).toBe(200)
+      expect(asset.headers['content-type']).toBe('audio/mpeg')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('generate-media audio：providerId 透传优先于模态默认', async () => {
+    const defaultProvider = mediaStore.create({
+      name: '默认语音',
+      modality: 'audio',
+      adapter: 'openai-audio',
+      baseUrl: 'https://tts-default.example.com',
+      apiKey: 'sk-def',
+      model: 'tts-1'
+    })
+    mediaStore.setDefault(defaultProvider.id)
+    const target = mediaStore.create({
+      name: '画布指定语音',
+      modality: 'audio',
+      adapter: 'openai-audio',
+      baseUrl: 'https://tts-target.example.com',
+      apiKey: 'sk-target',
+      model: 'tts-1'
+    })
+
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockResolvedValueOnce(
+      new Response(Buffer.from('audio-bytes'), {
+        status: 200,
+        headers: { 'Content-Type': 'audio/wav' }
+      })
+    )
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: `${CANVAS_PREFIX}/projects/${projectId}/generate-media`,
+        body: { mode: 'audio', prompt: '鸟鸣', providerId: target.id, format: 'wav' }
+      })
+      expect(response.statusCode).toBe(200)
+      expect(fetchMock.mock.calls[0][0]).toBe('https://tts-target.example.com/v1/audio/speech')
+      expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({
+        Authorization: 'Bearer sk-target'
+      })
+      expect(response.json().data.outputs[0].mimeType).toBe('audio/wav')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('generate-media video：newapi-video 任务轮询完成后输出转存资产', async () => {
+    const videoProvider = mediaStore.create({
+      name: '视频任务',
+      modality: 'video',
+      adapter: 'newapi-video',
+      baseUrl: 'https://video.example.com',
+      apiKey: 'sk-video-1',
+      model: 'kling-v1'
+    })
+    mediaStore.setDefault(videoProvider.id)
+
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock
+      // 提交任务
+      .mockResolvedValueOnce(jsonResponse({ task_id: 'task-1', status: 'queued' }))
+      // 第一次轮询：进行中
+      .mockResolvedValueOnce(jsonResponse({ task_id: 'task-1', status: 'in_progress' }))
+      // 第二次轮询：完成
+      .mockResolvedValueOnce(
+        jsonResponse({
+          task_id: 'task-1',
+          status: 'completed',
+          url: 'https://cdn.example.com/out.mp4',
+          format: 'mp4'
+        })
+      )
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: `${CANVAS_PREFIX}/projects/${projectId}/generate-media`,
+        body: { mode: 'video', prompt: '延时摄影', size: '1280x720', seconds: 5 }
+      })
+      expect(response.statusCode).toBe(200)
+      const outputs = response.json().data.outputs as Array<{ url: string; mimeType: string }>
+      expect(outputs[0].mimeType).toBe('video/mp4')
+      expect(outputs[0].url).toMatch(/^\/api\/plugins\/infinite-canvas\/assets\//)
+      // 提交 payload：显式分辨率 + duration，response_format=url
+      expect(fetchMock.mock.calls[0][0]).toBe('https://video.example.com/v1/video/generations')
+      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toMatchObject({
+        model: 'kling-v1',
+        prompt: '延时摄影',
+        duration: 5,
+        width: 1280,
+        height: 720,
+        response_format: 'url'
+      })
+      // 轮询端点
+      expect(fetchMock.mock.calls[1][0]).toBe('https://video.example.com/v1/video/generations/task-1')
+      expect(fetchMock.mock.calls[2][0]).toBe('https://video.example.com/v1/video/generations/task-1')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('generate-media video：任务失败时透出服务端 error.message', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ task_id: 'task-2', status: 'queued' }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          task_id: 'task-2',
+          status: 'failed',
+          error: { code: 1001, message: '内容审核未通过' }
+        })
+      )
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: `${CANVAS_PREFIX}/projects/${projectId}/generate-media`,
+        body: { mode: 'video', prompt: '违规内容' }
+      })
+      expect(response.statusCode).toBe(502)
+      expect(response.json().error).toContain('内容审核未通过')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('reverse-prompt 在 analyze=false 的默认 Provider 上被门禁拦截', async () => {
     clearImageProviders()
-    const apimart = app.mediaProviderStore.create({
+    const apimart = mediaStore.create({
       name: 'APIMart',
       modality: 'image',
       adapter: 'apimart',
@@ -168,7 +348,7 @@ describe('infinite canvas media × media provider registry', () => {
       apiKey: 'am-key',
       model: 'gpt-image-2'
     })
-    app.mediaProviderStore.setDefault(apimart.id)
+    mediaStore.setDefault(apimart.id)
 
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -194,7 +374,7 @@ describe('infinite canvas media × media provider registry', () => {
       apiKey: 'sk-vision',
       model: 'm-vision'
     })
-    app.mediaProviderStore.setDefault(vision.id)
+    mediaStore.setDefault(vision.id)
 
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -239,7 +419,7 @@ describe('infinite canvas media × media provider registry', () => {
       model: 'm-compat',
       params: { size: '1024x1024', resolution: '2k', language: 'zh' }
     })
-    app.mediaProviderStore.setDefault(def.id)
+    mediaStore.setDefault(def.id)
 
     const response = await app.inject({
       method: 'PUT',
@@ -266,7 +446,7 @@ describe('infinite canvas media × media provider registry', () => {
       keyHint: 'sk-c…5678'
     })
 
-    const saved = app.mediaProviderStore.get(def.id)
+    const saved = mediaStore.get(def.id)
     expect(saved).toMatchObject({
       adapter: 'apimart',
       baseUrl: 'https://migrated.example.com/v1',
@@ -279,7 +459,7 @@ describe('infinite canvas media × media provider registry', () => {
 
   it('PUT /media-config 不带 imageProtocol 时保留行内现协议', async () => {
     clearImageProviders()
-    const apimart = app.mediaProviderStore.create({
+    const apimart = mediaStore.create({
       name: 'APIMart 行',
       modality: 'image',
       adapter: 'apimart',
@@ -288,7 +468,7 @@ describe('infinite canvas media × media provider registry', () => {
       model: 'gpt-image-2',
       params: { size: '1024x1024' }
     })
-    app.mediaProviderStore.setDefault(apimart.id)
+    mediaStore.setDefault(apimart.id)
 
     // 旧客户端缺省 imageProtocol：仅回写显式字段，adapter 保持 apimart
     const response = await app.inject({
@@ -307,7 +487,7 @@ describe('infinite canvas media × media provider registry', () => {
       imageProtocol: 'apimart'
     })
 
-    const saved = app.mediaProviderStore.get(apimart.id)
+    const saved = mediaStore.get(apimart.id)
     expect(saved?.adapter).toBe('apimart')
     expect(saved?.model).toBe('m-kept')
   })
@@ -334,7 +514,7 @@ describe('infinite canvas media × media provider registry', () => {
       keyHint: 'sk-f…9012'
     })
 
-    const def = app.mediaProviderStore.resolveDefault('image')
+    const def = mediaStore.resolveDefault('image')
     expect(def).toMatchObject({ adapter: 'openai-images', model: 'm-fresh' })
     expect(def?.params).toEqual({ size: '512x512' })
   })

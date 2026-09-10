@@ -1,28 +1,22 @@
 ﻿import { afterAll, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3'
-import { createMediaGenerator, IMAGE_ANALYZE_UNSUPPORTED_MESSAGE } from './media-generator.js'
-import { ProviderConfigStore } from './provider-config-store.js'
-import { runMigrations } from '../db/migrations.js'
-import { MediaProviderStore } from '../media/media-provider-store.js'
-import { createMediaProviderRegistry } from '../media/registry.js'
 import {
-  normalizeImageBaseUrl,
-  normalizeOpenAiCompatibleSize,
-  parseImages
-} from '../media/shared.js'
-import type { MediaProviderRow } from '../media/adapter.js'
-import { defaultImageModelForBaseUrl } from '../media/adapters/openai-images.js'
-import { extractDataUrls } from '../../plugins/infinite-canvas-plugin/routes.js'
+  createMediaGenerator,
+  IMAGE_ANALYZE_UNSUPPORTED_MESSAGE
+} from '../generator.js'
+import { MediaProviderStore } from '../media-provider-store.js'
+import { createMediaProviderRegistry } from '../registry.js'
+import type { MediaProviderRow } from '../adapter.js'
+import { applyPluginMediaMigration } from './plugin-media-db.js'
 
 /**
- * Registry 体系落位后的媒体 facade 用例：旧双路（providers 表媒体列解析 +
- * 画布 override 手写 ImageRequestContext）已删除，协议级行为由
- * core/media/__tests__/{openai-images,apimart}-adapter.test.ts 覆盖，
+ * 插件媒体 facade（registry-backed）用例：协议级行为由
+ * media/__tests__/{openai-images,apimart}-adapter.test.ts 覆盖，
  * 此处只验证 facade 的 resolve/门禁/委托语义。
  */
 describe('media generator facade (registry-backed)', () => {
   const db = new Database(':memory:')
-  runMigrations(db)
+  applyPluginMediaMigration(db)
   const mediaStore = new MediaProviderStore(db)
   const registry = createMediaProviderRegistry(mediaStore)
   const generator = createMediaGenerator(registry)
@@ -105,7 +99,7 @@ describe('media generator facade (registry-backed)', () => {
 
   it('fails image generation with the modality guidance message when nothing is configured', async () => {
     const emptyDb = new Database(':memory:')
-    runMigrations(emptyDb)
+    applyPluginMediaMigration(emptyDb)
     const emptyRegistry = createMediaProviderRegistry(new MediaProviderStore(emptyDb))
     const emptyGenerator = createMediaGenerator(emptyRegistry)
 
@@ -193,58 +187,17 @@ describe('media generator facade (registry-backed)', () => {
   })
 
   it('rejects audio/video generation with the per-modality guidance messages', async () => {
-    await expect(generator.generateAudio({ prompt: 'x' })).rejects.toThrow(
+    const emptyDb = new Database(':memory:')
+    applyPluginMediaMigration(emptyDb)
+    const emptyGenerator = createMediaGenerator(
+      createMediaProviderRegistry(new MediaProviderStore(emptyDb))
+    )
+    await expect(emptyGenerator.generateAudio({ prompt: 'x' })).rejects.toThrow(
       '音频尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
     )
-    await expect(generator.generateVideo({ prompt: 'x' })).rejects.toThrow(
+    await expect(emptyGenerator.generateVideo({ prompt: 'x' })).rejects.toThrow(
       '视频尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
     )
-  })
-
-  it('parses b64 and url image payloads', () => {
-    expect(
-      parseImages({ data: [{ b64_json: 'abc' }, { url: 'https://example.com/a.png' }, {}] })
-    ).toEqual(['data:image/png;base64,abc', 'https://example.com/a.png'])
-    expect(parseImages(null)).toEqual([])
-  })
-
-  it('extracts legacy data URL references from canvas context text', () => {
-    expect(
-      extractDataUrls(
-        '主页.png: data:image/png;base64,AA== 剪贴板图片: data:image/webp;base64,BBBB'
-      )
-    ).toEqual(['data:image/png;base64,AA==', 'data:image/webp;base64,BBBB'])
-  })
-
-  it('snaps non-whitelist sizes to the documented OpenAI-compatible size table', () => {
-    expect(normalizeOpenAiCompatibleSize('1024x1024')).toBe('1024x1024')
-    expect(normalizeOpenAiCompatibleSize('2048x1152')).toBe('2048x1152')
-    expect(normalizeOpenAiCompatibleSize('3840x2160')).toBe('3840x2160')
-    // 旧 dall-e 比例吸附到 1k 白名单
-    expect(normalizeOpenAiCompatibleSize('1024x1792')).toBe('864x1536')
-    expect(normalizeOpenAiCompatibleSize('1792x1024')).toBe('1536x864')
-    // 非法自由分辨率按比例吸附（5678px 高 → 4k 档内选最近长宽比）
-    expect(normalizeOpenAiCompatibleSize('1234x5678')).toBe('2160x3840')
-    expect(normalizeOpenAiCompatibleSize(undefined)).toBeUndefined()
-    expect(normalizeOpenAiCompatibleSize('auto')).toBeUndefined()
-  })
-
-  it('normalizes canvas base urls and resolves the xKiro model default', () => {
-    expect(normalizeImageBaseUrl('https://api.xkiro.com')).toBe('https://api.xkiro.com/v1')
-    expect(normalizeImageBaseUrl('https://api.xkiro.com/v1/')).toBe('https://api.xkiro.com/v1')
-    expect(defaultImageModelForBaseUrl('https://api.xkiro.com/v1')).toBe('gpt-image')
-    expect(defaultImageModelForBaseUrl('https://api.openai.com/v1')).toBe('dall-e-3')
-  })
-
-  it('persists and validates the Agent terminal shell setting', () => {
-    const store = new ProviderConfigStore(db)
-
-    expect(store.getTerminalShell()).toBe('git-bash')
-
-    store.setTerminalShell('pwsh')
-    expect(store.getTerminalShell()).toBe('pwsh')
-
-    db.prepare("UPDATE app_settings SET value = 'unsupported' WHERE key = 'terminal_shell'").run()
-    expect(store.getTerminalShell()).toBe('git-bash')
+    emptyDb.close()
   })
 })

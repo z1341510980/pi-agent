@@ -80,6 +80,16 @@ export function imageMimeFromBytes(buffer: Buffer, declaredContentType: string):
   return declared.startsWith('image/') ? declared : 'application/octet-stream'
 }
 
+/**
+ * 资产 MIME 判定：音频/视频产物（语音合成 data URL、视频 CDN URL）没有稳定的
+ * 图片魔数，直接信任服务声明的 audio/* / video/*；其余走图片魔数嗅探。
+ */
+function assetMimeFromBytes(buffer: Buffer, declaredContentType: string): string {
+  const declared = declaredContentType.split(';')[0].trim().toLowerCase()
+  if (declared.startsWith('audio/') || declared.startsWith('video/')) return declared
+  return imageMimeFromBytes(buffer, declaredContentType)
+}
+
 function extensionForMime(mime: string): string {
   const map: Record<string, string> = {
     'image/png': '.png',
@@ -87,7 +97,16 @@ function extensionForMime(mime: string): string {
     'image/gif': '.gif',
     'image/webp': '.webp',
     'image/bmp': '.bmp',
-    'image/avif': '.avif'
+    'image/avif': '.avif',
+    'audio/mpeg': '.mp3',
+    'audio/wav': '.wav',
+    'audio/x-wav': '.wav',
+    'audio/opus': '.opus',
+    'audio/aac': '.aac',
+    'audio/flac': '.flac',
+    'audio/pcm': '.pcm',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm'
   }
   return map[mime] ?? '.bin'
 }
@@ -198,9 +217,9 @@ export class CanvasAssetStore {
       })
       if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
       await pipeline(Readable.fromWeb(response.body as never), createWriteStream(partPath))
-      // 按魔数确定真实格式后落成正式文件名
+      // 按魔数确定真实格式后落成正式文件名（音视频产物信任声明的媒体类型）
       const bytes = readFileSync(partPath)
-      const mime = imageMimeFromBytes(bytes, response.headers.get('content-type') ?? '')
+      const mime = assetMimeFromBytes(bytes, response.headers.get('content-type') ?? '')
       if (mime === 'application/octet-stream') throw new Error('响应不是可识别的图片')
       const hash = createHash('sha256').update(bytes).digest('hex')
       const finalPath = join(this.assetsDir, `${id}-${hash.slice(0, 12)}${extensionForMime(mime)}`)
@@ -224,7 +243,7 @@ export class CanvasAssetStore {
     return this.failureReasons.get(id)
   }
 
-  /** data URL（b64_json 结果）→ 本地文件，行为与远程一致。 */
+  /** data URL（b64_json 结果 / 语音合成产物）→ 本地文件，行为与远程一致。 */
   storeFromDataUrl(projectId: string | null, dataUrl: string): string | null {
     try {
       const parsed = parseDataUrl(dataUrl)
@@ -232,7 +251,7 @@ export class CanvasAssetStore {
       return this.writeAsset(
         projectId,
         parsed.bytes,
-        imageMimeFromBytes(parsed.bytes, parsed.contentType),
+        assetMimeFromBytes(parsed.bytes, parsed.contentType),
         null
       )
     } catch {

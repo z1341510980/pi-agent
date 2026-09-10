@@ -269,9 +269,9 @@ export const MIGRATIONS: MigrationDefinition[] = [
   },
   {
     // 媒体生成 Provider 表（统一图片/音频/视频配置，spec §1）。
-    // 表属宿主级能力（Registry 在 core/media、REST 挂 /api/media-providers），
-    // 故放宿主迁移而非插件迁移：不依赖任何插件的加载状态。
-    // 存量导入放 afterApply（同一事务），见 importLegacyMediaProviders。
+    // 历史注记：本表曾属宿主级能力（Registry、REST /api/media-providers 均在宿主）；
+    // 现媒体体系已迁入 infinite-canvas 插件，本迁移仅保留以维持存量库 ledger 连续性，
+    // 全新库上建出的表由插件迁移 018（infinite_canvas_media_providers）接管后 DROP。
     id: '017_create_media_providers',
     sql: `CREATE TABLE IF NOT EXISTS media_providers (
       id         TEXT PRIMARY KEY,

@@ -1,15 +1,15 @@
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
-import { runMigrations } from '../../db/migrations.js'
 import { MediaProviderStore } from '../media-provider-store.js'
+import { applyPluginMediaMigration } from './plugin-media-db.js'
 
 describe('MediaProviderStore', () => {
   const db = new Database(':memory:')
-  runMigrations(db)
+  applyPluginMediaMigration(db)
   const store = new MediaProviderStore(db)
 
   afterEach(() => {
-    db.exec('DELETE FROM media_providers')
+    db.exec('DELETE FROM infinite_canvas_media_providers')
   })
   afterAll(() => db.close())
 
@@ -144,10 +144,10 @@ describe('MediaProviderStore', () => {
     })
     expect(store.get(provider.id)?.params).toEqual({ size: '512x512' })
 
-    db.prepare('UPDATE media_providers SET params = ? WHERE id = ?').run('{not-json', provider.id)
+    db.prepare('UPDATE infinite_canvas_media_providers SET params = ? WHERE id = ?').run('{not-json', provider.id)
     expect(store.get(provider.id)?.params).toEqual({})
 
-    db.prepare('UPDATE media_providers SET params = ? WHERE id = ?').run('"scalar"', provider.id)
+    db.prepare('UPDATE infinite_canvas_media_providers SET params = ? WHERE id = ?').run('"scalar"', provider.id)
     expect(store.get(provider.id)?.params).toEqual({})
   })
 

@@ -6,7 +6,7 @@
  */
 
 import type { FastifyBaseLogger } from 'fastify'
-import { mediaDiag } from '../config/media-diag.js'
+import { mediaDiag } from '../../../core/config/media-diag.js'
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
@@ -30,6 +30,8 @@ export function normalizeImageBaseUrl(baseUrl: string): string {
 }
 
 export const IMAGE_JOB_TIMEOUT_MS = 5 * 60_000
+/** 视频任务明显慢于图片（分钟级排队 + 渲染），轮询超时预算单独放宽到 10 分钟。 */
+export const VIDEO_JOB_TIMEOUT_MS = 10 * 60_000
 export const IMAGE_POLL_INITIAL_DELAY_MS = 2_000
 export const IMAGE_POLL_MAX_DELAY_MS = 10_000
 

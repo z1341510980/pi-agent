@@ -11,7 +11,7 @@
  */
 
 import type { FastifyBaseLogger } from 'fastify'
-import { mediaDiag } from '../../config/media-diag.js'
+import { mediaDiag } from '../../../../core/config/media-diag.js'
 import type {
   ImageAnalysisInput,
   ImageEditInput,

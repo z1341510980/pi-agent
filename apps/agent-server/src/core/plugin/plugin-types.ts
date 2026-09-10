@@ -344,22 +344,6 @@ export interface PluginContext {
    * 实现上为 getter（注入晚于插件 setup，直接取值会拿到 undefined）。
    */
   readonly modelRegistry?: ModelRegistryLike
-  /** 受 capability 保护的媒体生成 facade（Registry 体系，spec §6），与 MediaGenerator 接口同构。 */
-  readonly media?: {
-    generateImage(input: { providerId?: string; prompt: string; references?: string[]; model?: string; size?: string; count?: number; traceId?: string; signal?: AbortSignal }): Promise<{ images: string[] }>
-    generateAudio(input: { prompt: string; model?: string; voice?: string; format?: string; speed?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
-    generateVideo(input: { prompt: string; model?: string; size?: string; seconds?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
-    editImage?(input: { providerId?: string; prompt: string; image: string; images?: string[]; mask?: string; model?: string; size?: string; traceId?: string; signal?: AbortSignal }): Promise<{ images: string[] }>
-    analyzeImage?(input: { image: string; instruction?: string; model?: string; signal?: AbortSignal }): Promise<{ text: string }>
-  }
-  /**
-   * MediaProviderStore（由 PluginManager 透传，app.ts 启动后期注入）
-   *
-   * 供插件读写媒体 Provider 兼容配置（画布旧 media-config 路由），
-   * 与 media facade 使用同一 `media.generate` capability 授权：
-   * 未授予时为 undefined。实现上为 getter（注入晚于插件 setup）。
-   */
-  readonly mediaProviderStore?: import('../media/media-provider-store.js').MediaProviderStore
   /**
    * ConfirmationManager（chat 底座共享，由 app.ts 注入到 PluginManager）
    *

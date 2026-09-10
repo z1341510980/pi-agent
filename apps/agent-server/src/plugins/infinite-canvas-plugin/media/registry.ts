@@ -18,6 +18,8 @@ import type {
   ResolvedMediaProvider
 } from './adapter.js'
 import { apimartAdapter } from './adapters/apimart.js'
+import { newapiVideoAdapter } from './adapters/newapi-video.js'
+import { openaiAudioAdapter } from './adapters/openai-audio.js'
 import { openaiImagesAdapter } from './adapters/openai-images.js'
 import type { MediaProviderStore } from './media-provider-store.js'
 
@@ -33,7 +35,9 @@ export interface MediaProviderRegistryOptions {
 /** 内置 adapter 清单：工厂默认注册 + 路由 adapters 元数据共用。 */
 export const MEDIA_PROVIDER_ADAPTERS: readonly MediaProviderAdapter[] = [
   openaiImagesAdapter,
-  apimartAdapter
+  apimartAdapter,
+  openaiAudioAdapter,
+  newapiVideoAdapter
 ]
 
 /** 未配置引导文案中的模态名：按模态给出准确指代（音频/视频等）。 */
@@ -114,7 +118,7 @@ export class MediaProviderRegistry {
   }
 }
 
-/** 宿主装配入口：默认注册内置 adapter 清单（openai-images / apimart）。 */
+/** 插件装配入口：默认注册内置 adapter 清单（openai-images / apimart / openai-audio / newapi-video）。 */
 export function createMediaProviderRegistry(
   store: MediaProviderStore,
   opts?: MediaProviderRegistryOptions

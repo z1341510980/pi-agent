@@ -4,8 +4,8 @@ import type { RouteDefinition } from '../../core/plugin/plugin-types.js'
 import type { InfiniteCanvasStore } from './store.js'
 import type { AnyCanvasNodeType } from './types.js'
 import type { PromptSourceService } from './prompt-source-service.js'
-import type { MediaProviderRow } from '../../core/media/adapter.js'
-import type { MediaProviderStore } from '../../core/media/media-provider-store.js'
+import type { MediaProviderRow } from './media/adapter.js'
+import type { MediaProviderStore } from './media/media-provider-store.js'
 import type { CanvasAssetStore, MediaLogStore } from './canvas-assets.js'
 import { imageMimeFromBytes } from './canvas-assets.js'
 import {
@@ -41,6 +41,7 @@ export type CanvasImageGenerateHandler = (input: {
 }) => Promise<{ images: string[] }>
 
 export type CanvasMediaGenerateHandler = (input: {
+  projectId?: string
   mode: 'audio' | 'video'
   prompt: string
   context?: string
@@ -52,6 +53,7 @@ export type CanvasMediaGenerateHandler = (input: {
   speed?: number
   size?: string
   seconds?: number
+  image?: string
   generateAudio?: boolean
   watermark?: boolean
   signal?: AbortSignal
@@ -623,6 +625,7 @@ export function createInfiniteCanvasRoutes(
         try {
           const generatedContext = generationContext(input)
           const result = await generateMedia({
+            projectId: request.params.projectId,
             mode,
             prompt,
             context: generatedContext.context,
@@ -634,6 +637,7 @@ export function createInfiniteCanvasRoutes(
             speed: input.speed === undefined ? undefined : Number(input.speed),
             size: input.size === undefined ? undefined : String(input.size),
             seconds: input.seconds === undefined ? undefined : Number(input.seconds),
+            image: optionalString(input.image),
             generateAudio: input.generateAudio === undefined ? undefined : Boolean(input.generateAudio),
             watermark: input.watermark === undefined ? undefined : Boolean(input.watermark)
           })

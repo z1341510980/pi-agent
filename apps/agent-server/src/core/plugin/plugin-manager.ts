@@ -37,7 +37,6 @@ import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
 import { runtimePerformance } from '../../config/performance.js'
 import type { AgentConfig, AgentManager } from '../agent/subagent-tool.js'
 import type { ProviderConfigStore } from '../config/provider-config-store.js'
-import type { MediaProviderStore } from '../media/media-provider-store.js'
 import {
   supportsAnthropicCacheControl,
   usesOpenAiPromptCacheKey,
@@ -176,14 +175,6 @@ export class PluginManager {
    * 与 SessionStore / ModelRegistry 同时期注入。
    */
   private providerConfigStore?: ProviderConfigStore
-  private mediaGenerator?: PluginContext['media']
-  /**
-   * MediaProviderStore（媒体 Provider 兼容读写入口）
-   *
-   * 通过 setMediaProviderStore() 在 app.ts 启动后期注入，
-   * 供插件（画布旧 media-config 路由）按 media.generate 授权访问。
-   */
-  private mediaProviderStore?: MediaProviderStore
   /** Tracer 在 app 启动后注入；未注入时插件会话保持原有行为。 */
   private tracer?: Tracer
   /**
@@ -353,26 +344,6 @@ export class PluginManager {
   setProviderConfigStore(store: ProviderConfigStore): void {
     this.providerConfigStore = store
     this.logger.debug('已注入 ProviderConfigStore，onPayload 可读取应用级配置')
-  }
-
-  setMediaGenerator(generator: PluginContext['media']): void {
-    this.mediaGenerator = generator
-    this.logger.debug('已注入媒体生成服务（Registry facade）')
-  }
-
-  /**
-   * 注入 MediaProviderStore（在 app.ts 启动后期调用）
-   *
-   * 供插件按 media.generate 授权读写媒体 Provider 兼容配置
-   * （画布旧 GET/PUT /media-config 路由的存储层）。
-   */
-  setMediaProviderStore(store: MediaProviderStore): void {
-    this.mediaProviderStore = store
-    this.logger.debug('已注入 MediaProviderStore，插件可读写媒体 Provider 兼容配置')
-  }
-
-  private mediaGeneratorFacade(): PluginContext['media'] {
-    return this.mediaGenerator
   }
 
   /** 注入 Tracer，供显式声明 trace 归属的插件 Session 写入追踪时间线。 */
@@ -1534,8 +1505,6 @@ export class PluginManager {
     // 对象字面量 getter 内的 this 指向字面量自身，因此通过闭包延迟读取。
     const getModelRegistry = (): ModelRegistryLike | undefined =>
       this.modelRegistry as ModelRegistryLike | undefined
-    const getMediaGenerator = (): PluginContext['media'] => this.mediaGenerator
-    const getMediaProviderStore = (): MediaProviderStore | undefined => this.mediaProviderStore
 
     const registerEffect = (
       kind: string,
@@ -1630,14 +1599,6 @@ export class PluginManager {
       ...(entry.grants.has('confirmation.request')
         ? { confirmationManager: this.confirmationManager }
         : {}),
-      get media(): PluginContext['media'] {
-        return entry.grants.has('media.generate') ? getMediaGenerator() : undefined
-      },
-      // 与 media facade 同一授权：未授予 media.generate 的插件拿到 undefined。
-      // getter 而非直接取值：setMediaProviderStore 在 app.ts 启动后期才调用。
-      get mediaProviderStore(): MediaProviderStore | undefined {
-        return entry.grants.has('media.generate') ? getMediaProviderStore() : undefined
-      },
       // getter 而非直接取值：setModelRegistry 在 app.ts 启动后期才调用，
       // 晚于插件 setup（createPluginContext 构建本 context 的时机），
       // 直接传 this.modelRegistry 会把 undefined 固化进 context。

@@ -1,7 +1,8 @@
 /**
  * 媒体生成 Provider 体系：适配器层类型定义（spec §2）。
  *
- * 数据模型见 core/db/migrations.ts 的 017_create_media_providers；
+ * 数据模型见本插件 migrations.ts 的 018_create_infinite_canvas_media_providers
+ * （体系归属 infinite-canvas 插件，宿主 017 建的临时表由 018 搬迁后删除）；
  * 本文件只声明类型，不包含任何运行时行为。
  */
 
@@ -89,22 +90,35 @@ export interface ImageAnalysisInput {
   signal?: AbortSignal
 }
 
-/** 音频生成输入：与 MediaGenerator.generateAudio 现签名对齐。 */
+/** 音频生成输入：openai-audio adapter（/audio/speech）的载荷来源。 */
 export interface AudioGenerationInput {
+  /** 画布透传的 Provider 提示；缺省时解析 audio 模态默认。 */
+  providerId?: string
   prompt: string
   model?: string
   voice?: string
   format?: string
   speed?: number
+  traceId?: string
   signal?: AbortSignal
 }
 
-/** 视频生成输入：与 MediaGenerator.generateVideo 现签名对齐。 */
+/** 视频生成输入：newapi-video adapter（/video/generations）的载荷来源。 */
 export interface VideoGenerationInput {
+  /** 画布透传的 Provider 提示；缺省时解析 video 模态默认。 */
+  providerId?: string
   prompt: string
+  /** 图生视频的参考图（URL 或 base64/data URL，协议原样透传）。 */
+  image?: string
   model?: string
-  size?: string
-  seconds?: number
+  /** 视频时长（秒） */
+  duration?: number
+  width?: number
+  height?: number
+  fps?: number
+  /** 生成条数（协议可选，默认 1） */
+  n?: number
+  traceId?: string
   signal?: AbortSignal
 }
 

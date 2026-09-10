@@ -1,22 +1,22 @@
 /**
- * 媒体生成 facade：宿主注入 PluginContext.media 的实现（spec §6）。
+ * 媒体生成 facade：infinite-canvas 插件内部的「按模态 resolve Registry → 委托 adapter」
+ * 入口（spec §6；自宿主 core/config/media-generator.ts 迁入，插件使用自有 Registry）。
  *
  * 职责收敛为「按模态 resolve Registry → 委托 adapter」：
  * - generateImage/editImage：input.providerId 优先（画布透传）→ 模态 enabled 默认，
  *   未配置时由 Registry 抛「图片尚未配置生成 Provider…」引导文案；
  * - analyzeImage：capabilities.analyze 门禁（方案 A）——不支持视觉理解的
  *   Provider 直接引导到设置页更换，而不是让上游报一条晦涩的协议错误；
- * - generateAudio/generateVideo：阶段一无 adapter，resolve 抛按模态命名的统一文案。
+ * - generateAudio/generateVideo：resolve('audio'/'video') 后委托 adapter
+ *   （openai-audio / newapi-video 落位后即为真实生成链路）。
  *
- * 旧双路（providers 表媒体列解析 + 画布 override 手写 ImageRequestContext，
- * resolveRequestContext/splitModel/requestImageGeneration/requestImageEdit 等）
- * 已随调用链切换删除；配置来源统一为 media_providers 表
- * （存量迁移见 017_create_media_providers，旧 media-config 路由兼容读写 image 默认行）。
+ * 配置来源统一为 infinite_canvas_media_providers 表
+ * （存量迁移见 018_create_infinite_canvas_media_providers，旧 media-config 路由兼容读写 image 默认行）。
  */
 
 import type { FastifyBaseLogger } from 'fastify'
-import type { MediaProviderRegistry } from '../media/registry.js'
-import type { MediaModalityContext, MediaProviderAdapter } from '../media/adapter.js'
+import type { MediaProviderRegistry } from './registry.js'
+import type { MediaModalityContext, MediaProviderAdapter } from './adapter.js'
 
 export interface MediaGenerator {
   generateImage(input: {
@@ -31,18 +31,27 @@ export interface MediaGenerator {
     signal?: AbortSignal
   }): Promise<{ images: string[] }>
   generateAudio(input: {
+    /** 画布透传的 Provider 提示；缺省时解析 audio 模态默认。 */
+    providerId?: string
     prompt: string
     model?: string
     voice?: string
     format?: string
     speed?: number
+    traceId?: string
     signal?: AbortSignal
   }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
   generateVideo(input: {
+    /** 画布透传的 Provider 提示；缺省时解析 video 模态默认。 */
+    providerId?: string
     prompt: string
     model?: string
-    size?: string
-    seconds?: number
+    image?: string
+    duration?: number
+    width?: number
+    height?: number
+    fps?: number
+    traceId?: string
     signal?: AbortSignal
   }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
   /** 图像编辑（图生图/蒙版局部重绘）：委托解析出的 adapter.editImage。 */
@@ -136,14 +145,14 @@ export function createMediaGenerator(
       return adapter.analyzeImage(ctx, { image, instruction, signal })
     },
     async generateAudio(input) {
-      const { adapter, ctx } = await registry.resolve('audio')
+      const { adapter, ctx } = await registry.resolve('audio', { providerId: input.providerId })
       if (!adapter.generateAudio) {
         throw new Error(`媒体适配器 "${adapter.id}" 未实现音频生成`)
       }
       return adapter.generateAudio(ctx, input)
     },
     async generateVideo(input) {
-      const { adapter, ctx } = await registry.resolve('video')
+      const { adapter, ctx } = await registry.resolve('video', { providerId: input.providerId })
       if (!adapter.generateVideo) {
         throw new Error(`媒体适配器 "${adapter.id}" 未实现视频生成`)
       }

@@ -1,4 +1,39 @@
+import type Database from 'better-sqlite3'
 import type { MigrationDefinition } from '../../core/plugin/plugin-types.js'
+
+function tableExists(db: Database.Database, name: string): boolean {
+  return Boolean(
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)
+  )
+}
+
+/**
+ * 媒体 Provider 体系随功能迁入本插件：把宿主 017 建的 media_providers 表
+ * 整体搬成 infinite_canvas_media_providers（列结构一致，INSERT SELECT 平移），
+ * 搬完 DROP 宿主表。
+ *
+ * 两态覆盖：
+ * - 存量库：017 已建表（可能有数据）→ 搬数据 → 删宿主表；
+ * - 全新库：017 先建空宿主表 → 本迁移建插件表、搬 0 行、删宿主表（干净收尾）。
+ * 幂等：宿主表不存在时直接跳过；重复搬入由插件表主键去重守卫挡住。
+ */
+function migrateHostMediaProviders(db: Database.Database): void {
+  if (!tableExists(db, 'media_providers')) return
+  db.exec(`
+    INSERT INTO infinite_canvas_media_providers (
+      id, name, modality, adapter, base_url, api_key, model, params,
+      enabled, is_default, created_at, updated_at
+    )
+    SELECT
+      h.id, h.name, h.modality, h.adapter, h.base_url, h.api_key, h.model, h.params,
+      h.enabled, h.is_default, h.created_at, h.updated_at
+    FROM media_providers h
+    WHERE NOT EXISTS (
+      SELECT 1 FROM infinite_canvas_media_providers p WHERE p.id = h.id
+    );
+  `)
+  db.exec('DROP TABLE media_providers;')
+}
 
 export const infiniteCanvasMigrations: MigrationDefinition[] = [
   {
@@ -133,5 +168,29 @@ export const infiniteCanvasMigrations: MigrationDefinition[] = [
       CREATE INDEX IF NOT EXISTS idx_infinite_canvas_media_logs_created
         ON infinite_canvas_media_logs(created_at DESC);
     `
+  },
+  {
+    // 媒体 Provider 表迁入插件（宿主 017 的接棒者）：结构与宿主表逐列一致，
+    // store（./media/media-provider-store.ts）只认本表；存量数据由 afterApply 平移。
+    id: '018_create_infinite_canvas_media_providers',
+    sql: `
+      CREATE TABLE IF NOT EXISTS infinite_canvas_media_providers (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL,
+        modality   TEXT NOT NULL,
+        adapter    TEXT NOT NULL,
+        base_url   TEXT NOT NULL DEFAULT '',
+        api_key    TEXT NOT NULL DEFAULT '',
+        model      TEXT NOT NULL DEFAULT '',
+        params     TEXT NOT NULL DEFAULT '{}',
+        enabled    INTEGER NOT NULL DEFAULT 1,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_infinite_canvas_media_providers_modality
+        ON infinite_canvas_media_providers(modality);
+    `,
+    afterApply: migrateHostMediaProviders
   }
 ]

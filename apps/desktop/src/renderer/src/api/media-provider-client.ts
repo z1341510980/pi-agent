@@ -3,12 +3,13 @@ import { deleteApi, getApi, patchApi, postApi } from './http-client'
 /**
  * 媒体生成 Provider 客户端（spec §3/§5）
  *
- * 对应 agent-server 路由 `/api/media-providers`：
- * - GET    /api/media-providers?modality=   — 列出 Provider（Key 脱敏 keyHint）+ adapters 元数据
- * - POST   /api/media-providers             — 创建（每模态首条自动设为默认）
- * - PATCH  /api/media-providers/:id         — 部分更新（空 apiKey 保留旧值）
- * - DELETE /api/media-providers/:id         — 删除
- * - POST   /api/media-providers/:id/default — 设为模态默认（同模态唯一）
+ * 对应 agent-server 插件路由 `/api/plugins/infinite-canvas/media-providers`
+ * （媒体体系归属 infinite-canvas 插件，路由经 registerRoute 自动带插件前缀）：
+ * - GET    /media-providers?modality=   — 列出 Provider（Key 脱敏 keyHint）+ adapters 元数据
+ * - POST   /media-providers             — 创建（每模态首条自动设为默认）
+ * - PATCH  /media-providers/:id         — 部分更新（空 apiKey 保留旧值）
+ * - DELETE /media-providers/:id         — 删除
+ * - POST   /media-providers/:id/default — 设为模态默认（同模态唯一）
  *
  * text 模态不落 media_providers 表（复用 LLM Provider 体系），本客户端不提供 text 写入。
  */
@@ -83,7 +84,7 @@ export type UpdateMediaProviderPatch = Partial<{
   enabled: boolean
 }>
 
-/** GET /api/media-providers 的 data 载荷：rows 与 adapters 同响应返回 */
+/** GET /media-providers 的 data 载荷：rows 与 adapters 同响应返回 */
 interface MediaProvidersPayload {
   rows: MediaProviderRow[]
   adapters: MediaAdapterMeta[]
@@ -92,19 +93,19 @@ interface MediaProvidersPayload {
 /** 列出媒体 Provider；指定模态时服务端按模态过滤（text 恒返回空行） */
 export async function listMediaProviders(modality?: MediaModality): Promise<MediaProviderRow[]> {
   const qs = modality ? `?modality=${encodeURIComponent(modality)}` : ''
-  const data = await getApi<MediaProvidersPayload>(`/api/media-providers${qs}`)
+  const data = await getApi<MediaProvidersPayload>(`/api/plugins/infinite-canvas/media-providers${qs}`)
   return data.rows ?? []
 }
 
 /** 列出全部已注册 adapter 元数据（未指定模态 → 返回所有存储模态的 adapter） */
 export async function listMediaAdapters(): Promise<MediaAdaptersResponse> {
-  const data = await getApi<MediaProvidersPayload>('/api/media-providers')
+  const data = await getApi<MediaProvidersPayload>('/api/plugins/infinite-canvas/media-providers')
   return { adapters: data.adapters ?? [] }
 }
 
 /** 创建 Provider；每模态首条由服务端自动设为默认 */
 export function createMediaProvider(input: CreateMediaProviderInput): Promise<MediaProviderRow> {
-  return postApi<MediaProviderRow>('/api/media-providers', input)
+  return postApi<MediaProviderRow>('/api/plugins/infinite-canvas/media-providers', input)
 }
 
 /** 部分更新；apiKey 传空串时由服务端保留旧值（客户端通常直接省略该字段） */
@@ -112,18 +113,18 @@ export function updateMediaProvider(
   id: string,
   patch: UpdateMediaProviderPatch
 ): Promise<MediaProviderRow> {
-  return patchApi<MediaProviderRow>(`/api/media-providers/${encodeURIComponent(id)}`, patch)
+  return patchApi<MediaProviderRow>(`/api/plugins/infinite-canvas/media-providers/${encodeURIComponent(id)}`, patch)
 }
 
 /** 删除 Provider；默认行删除后模态默认空缺（resolve 时报「未配置」引导） */
 export async function deleteMediaProvider(id: string): Promise<void> {
-  await deleteApi<{ deleted: boolean }>(`/api/media-providers/${encodeURIComponent(id)}`)
+  await deleteApi<{ deleted: boolean }>(`/api/plugins/infinite-canvas/media-providers/${encodeURIComponent(id)}`)
 }
 
 /** 设为模态默认（同模态唯一，服务端事务处理） */
 export async function setMediaProviderDefault(id: string): Promise<void> {
   await postApi<{ id: string; modality: string }>(
-    `/api/media-providers/${encodeURIComponent(id)}/default`,
+    `/api/plugins/infinite-canvas/media-providers/${encodeURIComponent(id)}/default`,
     {}
   )
 }

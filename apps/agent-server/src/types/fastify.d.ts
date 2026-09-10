@@ -11,8 +11,6 @@ import type { UsageLedger } from '../core/usage/usage-ledger.js'
 import type { FactStore } from '../core/memory/fact-store.js'
 import type { SessionSummaryStore } from '../core/memory/session-summary.js'
 import type { ProviderConfigStore } from '../core/config/provider-config-store.js'
-import type { MediaProviderStore } from '../core/media/media-provider-store.js'
-import type { MediaProviderRegistry } from '../core/media/registry.js'
 import type { ProxyConfigStore } from '../core/config/proxy-config-store.js'
 import type { ProxyManager } from '../core/config/proxy-manager.js'
 import type { ThreadSettingsStore } from '../core/agent/thread-settings-store.js'
@@ -57,8 +55,6 @@ declare module 'fastify' {
     factStore: FactStore
     summaryStore: SessionSummaryStore
     providerConfigStore: ProviderConfigStore
-    mediaProviderStore: MediaProviderStore
-    mediaProviderRegistry: MediaProviderRegistry
     proxyConfigStore: ProxyConfigStore
     proxyManager: ProxyManager
     threadSettingsStore: ThreadSettingsStore

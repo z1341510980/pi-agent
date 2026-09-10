@@ -1,9 +1,10 @@
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import type { FastifyBaseLogger } from 'fastify'
 import Database from 'better-sqlite3'
-import { runMigrations } from '../../db/migrations.js'
 import type { MediaProviderRow } from '../adapter.js'
 import { apimartAdapter } from '../adapters/apimart.js'
+import { newapiVideoAdapter } from '../adapters/newapi-video.js'
+import { openaiAudioAdapter } from '../adapters/openai-audio.js'
 import { openaiImagesAdapter } from '../adapters/openai-images.js'
 import { MediaProviderStore } from '../media-provider-store.js'
 import {
@@ -11,14 +12,15 @@ import {
   MediaProviderRegistry,
   createMediaProviderRegistry
 } from '../registry.js'
+import { applyPluginMediaMigration } from './plugin-media-db.js'
 
 describe('MediaProviderRegistry', () => {
   const db = new Database(':memory:')
-  runMigrations(db)
+  applyPluginMediaMigration(db)
   const store = new MediaProviderStore(db)
 
   afterEach(() => {
-    db.exec('DELETE FROM media_providers')
+    db.exec('DELETE FROM infinite_canvas_media_providers')
   })
   afterAll(() => db.close())
 
@@ -38,13 +40,15 @@ describe('MediaProviderRegistry', () => {
   it('registers the builtin adapters via the factory and lists them by modality', () => {
     expect(MEDIA_PROVIDER_ADAPTERS.map((adapter) => adapter.id)).toEqual([
       'openai-images',
-      'apimart'
+      'apimart',
+      'openai-audio',
+      'newapi-video'
     ])
 
     const registry = createMediaProviderRegistry(store)
     expect(registry.listAdapters('image')).toEqual([openaiImagesAdapter, apimartAdapter])
-    expect(registry.listAdapters('audio')).toEqual([])
-    expect(registry.listAdapters('video')).toEqual([])
+    expect(registry.listAdapters('audio')).toEqual([openaiAudioAdapter])
+    expect(registry.listAdapters('video')).toEqual([newapiVideoAdapter])
     expect(registry.listAdapters('text')).toEqual([])
   })
 
@@ -173,11 +177,11 @@ describe('MediaProviderRegistry', () => {
   })
 
   it('rejects rows whose adapter is not registered', async () => {
-    const row = createImageProvider({ name: '未知适配器', adapter: 'openai-audio' })
+    const row = createImageProvider({ name: '未知适配器', adapter: 'no-such-adapter' })
 
     const registry = createMediaProviderRegistry(store)
     await expect(registry.resolve('image', { providerId: row.id })).rejects.toThrow(
-      `媒体 Provider "${row.id}" 的适配器 "openai-audio" 未注册`
+      `媒体 Provider "${row.id}" 的适配器 "no-such-adapter" 未注册`
     )
   })
 

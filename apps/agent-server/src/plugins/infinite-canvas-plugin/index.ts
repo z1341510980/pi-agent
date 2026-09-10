@@ -5,11 +5,15 @@ import { defineTool } from '@earendil-works/pi-coding-agent'
 import type { Plugin, PluginContext } from '../../core/plugin/plugin-types.js'
 import { infiniteCanvasMigrations } from './migrations.js'
 import { createInfiniteCanvasRoutes } from './routes.js'
+import { createMediaProviderRoutes } from './media-provider-routes.js'
 import { InfiniteCanvasStore } from './store.js'
 import type { AnyCanvasNodeType } from './types.js'
 import { createPromptSourceService } from './prompt-source-service.js'
 import { CanvasAssetStore, MediaLogStore, referencesToDataUrls } from './canvas-assets.js'
-import { normalizeOpenAiCompatibleSize } from '../../core/media/shared.js'
+import { normalizeOpenAiCompatibleSize } from './media/shared.js'
+import { MediaProviderStore } from './media/media-provider-store.js'
+import { createMediaProviderRegistry } from './media/registry.js'
+import { createMediaGenerator, IMAGE_ANALYZE_UNSUPPORTED_MESSAGE } from './media/generator.js'
 import {
   applyCanvasAgentOperations,
   summarizeCanvasAgentOperations,
@@ -59,10 +63,16 @@ export function createInfiniteCanvasPlugin(): Plugin {
       context.registerService('infiniteCanvasStore', store)
       const promptSourceService = createPromptSourceService(context.db, context)
       const imageLogger = context.logger.child({ module: 'infinite-canvas-image' })
-      // 旧 media-config 兼容路由的读写入口：宿主注入的媒体 Provider store
-      // （Registry 体系落位后，画布媒体配置统一存 media_providers 表）。
-      // 惰性读取：宿主在插件 setup 之后才注入（同 PluginContext.modelRegistry 模式）。
-      const getMediaProviderStore = (): typeof context.mediaProviderStore => context.mediaProviderStore
+      // 媒体 Provider 体系归属本插件：store/Registry/facade 均以 context.db（宿主同库）
+      // 自建，配置表 infinite_canvas_media_providers 由本插件迁移 018 创建。
+      const mediaProviderStore = new MediaProviderStore(context.db)
+      const mediaLogger = context.logger.child({ module: 'infinite-canvas-media' })
+      const mediaProviderRegistry = createMediaProviderRegistry(mediaProviderStore, {
+        logger: mediaLogger
+      })
+      const media = createMediaGenerator(mediaProviderRegistry, { logger: mediaLogger })
+      // 旧 media-config 兼容路由的读写入口：本插件自建的媒体 Provider store。
+      const getMediaProviderStore = (): MediaProviderStore => mediaProviderStore
       // 生成结果本地资产：落盘后前端拿稳定的 /assets/:id，不再依赖慢 CDN
       const dataDir = process.env.PI_DATA_DIR ?? join(homedir(), '.pi')
       const assets = new CanvasAssetStore(context.db, join(dataDir, 'agent', 'canvas-assets'))
@@ -83,7 +93,7 @@ export function createInfiniteCanvasPlugin(): Plugin {
         })
 
       /**
-       * 画布生图：providerId/model/size 等输入透传宿主媒体 facade
+       * 画布生图：providerId/model/size 等输入透传插件媒体 facade
        * （Registry 按「画布 providerId 优先 → image 默认」解析，旧双路已删除）。
        * 参考图统一归一化成 data URL：本地资产/localhost/内网 URL 服务商取不到，
        * 直接透传必然被上游拒绝或悄悄忽略。
@@ -99,12 +109,12 @@ export function createInfiniteCanvasPlugin(): Plugin {
         traceId?: string
         signal?: AbortSignal
       }): Promise<{ images: string[] }> => {
-        if (!context.media?.generateImage)
+        if (!media.generateImage)
           throw new Error('图片 Provider 尚未配置，请到 设置 → 媒体生成 配置')
         const references = input.references?.length
           ? await referencesToDataUrls(assets, input.references)
           : input.references
-        return context.media.generateImage({
+        return media.generateImage({
           providerId: input.providerId,
           prompt: input.prompt,
           references,
@@ -176,9 +186,9 @@ export function createInfiniteCanvasPlugin(): Plugin {
         traceId?: string
         signal?: AbortSignal
       }): Promise<{ images: string[] }> => {
-        if (!context.media?.editImage)
+        if (!media.editImage)
           throw new Error('图像编辑 Provider 尚未配置，请到 设置 → 媒体生成 配置')
-        return context.media.editImage({
+        return media.editImage({
           providerId: input.providerId,
           prompt: input.prompt,
           image: input.image,
@@ -252,6 +262,63 @@ export function createInfiniteCanvasPlugin(): Plugin {
         }
       }
 
+      /** 视频 size 'WxH' → width/height（newapi-video 的显式分辨率入参）。 */
+      const parseVideoSize = (size: string | undefined): { width?: number; height?: number } => {
+        const match = /^(\d+)x(\d+)$/.exec(size?.trim() ?? '')
+        return match ? { width: Number(match[1]), height: Number(match[2]) } : {}
+      }
+
+      /**
+       * 对外音视频入口：providerId 透传（画布节点指定 → 模态默认）→ adapter 生成 →
+       * 输出统一走资产本地化。音频结果是 data URL（同步落盘），视频结果是远程 URL
+       * （后台转存）；本地化失败保留原始地址，与图片链路的兜底一致。
+       */
+      const generateMediaLocalized = async (input: {
+        projectId?: string
+        mode: 'audio' | 'video'
+        prompt: string
+        providerId?: string
+        model?: string
+        voice?: string
+        format?: string
+        speed?: number
+        size?: string
+        seconds?: number
+        image?: string
+        signal?: AbortSignal
+      }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }> => {
+        const result =
+          input.mode === 'audio'
+            ? await media.generateAudio({
+                prompt: input.prompt,
+                model: input.model,
+                voice: input.voice,
+                format: input.format,
+                speed: input.speed,
+                providerId: input.providerId,
+                signal: input.signal
+              })
+            : await media.generateVideo({
+                prompt: input.prompt,
+                model: input.model,
+                image: input.image,
+                providerId: input.providerId,
+                duration: input.seconds,
+                ...parseVideoSize(input.size),
+                signal: input.signal
+              })
+        let outputs = result.outputs
+        try {
+          outputs = outputs.map((output) => ({
+            mimeType: output.mimeType,
+            url: localizeImages(input.projectId, [output.url])[0] ?? output.url
+          }))
+        } catch (error) {
+          mediaLogger?.warn?.({ error }, '音视频输出本地化失败，保留原始地址')
+        }
+        return { outputs }
+      }
+
       for (const route of createInfiniteCanvasRoutes(
         store,
         async ({ prompt, mode, context: graphContext, resourceContext }) => {
@@ -271,16 +338,11 @@ export function createInfiniteCanvasPlugin(): Plugin {
           }
         },
         generateImageLocalized,
-        ({ mode, prompt, model, voice, format, speed, size, seconds, signal }) => {
-          if (!context.media) throw new Error('媒体 Provider 尚未配置，请到 设置 → 媒体生成 配置')
-          return mode === 'audio'
-            ? context.media.generateAudio({ prompt, model, voice, format, speed, signal })
-            : context.media.generateVideo({ prompt, model, size, seconds, signal })
-        },
+        generateMediaLocalized,
         editImageLocalized,
         ({ image, instruction, model, signal }) => {
-          if (!context.media?.analyzeImage) throw new Error('视觉理解 Provider 尚未配置，请到 设置 → 媒体生成 配置')
-          return context.media.analyzeImage({ image, instruction, model, signal })
+          if (!media.analyzeImage) throw new Error(IMAGE_ANALYZE_UNSUPPORTED_MESSAGE)
+          return media.analyzeImage({ image, instruction, model, signal })
         },
         promptSourceService,
         getMediaProviderStore,
@@ -288,6 +350,16 @@ export function createInfiniteCanvasPlugin(): Plugin {
         mediaLogs
       ))
         context.registerRoute(route)
+
+      // 媒体 Provider CRUD（/media-providers、/:id、/:id/default）：
+      // 实际路径为 /api/plugins/infinite-canvas/media-providers…
+      for (const mediaRoute of createMediaProviderRoutes(
+        mediaProviderStore,
+        mediaProviderRegistry,
+        mediaLogger
+      )) {
+        context.registerRoute(mediaRoute)
+      }
 
       context.registerSessionTools([
         defineTool({
@@ -639,6 +711,18 @@ export function createInfiniteCanvasPlugin(): Plugin {
         scope: 'app',
         priority: 30,
         rendererKey: 'infinite-canvas.navigation'
+      })
+      // 媒体生成设置面板：设置中心「插件设置」分区的自定义面板（plugin-settings
+      // slot 不需要 entryKey，只有 keyed slot 需要）；渲染组件在桌面端受信
+      // renderer 白名单登记（rendererKey 'infinite-canvas.media-settings'）。
+      context.registerPanel({
+        id: 'infinite-canvas-media-settings',
+        title: '媒体生成',
+        component: 'InfiniteCanvasMediaSettings',
+        slot: 'plugin-settings',
+        scope: 'app',
+        priority: 10,
+        rendererKey: 'infinite-canvas.media-settings'
       })
       context.logger.info('Infinite Canvas 插件已初始化')
     }
