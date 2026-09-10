@@ -2,28 +2,24 @@ import type { FastifyBaseLogger } from 'fastify'
 import type { ProviderConfigStore } from './provider-config-store.js'
 import { normalizeMediaProtocol, type MediaProtocol } from './provider-config-store.js'
 import { normalizeProviderBaseUrl } from './provider-base-url.js'
-import { mediaDiag } from './media-diag.js'
-import { defaultImageModelForBaseUrl, isXKiroBaseUrl, openaiImagesAdapter } from '../media/adapters/openai-images.js'
 import {
-  IMAGE_JOB_TIMEOUT_MS,
-  errorText,
-  imageJob,
-  imageResponseShape,
-  normalizeImageBaseUrl,
-  readImageResponse,
-  referenceStats,
-  resolveImageResponse,
-  safeBaseUrl,
-  safeProviderLabel,
-  withAbortGuard,
-  type ImageJobPollSource
-} from '../media/shared.js'
+  defaultImageModelForBaseUrl,
+  isXKiroBaseUrl,
+  openaiImagesAdapter
+} from '../media/adapters/openai-images.js'
+import { APIMART_DEFAULT_IMAGE_MODEL, apimartAdapter } from '../media/adapters/apimart.js'
+import { normalizeImageBaseUrl, safeBaseUrl } from '../media/shared.js'
 import type { MediaModalityContext } from '../media/adapter.js'
 
-// 过渡期 re-export：公共工具已迁移至 core/media/shared.ts 与 openai-images
-// adapter，保持既有导出签名防外部引用断裂（Task 4 切换调用链后清理）。
-export { normalizeImageBaseUrl, normalizeOpenAiCompatibleSize, parseImages } from '../media/shared.js'
+// 过渡期 re-export：公共工具已迁移至 core/media/shared.ts 与两个图片 adapter，
+// 保持既有导出签名防外部引用断裂（Task 4 切换调用链后清理）。
+export {
+  normalizeImageBaseUrl,
+  normalizeOpenAiCompatibleSize,
+  parseImages
+} from '../media/shared.js'
 export { defaultImageModelForBaseUrl } from '../media/adapters/openai-images.js'
+export { normalizeApimartSize } from '../media/adapters/apimart.js'
 
 export interface MediaGenerator {
   generateImage(input: {
@@ -88,76 +84,15 @@ export interface MediaGeneratorOptions {
   logger?: FastifyBaseLogger
 }
 
-const APIMART_SIZE_ALIASES: Record<string, string> = {
-  '1024x1024': '1:1',
-  '512x512': '1:1',
-  '1536x1024': '3:2',
-  '1024x1536': '2:3',
-  '1792x1024': '16:9',
-  '1280x720': '16:9',
-  '1920x1080': '16:9'
-}
-
-/** Convert the canvas' legacy pixel-size options to APIMart's aspect-ratio values. */
-export function normalizeApimartSize(size: string | undefined): string | undefined {
-  const value = size?.trim()
-  if (!value || value === 'auto') return undefined
-  return APIMART_SIZE_ALIASES[value] || (/^\d+:\d+$/.test(value) ? value : value)
-}
-
-function apimartPayload(input: {
-  context: ImageRequestContext
-  prompt: string
-  references?: string[]
-  size?: string
-  count: number
-}): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
-    model: input.context.modelId,
-    prompt: input.prompt,
-    // APIMart 当前任务协议一次只返回一个结果；保留 count 仅供统一接口兼容。
-    n: 1
-  }
-  const size = normalizeApimartSize(input.size)
-  if (size) payload.size = size
-  if (input.context.mediaResolution?.trim()) payload.resolution = input.context.mediaResolution.trim()
-  if (input.references?.length) payload.image_urls = input.references
-  return payload
-}
-
 function protocolFor(context: ImageRequestContext): MediaProtocol {
   return normalizeMediaProtocol(context.mediaProtocol)
-}
-
-function taskEndpoint(context: ImageRequestContext, jobId: string): string {
-  if (protocolFor(context) === 'apimart') {
-    const language = encodeURIComponent(context.mediaLanguage?.trim() || 'en')
-    return `${context.baseUrl}/tasks/${encodeURIComponent(jobId)}?language=${language}`
-  }
-  return `${context.baseUrl}/images/generations/${encodeURIComponent(jobId)}`
-}
-
-function taskEndpointLabel(context: ImageRequestContext): string {
-  return protocolFor(context) === 'apimart'
-    ? '/tasks/{task_id}'
-    : '/images/generations/{id}'
-}
-
-function apimartPollSource(context: ImageRequestContext): ImageJobPollSource {
-  return {
-    providerId: context.providerId,
-    providerApi: context.providerApi,
-    baseUrl: context.baseUrl,
-    headers: context.headers,
-    buildEndpoint: (jobId) => taskEndpoint(context, jobId),
-    endpointLabel: taskEndpointLabel(context)
-  }
 }
 
 /**
  * 过渡期桥接：把 ImageRequestContext 适配为 adapter 的 MediaModalityContext。
  * providerId 缺省时以 providerApi/安全化 baseUrl 兜底，使诊断 provider 标签与
- * adapter 探测缓存键（providerId:baseUrl）同迁移前一一对应。
+ * adapter 探测缓存键（providerId:baseUrl）同迁移前一一对应；
+ * mediaResolution/mediaLanguage 映射为 apimart adapter 的 params.resolution/language。
  */
 function toMediaModalityContext(
   context: ImageRequestContext,
@@ -170,7 +105,10 @@ function toMediaModalityContext(
     baseUrl: context.baseUrl,
     apiKey,
     model: context.modelId,
-    params: {},
+    params: {
+      ...(context.mediaResolution?.trim() ? { resolution: context.mediaResolution.trim() } : {}),
+      ...(context.mediaLanguage?.trim() ? { language: context.mediaLanguage.trim() } : {})
+    },
     logger
   }
 }
@@ -192,147 +130,20 @@ export async function requestImageGeneration(input: {
    */
   referencesInJson?: boolean
 }): Promise<{ images: string[] }> {
-  if (protocolFor(input.context) !== 'apimart') {
-    // openai-images 协议整体委托 adapter（含参考图 → 编辑三级回退与轮询）
-    return openaiImagesAdapter.generateImage!(toMediaModalityContext(input.context, input.logger), {
-      prompt: input.prompt,
-      references: input.references,
-      size: input.size,
-      count: input.count,
-      traceId: input.traceId,
-      signal: input.signal
-    })
+  // 协议分支整体委托对应 adapter（Task 2/3 迁移），此处仅保留协议判定与上下文桥接
+  const ctx = toMediaModalityContext(input.context, input.logger)
+  const adapterInput = {
+    prompt: input.prompt,
+    references: input.references,
+    size: input.size,
+    count: input.count,
+    traceId: input.traceId,
+    signal: input.signal
   }
-
-  const startedAt = Date.now()
-  const hasReferences = Boolean(input.references?.length)
-  const operation = hasReferences ? 'edit' : 'generate'
-  const endpoint = '/images/generations'
-  input.logger?.info(
-    {
-      traceId: input.traceId,
-      providerId: input.context.providerId,
-      providerApi: input.context.providerApi,
-      provider: safeProviderLabel(input.context),
-      protocol: 'apimart',
-      baseUrl: safeBaseUrl(input.context.baseUrl),
-      endpoint,
-      model: input.context.modelId,
-      size: input.size,
-      resolution: input.context.mediaResolution,
-      count: input.count,
-      referenceCount: input.references?.length ?? 0,
-      operation
-    },
-    '图片请求开始'
-  )
-
-  const guard = withAbortGuard(input.signal, IMAGE_JOB_TIMEOUT_MS)
-  try {
-    const n = Math.min(4, Math.max(1, input.count))
-    const body = apimartPayload({
-      context: input.context,
-      prompt: input.prompt,
-      references: input.references,
-      size: input.size,
-      count: n
-    })
-    mediaDiag.event('generation-submit', {
-      traceId: input.traceId,
-      provider: safeProviderLabel(input.context),
-      protocol: 'apimart',
-      endpoint,
-      model: input.context.modelId,
-      size: input.size,
-      count: n,
-      referencesInJson: Boolean(input.referencesInJson && input.references?.length),
-      ...referenceStats(input.references)
-    })
-    const response = await fetch(`${input.context.baseUrl}${endpoint}`, {
-      method: 'POST',
-      headers: { ...input.context.headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: guard.signal
-    })
-    const responseBody = await readImageResponse(response, '图片生成失败')
-    const job = imageJob(responseBody)
-    mediaDiag.event('generation-response', {
-      traceId: input.traceId,
-      provider: safeProviderLabel(input.context),
-      endpoint,
-      status: response.status,
-      responseShape: imageResponseShape(responseBody),
-      jobId: job?.id,
-      jobStatus: job?.status
-    })
-    input.logger?.info(
-      {
-        traceId: input.traceId,
-        providerId: input.context.providerId,
-        provider: safeProviderLabel(input.context),
-        protocol: 'apimart',
-        baseUrl: safeBaseUrl(input.context.baseUrl),
-        endpoint,
-        status: response.status,
-        responseShape: imageResponseShape(responseBody),
-        jobId: job?.id,
-        jobStatus: job?.status
-      },
-      '图片请求已提交'
-    )
-    const images = await resolveImageResponse(
-      apimartPollSource(input.context),
-      responseBody,
-      guard.signal,
-      '图片生成失败',
-      '图片 Provider 返回中没有图片数据',
-      input.logger,
-      input.traceId
-    )
-    input.logger?.info(
-      {
-        traceId: input.traceId,
-        providerId: input.context.providerId,
-        provider: safeProviderLabel(input.context),
-        protocol: 'apimart',
-        endpoint,
-        outputCount: images.length,
-        durationMs: Date.now() - startedAt
-      },
-      '图片请求完成'
-    )
-    mediaDiag.event('generation-done', {
-      traceId: input.traceId,
-      provider: safeProviderLabel(input.context),
-      endpoint,
-      outputCount: images.length,
-      durationMs: Date.now() - startedAt
-    })
-    return { images }
-  } catch (error) {
-    input.logger?.error(
-      {
-        traceId: input.traceId,
-        providerId: input.context.providerId,
-        provider: safeProviderLabel(input.context),
-        protocol: 'apimart',
-        endpoint,
-        durationMs: Date.now() - startedAt,
-        error: errorText(error)
-      },
-      '图片请求失败'
-    )
-    mediaDiag.event('generation-error', {
-      traceId: input.traceId,
-      provider: safeProviderLabel(input.context),
-      endpoint,
-      durationMs: Date.now() - startedAt,
-      error: errorText(error)
-    })
-    throw error
-  } finally {
-    guard.dispose()
+  if (protocolFor(input.context) === 'apimart') {
+    return apimartAdapter.generateImage!(ctx, adapterInput)
   }
+  return openaiImagesAdapter.generateImage!(ctx, adapterInput)
 }
 
 /** Submit an OpenAI-compatible image edit request and resolve async image jobs. */
@@ -347,22 +158,22 @@ export async function requestImageEdit(input: {
   logger?: FastifyBaseLogger
   traceId?: string
 }): Promise<{ images: string[] }> {
+  const ctx = toMediaModalityContext(input.context, input.logger)
   if (protocolFor(input.context) === 'apimart') {
-    if (input.mask) throw new Error('APIMart 图片协议不支持 mask 局部重绘')
-    return requestImageGeneration({
-      context: input.context,
+    // mask 校验与「参考图走 generations+image_urls」语义均在 apimart adapter 内
+    return apimartAdapter.editImage!(ctx, {
       prompt: input.prompt,
-      references: [input.image, ...(input.images ?? [])],
+      image: input.image,
+      images: input.images,
+      mask: input.mask,
       size: input.size,
-      count: 1,
       signal: input.signal,
-      logger: input.logger,
       traceId: input.traceId
     })
   }
 
   // openai-images 协议整体委托 adapter（编辑三级回退/轮询/探测缓存均在 adapter 内）
-  return openaiImagesAdapter.editImage!(toMediaModalityContext(input.context, input.logger), {
+  return openaiImagesAdapter.editImage!(ctx, {
     prompt: input.prompt,
     image: input.image,
     images: input.images,
@@ -384,9 +195,12 @@ export function splitModel(
   return { providerId: model.slice(0, index), modelId: model.slice(index + 1) }
 }
 
-export function defaultImageModelForProtocol(protocol: MediaProtocol | undefined, baseUrl: string): string {
+export function defaultImageModelForProtocol(
+  protocol: MediaProtocol | undefined,
+  baseUrl: string
+): string {
   return normalizeMediaProtocol(protocol) === 'apimart'
-    ? 'gpt-image-2'
+    ? APIMART_DEFAULT_IMAGE_MODEL
     : defaultImageModelForBaseUrl(baseUrl)
 }
 
@@ -400,9 +214,7 @@ function resolveRequestContext(
     const baseUrl = normalizeImageBaseUrl(canvasOverride.imageBaseUrl)
     const mediaProtocol = normalizeMediaProtocol(canvasOverride.imageProtocol)
     const modelId =
-      model ||
-      canvasOverride.imageModel ||
-      defaultImageModelForProtocol(mediaProtocol, baseUrl)
+      model || canvasOverride.imageModel || defaultImageModelForProtocol(mediaProtocol, baseUrl)
     return {
       context: {
         modelId,
@@ -473,9 +285,7 @@ export function createMediaGenerator(
       const override = getCanvasOverride?.()
       const { context } = resolveRequestContext(providerConfigStore, model, override)
       const effectiveSize =
-        size ||
-        override?.imageSize ||
-        (protocolFor(context) === 'apimart' ? '1:1' : '1024x1024')
+        size || override?.imageSize || (protocolFor(context) === 'apimart' ? '1:1' : '1024x1024')
       return requestImageGeneration({
         context,
         prompt,
