@@ -219,38 +219,12 @@ const providerFormSchema = z.object({
   baseUrl: apiBaseUrlSchema,
   apiKey: apiKeySchema,
   authHeader: z.boolean().optional(),
-  mediaProtocol: z.enum(['openai-images', 'apimart']).optional(),
-  mediaModel: z.string().trim().optional(),
-  mediaResolution: z.string().trim().optional(),
-  mediaLanguage: z
-    .string()
-    .trim()
-    .refine((value) => value === '' || value.length >= 2, '语言代码至少需要 2 个字符')
-    .max(16)
-    .optional(),
   models: z.array(modelSchema).min(1, '请至少添加一个模型'),
   registered: z.boolean().optional(),
   isNew: z.boolean().optional(),
 })
 
 type ProviderFormValues = z.infer<typeof providerFormSchema>
-
-type ProviderMediaFields = Pick<
-  ProviderFormValues,
-  'mediaProtocol' | 'mediaModel' | 'mediaResolution' | 'mediaLanguage'
->
-
-/** 只发送非空的图片 Provider 配置，避免编辑时用空字符串覆盖已有值。 */
-function mediaPayload(
-  form: ProviderMediaFields
-): Pick<ProviderEntry, 'mediaProtocol' | 'mediaModel' | 'mediaResolution' | 'mediaLanguage'> {
-  return {
-    mediaProtocol: form.mediaProtocol || undefined,
-    mediaModel: form.mediaModel?.trim() || undefined,
-    mediaResolution: form.mediaResolution?.trim() || undefined,
-    mediaLanguage: form.mediaLanguage?.trim() || undefined
-  }
-}
 
 // ── 常量 ──
 
@@ -491,7 +465,6 @@ export function ProviderManager(): ReactElement {
       api: config.api,
       authHeader: config.authHeader ?? true,
       models: config.models,
-      ...mediaPayload(config),
       // 新增模式且本会话未预注册过该 id：后端兜底拒绝覆盖已存在 Provider。
       createOnly: entry.isNew === true && !entry.alreadyRegistered,
     })
@@ -759,7 +732,6 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
         api: form.api || 'openai-completions',
         authHeader: form.authHeader ?? true,
         models: form.models.length > 0 ? form.models : [{ id: 'placeholder', name: 'placeholder' }],
-        ...mediaPayload(form),
       })
       setTempRegisteredIds((prev) => new Set(prev).add(id))
 
@@ -858,7 +830,6 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
         api: form.api,
         authHeader: form.authHeader ?? true,
         models: form.models,
-        ...mediaPayload(form),
       })
       setTempRegisteredIds((prev) => new Set(prev).add(id))
       // 再调用 ag-ui 验证模型列表
@@ -1018,45 +989,6 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
                 {testState.message}
               </p>
             )}
-          </div>
-
-          <div className="grid gap-1.5 rounded-md border border-border/60 bg-surface-2/30 p-3">
-            <Label>图片生成配置（可选）</Label>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="grid gap-1 text-[11px]">
-                协议
-                <select
-                  className="h-8 rounded border border-input bg-surface-2 px-2 text-xs"
-                  {...register('mediaProtocol')}
-                >
-                  <option value="openai-images">OpenAI Images 兼容</option>
-                  <option value="apimart">APIMart 异步任务</option>
-                </select>
-              </label>
-              <label className="grid gap-1 text-[11px]">
-                图片模型
-                <Input
-                  className="h-8 text-xs"
-                  placeholder="gpt-image-2 / dall-e-3"
-                  {...register('mediaModel')}
-                />
-              </label>
-              <label className="grid gap-1 text-[11px]">
-                分辨率
-                <Input
-                  className="h-8 text-xs"
-                  placeholder="APIMart: 1k / 2k / 4k"
-                  {...register('mediaResolution')}
-                />
-              </label>
-              <label className="grid gap-1 text-[11px]">
-                任务语言
-                <Input className="h-8 text-xs" placeholder="en" {...register('mediaLanguage')} />
-              </label>
-            </div>
-            <p className="text-[10px] text-muted-foreground">
-              不填图片模型时使用协议默认值；APIMart 会通过任务接口轮询结果。
-            </p>
           </div>
 
           <div className="grid gap-1.5">

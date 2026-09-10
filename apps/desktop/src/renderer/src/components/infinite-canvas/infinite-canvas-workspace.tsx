@@ -85,6 +85,7 @@ import {
   CanvasToolbar,
   CanvasTopBar,
   ConnectionCreateMenu,
+  MediaSettingsNoticeCard,
   Minimap,
   NodeCreateMenu,
   CanvasZoomControls
@@ -108,7 +109,6 @@ import {
 } from './media-dialog'
 import { CanvasAssetLibrary, saveCanvasAsset, type CanvasAsset } from './asset-library'
 import { CanvasAgentPanel } from './canvas-agent-panel'
-import { MediaConfigDialog } from './media-config-dialog'
 import { MediaLogPanel } from './media-log-panel'
 import { createDesignBoardDoc, type DesignBoardDoc } from './design-board/design-board-types'
 import { exportDesignBoardImage } from './design-board/design-board-export'
@@ -309,7 +309,7 @@ export function InfiniteCanvasWorkspace({
   } | null>(null)
   const [replaceMediaNodeId, setReplaceMediaNodeId] = useState<string | null>(null)
   const [agentPanelOpen, setAgentPanelOpen] = useState(false)
-  const [mediaConfigOpen, setMediaConfigOpen] = useState(false)
+  const [mediaNoticeOpen, setMediaNoticeOpen] = useState(false)
   const [mediaLogsOpen, setMediaLogsOpen] = useState(false)
   const [designBoardCreatePosition, setDesignBoardCreatePosition] = useState<Position | null>(null)
   const [designBoardEditorNodeId, setDesignBoardEditorNodeId] = useState<string | null>(null)
@@ -2909,15 +2909,19 @@ export function InfiniteCanvasWorkspace({
           onDelete={deleteSelected}
           onClear={() => setClearConfirmOpen(true)}
           onSettingsChange={updateSettings}
-          onOpenMediaConfig={() => setMediaConfigOpen(true)}
+          onOpenMediaSettings={() => setMediaNoticeOpen(true)}
           onOpenMediaLogs={() => setMediaLogsOpen(true)}
           onBatchDownload={() => void downloadSelectedBatch()}
           batchDownloading={batchDownloading}
         />
-        {mediaConfigOpen && (
-          <MediaConfigDialog
+        {mediaNoticeOpen && (
+          <MediaSettingsNoticeCard
             theme={theme}
-            onClose={() => setMediaConfigOpen(false)}
+            onOpenSettings={() => {
+              setMediaNoticeOpen(false)
+              onClose?.()
+            }}
+            onClose={() => setMediaNoticeOpen(false)}
           />
         )}
         {designBoardCreatePosition && (

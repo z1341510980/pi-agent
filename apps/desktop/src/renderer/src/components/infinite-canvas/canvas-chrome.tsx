@@ -13,7 +13,6 @@ import {
   Hand,
   HelpCircle,
   ImageIcon,
-  Key,
   List,
   Menu,
   Moon,
@@ -123,7 +122,7 @@ export interface CanvasToolbarProps {
   onDelete: () => void
   onClear: () => void
   onSettingsChange: (patch: Partial<CanvasProjectSettings>) => void
-  onOpenMediaConfig?: () => void
+  onOpenMediaSettings?: () => void
   onOpenMediaLogs?: () => void
   onBatchDownload?: () => void
   batchDownloading?: boolean
@@ -151,7 +150,7 @@ export function CanvasToolbar({
   onDelete,
   onClear,
   onSettingsChange,
-  onOpenMediaConfig,
+  onOpenMediaSettings,
   onOpenMediaLogs,
   onBatchDownload,
   batchDownloading = false
@@ -315,8 +314,8 @@ export function CanvasToolbar({
             </div>
           )}
         </div>
-        {onOpenMediaConfig && (
-          <DockButton icon={<Key />} label="生图 API 配置" onClick={onOpenMediaConfig} />
+        {onOpenMediaSettings && (
+          <DockButton icon={<Settings2 />} label="媒体生成配置" onClick={onOpenMediaSettings} />
         )}
         {onOpenMediaLogs && (
           <DockButton icon={<List />} label="生成日志" onClick={onOpenMediaLogs} />
@@ -338,6 +337,75 @@ export function CanvasToolbar({
           />
         )}
         <DockButton icon={<Eraser />} label="清空画布" danger onClick={onClear} />
+      </div>
+    </div>
+  )
+}
+
+// ── 媒体配置入口提示卡（配置已迁至设置页「媒体生成」分区） ──
+
+/**
+ * 「媒体生成配置」Dock 按钮的落地提示：桌面端暂无画布 → 设置页的跨页导航通道，
+ * 「打开设置」走最近可用通道（宿主注入的 onClose，关闭画布回到主界面后进设置）。
+ */
+export function MediaSettingsNoticeCard({
+  theme,
+  onOpenSettings,
+  onClose
+}: {
+  theme: CanvasTheme
+  onOpenSettings?: () => void
+  onClose: () => void
+}): React.ReactElement {
+  return (
+    <div
+      className="fixed inset-0 z-[130] grid place-items-center bg-black/35 p-5"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-2xl border p-5 shadow-2xl"
+        style={{
+          background: theme.toolbar.panel,
+          borderColor: theme.toolbar.border,
+          color: theme.node.text
+        }}
+        data-canvas-no-zoom
+        onClick={(event) => event.stopPropagation()}
+        onWheel={(event) => event.stopPropagation()}
+      >
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-base font-semibold">媒体生成配置</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid size-7 place-items-center rounded-lg opacity-55 transition hover:opacity-100"
+            aria-label="关闭提示"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+        <p className="text-sm leading-6 opacity-75">
+          媒体生成 Provider 已移至 设置 → AI 核心 → 媒体生成 配置
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg px-4 py-2 text-sm opacity-60 transition hover:opacity-100"
+          >
+            关闭
+          </button>
+          {onOpenSettings && (
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="rounded-lg px-4 py-2 text-sm font-medium transition"
+              style={{ background: theme.toolbar.activeBg, color: theme.toolbar.activeText }}
+            >
+              打开设置
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

@@ -370,35 +370,6 @@ export async function togglePromptSource(
   )
 }
 
-// ── 画布独立生图配置 ──
-
-export interface CanvasMediaConfigStatus {
-  configured: boolean
-  baseUrl: string
-  model: string
-  imageSize: string
-  imageProtocol: 'openai-images' | 'apimart'
-  imageResolution: string
-  imageLanguage: string
-  keyHint: string
-}
-
-export async function getMediaConfig(): Promise<CanvasMediaConfigStatus> {
-  return getApi<CanvasMediaConfigStatus>(`${BASE}/media-config`)
-}
-
-export async function updateMediaConfig(payload: {
-  imageBaseUrl?: string
-  imageApiKey?: string
-  imageModel?: string
-  imageSize?: string
-  imageProtocol?: 'openai-images' | 'apimart'
-  imageResolution?: string
-  imageLanguage?: string
-}): Promise<CanvasMediaConfigStatus> {
-  return putApi<CanvasMediaConfigStatus>(`${BASE}/media-config`, payload)
-}
-
 // ── 媒体生成日志 ──
 
 export interface MediaLogReference {
