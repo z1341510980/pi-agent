@@ -1,13 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DESIGN_IMAGE_PLACEHOLDER,
+  createArrowObject,
   createDesignBoardDoc,
+  createEllipseObject,
   createImageObject,
+  createLineObject,
+  createPolygonObject,
   createRectObject,
+  createStarObject,
   createTextObject,
   designBoardFontFamily
 } from '../design-board-types'
 import {
+  designArrowGeometry,
   exportDesignTextFont,
   layoutDesignText,
   renderDesignBoardToCanvas
@@ -142,5 +148,70 @@ describe('renderDesignBoardToCanvas', () => {
     expect(ctx.save).toHaveBeenCalledTimes(1)
     expect(ctx.restore).toHaveBeenCalledTimes(1)
     expect(ctx.translate).toHaveBeenCalledTimes(2)
+  })
+
+  it('ellipse: ctx.ellipse with centered radii, fill without stroke at width 0', async () => {
+    const ctx = mockCtx()
+    const doc = createDesignBoardDoc(200, 200)
+    doc.objects.push(createEllipseObject(0, 0, 80, 60))
+    await renderDesignBoardToCanvas(ctx, doc, () => Promise.resolve(DESIGN_IMAGE_PLACEHOLDER))
+    expect(ctx.ellipse).toHaveBeenCalledWith(40, 30, 40, 30, 0, 0, Math.PI * 2)
+    expect(ctx.fill).toHaveBeenCalledTimes(1)
+    expect(ctx.stroke).not.toHaveBeenCalled()
+  })
+
+  it('polygon: traces sides count vertices, closes path and fills', async () => {
+    const ctx = mockCtx()
+    const doc = createDesignBoardDoc(200, 200)
+    doc.objects.push(createPolygonObject(0, 0, 100, 100))
+    await renderDesignBoardToCanvas(ctx, doc, () => Promise.resolve(DESIGN_IMAGE_PLACEHOLDER))
+    expect(ctx.moveTo).toHaveBeenCalledTimes(1)
+    expect(ctx.lineTo).toHaveBeenCalledTimes(5)
+    expect(ctx.closePath).toHaveBeenCalledTimes(1)
+    expect(ctx.fill).toHaveBeenCalledTimes(1)
+    expect(ctx.stroke).not.toHaveBeenCalled()
+  })
+
+  it('star: traces 2·points vertices with alternating radii, closes path and fills', async () => {
+    const ctx = mockCtx()
+    const doc = createDesignBoardDoc(200, 200)
+    doc.objects.push(createStarObject(0, 0, 100, 100))
+    await renderDesignBoardToCanvas(ctx, doc, () => Promise.resolve(DESIGN_IMAGE_PLACEHOLDER))
+    expect(ctx.lineTo).toHaveBeenCalledTimes(9)
+    expect(ctx.closePath).toHaveBeenCalledTimes(1)
+    expect(ctx.fill).toHaveBeenCalledTimes(1)
+    expect(ctx.stroke).not.toHaveBeenCalled()
+  })
+
+  it('line: strokes a horizontal segment inset by half the stroke width', async () => {
+    const ctx = mockCtx()
+    const doc = createDesignBoardDoc(300, 100)
+    doc.objects.push(createLineObject(0, 0, 200, 4))
+    await renderDesignBoardToCanvas(ctx, doc, () => Promise.resolve(DESIGN_IMAGE_PLACEHOLDER))
+    expect(ctx.beginPath).toHaveBeenCalled()
+    expect(ctx.moveTo).toHaveBeenCalledWith(2, 2)
+    expect(ctx.lineTo).toHaveBeenCalledWith(198, 2)
+    expect(ctx.lineWidth).toBe(4)
+    expect(ctx.stroke).toHaveBeenCalledTimes(1)
+  })
+
+  it('arrow: strokes the shaft then fills the closed head triangle', async () => {
+    const ctx = mockCtx()
+    const doc = createDesignBoardDoc(300, 100)
+    doc.objects.push(createArrowObject(0, 0, 200, 4))
+    await renderDesignBoardToCanvas(ctx, doc, () => Promise.resolve(DESIGN_IMAGE_PLACEHOLDER))
+    expect(ctx.stroke).toHaveBeenCalledTimes(1)
+    expect(ctx.fill).toHaveBeenCalledTimes(1)
+    expect(ctx.closePath).toHaveBeenCalledTimes(1)
+    const geometry = designArrowGeometry({ width: 200, height: 4, strokeWidth: 4, headSize: 1 })
+    // 头部三角形四点：尖端 → 上角 → 内凹点 → 下角
+    expect(ctx.moveTo).toHaveBeenLastCalledWith(
+      expect.closeTo(geometry.tipX, 6),
+      expect.closeTo(geometry.y, 6)
+    )
+    expect(ctx.lineTo).toHaveBeenLastCalledWith(
+      expect.closeTo(geometry.tipX - geometry.headLen, 6),
+      expect.closeTo(geometry.y + geometry.spread / 2, 6)
+    )
   })
 })

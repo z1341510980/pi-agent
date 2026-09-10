@@ -1,9 +1,14 @@
 import { proxyExternalImageUrl } from '@/api/infinite-canvas-client'
 import { DESIGN_IMAGE_PLACEHOLDER, designBoardFontFamily } from './design-board-types'
 import type {
+  DesignBoardArrowObject,
   DesignBoardDoc,
+  DesignBoardEllipseObject,
   DesignBoardImageObject,
+  DesignBoardLineObject,
+  DesignBoardPolygonObject,
   DesignBoardRectObject,
+  DesignBoardStarObject,
   DesignBoardTextObject
 } from './design-board-types'
 
@@ -150,13 +155,162 @@ export function roundedRectPath(
 
 function drawRect(ctx: CanvasRenderingContext2D, object: DesignBoardRectObject): void {
   roundedRectPath(ctx, object.width, object.height, object.radius)
-  ctx.fillStyle = object.fill
+  fillAndStroke(ctx, object.fill, object.stroke, object.strokeWidth)
+}
+
+function fillAndStroke(
+  ctx: CanvasRenderingContext2D,
+  fill: string,
+  stroke: string,
+  strokeWidth: number
+): void {
+  ctx.fillStyle = fill
   ctx.fill()
-  if (object.strokeWidth > 0) {
-    ctx.strokeStyle = object.stroke
-    ctx.lineWidth = object.strokeWidth
+  if (strokeWidth > 0) {
+    ctx.strokeStyle = stroke
+    ctx.lineWidth = strokeWidth
     ctx.stroke()
   }
+}
+
+function formatCoord(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+/** 多边形顶点序列：顶点从 -π/2 起按边数等分（外接于宽高框）。 */
+function polygonVertexes(width: number, height: number, sides: number): Array<[number, number]> {
+  const count = Math.max(3, sides)
+  const result: Array<[number, number]> = []
+  for (let i = 0; i < count; i += 1) {
+    const angle = -Math.PI / 2 + (i / count) * Math.PI * 2
+    result.push([
+      width / 2 + Math.cos(angle) * (width / 2),
+      height / 2 + Math.sin(angle) * (height / 2)
+    ])
+  }
+  return result
+}
+
+/** 星形顶点序列：2·points 个顶点交替外/内半径（1 / 0.45）。 */
+function starVertexes(width: number, height: number, points: number): Array<[number, number]> {
+  const count = Math.max(4, points)
+  const result: Array<[number, number]> = []
+  for (let i = 0; i < count * 2; i += 1) {
+    const angle = -Math.PI / 2 + (i / (count * 2)) * Math.PI * 2
+    const ratio = i % 2 === 0 ? 1 : 0.45
+    result.push([
+      width / 2 + Math.cos(angle) * (width / 2) * ratio,
+      height / 2 + Math.sin(angle) * (height / 2) * ratio
+    ])
+  }
+  return result
+}
+
+/** SVG points 语法顶点串：DOM 渲染与 canvas 共用顶点公式。 */
+export function designPolygonPoints(width: number, height: number, sides: number): string {
+  return polygonVertexes(width, height, sides)
+    .map(([x, y]) => `${formatCoord(x)},${formatCoord(y)}`)
+    .join(' ')
+}
+
+export function designStarPoints(width: number, height: number, points: number): string {
+  return starVertexes(width, height, points)
+    .map(([x, y]) => `${formatCoord(x)},${formatCoord(y)}`)
+    .join(' ')
+}
+
+export interface DesignArrowGeometry {
+  /** 线段 y（= height/2） */
+  y: number
+  /** 线段起点 x（左端内缩防裁切） */
+  shaftX1: number
+  /** 箭头尖端 x */
+  tipX: number
+  headLen: number
+  spread: number
+}
+
+/** 箭头几何：尖端/头长/张角公式（avnac 对齐），canvas 与 DOM 渲染共用。 */
+export function designArrowGeometry(object: {
+  width: number
+  height: number
+  strokeWidth: number
+  headSize: number
+}): DesignArrowGeometry {
+  const sw = object.strokeWidth
+  const pad = sw / 2
+  return {
+    y: object.height / 2,
+    shaftX1: pad,
+    tipX: Math.max(pad + 1, object.width - sw * 1.8),
+    headLen: Math.max(sw * 2, sw * 4 * object.headSize),
+    spread: Math.max(sw * 1.6, sw * 3.2 * object.headSize)
+  }
+}
+
+function drawEllipse(ctx: CanvasRenderingContext2D, object: DesignBoardEllipseObject): void {
+  ctx.beginPath()
+  ctx.ellipse(
+    object.width / 2,
+    object.height / 2,
+    object.width / 2,
+    object.height / 2,
+    0,
+    0,
+    Math.PI * 2
+  )
+  fillAndStroke(ctx, object.fill, object.stroke, object.strokeWidth)
+}
+
+function traceClosedPath(ctx: CanvasRenderingContext2D, points: Array<[number, number]>): void {
+  ctx.beginPath()
+  points.forEach(([x, y], index) => {
+    if (index === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  })
+  ctx.closePath()
+}
+
+function drawPolygon(ctx: CanvasRenderingContext2D, object: DesignBoardPolygonObject): void {
+  traceClosedPath(ctx, polygonVertexes(object.width, object.height, object.sides))
+  fillAndStroke(ctx, object.fill, object.stroke, object.strokeWidth)
+}
+
+function drawStar(ctx: CanvasRenderingContext2D, object: DesignBoardStarObject): void {
+  traceClosedPath(ctx, starVertexes(object.width, object.height, object.points))
+  fillAndStroke(ctx, object.fill, object.stroke, object.strokeWidth)
+}
+
+function drawLine(ctx: CanvasRenderingContext2D, object: DesignBoardLineObject): void {
+  const y = object.height / 2
+  const x1 = object.strokeWidth / 2
+  const x2 = Math.max(x1, object.width - object.strokeWidth / 2)
+  ctx.beginPath()
+  ctx.moveTo(x1, y)
+  ctx.lineTo(x2, y)
+  ctx.strokeStyle = object.stroke
+  ctx.lineWidth = object.strokeWidth
+  ctx.stroke()
+}
+
+function drawArrow(ctx: CanvasRenderingContext2D, object: DesignBoardArrowObject): void {
+  const geometry = designArrowGeometry(object)
+  const { y, shaftX1, tipX, headLen, spread } = geometry
+  ctx.lineJoin = 'round'
+  ctx.beginPath()
+  ctx.moveTo(shaftX1, y)
+  ctx.lineTo(tipX, y)
+  ctx.strokeStyle = object.stroke
+  ctx.lineWidth = object.strokeWidth
+  ctx.stroke()
+  ctx.beginPath()
+  ctx.moveTo(tipX, y)
+  ctx.lineTo(tipX - headLen, y - spread / 2)
+  ctx.lineTo(tipX - headLen * 0.82, y)
+  ctx.lineTo(tipX - headLen, y + spread / 2)
+  ctx.closePath()
+  ctx.fillStyle = object.stroke
+  ctx.fill()
 }
 
 function drawText(ctx: CanvasRenderingContext2D, object: DesignBoardTextObject): void {
@@ -216,6 +370,11 @@ export async function renderDesignBoardToCanvas(
     ctx.translate(object.x + object.width / 2, object.y + object.height / 2)
     ctx.translate(-object.width / 2, -object.height / 2)
     if (object.kind === 'rect') drawRect(ctx, object)
+    else if (object.kind === 'ellipse') drawEllipse(ctx, object)
+    else if (object.kind === 'polygon') drawPolygon(ctx, object)
+    else if (object.kind === 'star') drawStar(ctx, object)
+    else if (object.kind === 'line') drawLine(ctx, object)
+    else if (object.kind === 'arrow') drawArrow(ctx, object)
     else if (object.kind === 'text') drawText(ctx, object)
     else await drawImageObject(ctx, object, resolveImage)
     ctx.restore()

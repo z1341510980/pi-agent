@@ -45,6 +45,45 @@ export interface DesignBoardRectObject extends DesignBoardBase {
   radius: number
 }
 
+export interface DesignBoardEllipseObject extends DesignBoardBase {
+  kind: 'ellipse'
+  fill: string
+  stroke: string
+  strokeWidth: number
+}
+
+export interface DesignBoardPolygonObject extends DesignBoardBase {
+  kind: 'polygon'
+  fill: string
+  stroke: string
+  strokeWidth: number
+  /** 边数（3–32 取整） */
+  sides: number
+}
+
+export interface DesignBoardStarObject extends DesignBoardBase {
+  kind: 'star'
+  fill: string
+  stroke: string
+  strokeWidth: number
+  /** 角数（4–32 取整） */
+  points: number
+}
+
+export interface DesignBoardLineObject extends DesignBoardBase {
+  kind: 'line'
+  stroke: string
+  strokeWidth: number
+}
+
+export interface DesignBoardArrowObject extends DesignBoardBase {
+  kind: 'arrow'
+  stroke: string
+  strokeWidth: number
+  /** 箭头头部长度系数（min 0.2） */
+  headSize: number
+}
+
 export type DesignImageSource =
   | { kind: 'node-ref'; nodeId: string; index: number }
   | { kind: 'url'; url: string }
@@ -54,6 +93,11 @@ export type DesignBoardObject =
   | DesignBoardTextObject
   | DesignBoardImageObject
   | DesignBoardRectObject
+  | DesignBoardEllipseObject
+  | DesignBoardPolygonObject
+  | DesignBoardStarObject
+  | DesignBoardLineObject
+  | DesignBoardArrowObject
 
 export interface DesignBoardDoc {
   version: typeof DESIGN_BOARD_DOC_VERSION
@@ -128,6 +172,107 @@ export function createRectObject(
     stroke: 'transparent',
     strokeWidth: 0,
     radius: 0,
+    visible: true
+  }
+}
+
+export function createEllipseObject(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): DesignBoardEllipseObject {
+  return {
+    id: makeId(),
+    kind: 'ellipse',
+    x,
+    y,
+    width,
+    height,
+    fill: '#262626',
+    stroke: 'transparent',
+    strokeWidth: 0,
+    visible: true
+  }
+}
+
+export function createPolygonObject(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): DesignBoardPolygonObject {
+  return {
+    id: makeId(),
+    kind: 'polygon',
+    x,
+    y,
+    width,
+    height,
+    fill: '#262626',
+    stroke: 'transparent',
+    strokeWidth: 0,
+    sides: 6,
+    visible: true
+  }
+}
+
+export function createStarObject(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): DesignBoardStarObject {
+  return {
+    id: makeId(),
+    kind: 'star',
+    x,
+    y,
+    width,
+    height,
+    fill: '#262626',
+    stroke: 'transparent',
+    strokeWidth: 0,
+    points: 5,
+    visible: true
+  }
+}
+
+export function createLineObject(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): DesignBoardLineObject {
+  return {
+    id: makeId(),
+    kind: 'line',
+    x,
+    y,
+    width,
+    height,
+    stroke: '#262626',
+    strokeWidth: 4,
+    visible: true
+  }
+}
+
+export function createArrowObject(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): DesignBoardArrowObject {
+  return {
+    id: makeId(),
+    kind: 'arrow',
+    x,
+    y,
+    width,
+    height,
+    stroke: '#262626',
+    strokeWidth: 4,
+    headSize: 1,
     visible: true
   }
 }
@@ -217,6 +362,18 @@ function parseImageSource(raw: unknown): DesignImageSource | null {
   return null
 }
 
+function parseFill(raw: Record<string, unknown>): string {
+  return typeof raw.fill === 'string' && raw.fill ? raw.fill : '#262626'
+}
+
+function parseStroke(raw: Record<string, unknown>, fallback: string): string {
+  return typeof raw.stroke === 'string' && raw.stroke ? raw.stroke : fallback
+}
+
+function parseShapeStrokeWidth(raw: Record<string, unknown>): number {
+  return clampNumber(toNumber(raw.strokeWidth), 0, 1600, 0)
+}
+
 function parseObject(raw: unknown): DesignBoardObject | null {
   if (!raw || typeof raw !== 'object') return null
   const value = raw as Record<string, unknown>
@@ -242,10 +399,56 @@ function parseObject(raw: unknown): DesignBoardObject | null {
     return {
       ...base,
       kind: 'rect',
-      fill: typeof value.fill === 'string' && value.fill ? value.fill : '#262626',
-      stroke: typeof value.stroke === 'string' && value.stroke ? value.stroke : 'transparent',
-      strokeWidth: clampNumber(toNumber(value.strokeWidth), 0, 1600, 0),
+      fill: parseFill(value),
+      stroke: parseStroke(value, 'transparent'),
+      strokeWidth: parseShapeStrokeWidth(value),
       radius: clampInt(toNumber(value.radius), 0, 16000, 0)
+    }
+  }
+  if (value.kind === 'ellipse') {
+    return {
+      ...base,
+      kind: 'ellipse',
+      fill: parseFill(value),
+      stroke: parseStroke(value, 'transparent'),
+      strokeWidth: parseShapeStrokeWidth(value)
+    }
+  }
+  if (value.kind === 'polygon') {
+    return {
+      ...base,
+      kind: 'polygon',
+      fill: parseFill(value),
+      stroke: parseStroke(value, 'transparent'),
+      strokeWidth: parseShapeStrokeWidth(value),
+      sides: clampInt(toNumber(value.sides), 3, 32, 6)
+    }
+  }
+  if (value.kind === 'star') {
+    return {
+      ...base,
+      kind: 'star',
+      fill: parseFill(value),
+      stroke: parseStroke(value, 'transparent'),
+      strokeWidth: parseShapeStrokeWidth(value),
+      points: clampInt(toNumber(value.points), 4, 32, 5)
+    }
+  }
+  if (value.kind === 'line') {
+    return {
+      ...base,
+      kind: 'line',
+      stroke: parseStroke(value, '#262626'),
+      strokeWidth: clampNumber(toNumber(value.strokeWidth), 1, 1600, 4)
+    }
+  }
+  if (value.kind === 'arrow') {
+    return {
+      ...base,
+      kind: 'arrow',
+      stroke: parseStroke(value, '#262626'),
+      strokeWidth: clampNumber(toNumber(value.strokeWidth), 1, 1600, 4),
+      headSize: clampNumber(toNumber(value.headSize), 0.2, 16, 1)
     }
   }
   return null

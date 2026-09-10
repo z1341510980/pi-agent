@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import type { CanvasNodeData } from '@/api/infinite-canvas-client'
-import { createDesignBoardDoc, createRectObject, type DesignBoardDoc } from '../design-board-types'
+import {
+  createDesignBoardDoc,
+  createLineObject,
+  createPolygonObject,
+  createRectObject,
+  type DesignBoardDoc
+} from '../design-board-types'
 import { DesignBoardEditor, type DesignBoardEditorProps } from '../design-board-editor'
 
 afterEach(cleanup)
@@ -35,11 +41,33 @@ function setup(overrides: Partial<DesignBoardEditorProps> = {}): {
   return { onCommit, onClose, container: view.container }
 }
 
+function viewportOf(container: HTMLElement): HTMLElement {
+  return container.querySelector('[data-design-board-viewport]') as HTMLElement
+}
+
+/**
+ * 形状工具流：展开下拉选形状 → 画板空白区按下/抬起。
+ * jsdom 视口 0 尺寸：fit 缩放 = floor(min(200/1080, 200/1440)·100)/100 = 0.13。
+ */
+function drawShapeOnBoard(container: HTMLElement, label: string): void {
+  fireEvent.click(screen.getByRole('button', { name: '形状' }))
+  fireEvent.click(screen.getByRole('button', { name: label }))
+  fireEvent.pointerDown(viewportOf(container), { clientX: 108, clientY: 130 })
+  fireEvent.pointerUp(window)
+}
+
+/** 文字工具流：进入点选放置模式 → 画板点击创建文本（进入编辑态）。 */
+function placeTextOnBoard(container: HTMLElement): void {
+  fireEvent.click(screen.getByRole('button', { name: '文字' }))
+  fireEvent.pointerDown(viewportOf(container), { clientX: 108, clientY: 130 })
+}
+
 describe('DesignBoardEditor', () => {
   it('renders board title, bottom tools and side navigation rail', () => {
     setup()
-    expect(screen.getByRole('button', { name: '添加文本' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '添加矩形' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '文字' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '形状' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '图片' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '图层' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '画布资源' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '快捷键' })).toBeTruthy()
@@ -60,21 +88,80 @@ describe('DesignBoardEditor', () => {
     expect(container.querySelectorAll('[data-design-board-side-panel]')).toHaveLength(0)
   })
 
-  it('adds a text object centered on the board and commits on close', () => {
-    const { onCommit, onClose } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+  it('places a text object via point-click, enters editing and commits on close', () => {
+    const { onCommit, onClose, container } = setup()
+    placeTextOnBoard(container)
+    expect(screen.getByRole('textbox')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
     expect(onCommit).toHaveBeenCalledTimes(1)
     const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
     expect(doc.objects).toHaveLength(1)
-    expect(doc.objects[0]).toMatchObject({ kind: 'text', fontSize: 64 })
+    expect(doc.objects[0]).toMatchObject({ kind: 'text', fontSize: 64, width: 320 })
     expect(doc.objects[0].x).toBeGreaterThan(0)
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
+  it('图片 button opens the shared images side panel', async () => {
+    const { container } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '图片' }))
+    expect(container.querySelectorAll('[data-design-board-side-panel]')).toHaveLength(1)
+    expect(await screen.findByText('画布上暂无图片资源')).toBeTruthy()
+  })
+
+  it('shape dropdown draws an ellipse via pointer sequence and commits it', () => {
+    const { onCommit, container } = setup()
+    const viewport = viewportOf(container)
+    fireEvent.click(screen.getByRole('button', { name: '形状' }))
+    fireEvent.click(screen.getByRole('button', { name: '椭圆' }))
+    expect(viewport.style.cursor).toBe('crosshair')
+    const scale = Math.floor(Math.min(200 / 1080, 200 / 1440) * 100) / 100
+    fireEvent.pointerDown(viewport, { clientX: 108, clientY: 130 })
+    // 拖画中出现虚线预览层
+    fireEvent.pointerMove(window, { clientX: 135, clientY: 156 })
+    expect(container.querySelector('[data-design-board-shape-draft]')).toBeTruthy()
+    fireEvent.pointerUp(window)
+    // 创建后退出绘制模式
+    expect(viewport.style.cursor).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects).toHaveLength(1)
+    expect(doc.objects[0]).toMatchObject({ kind: 'ellipse', fill: '#262626', strokeWidth: 0 })
+    expect(doc.objects[0].width).toBeCloseTo(27 / scale, 0)
+    expect(doc.objects[0].height).toBeCloseTo(26 / scale, 0)
+  })
+
+  it('Escape exits draw mode so board clicks no longer create objects', () => {
+    const { onCommit, container } = setup()
+    const viewport = viewportOf(container)
+    fireEvent.click(screen.getByRole('button', { name: '形状' }))
+    fireEvent.click(screen.getByRole('button', { name: '椭圆' }))
+    expect(viewport.style.cursor).toBe('crosshair')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(viewport.style.cursor).toBe('')
+    fireEvent.pointerDown(viewport, { clientX: 108, clientY: 130 })
+    fireEvent.pointerUp(window)
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects).toHaveLength(0)
+  })
+
+  it('near-click drag creates the default-size shape centered at the start point', () => {
+    const { onCommit, container } = setup()
+    drawShapeOnBoard(container, '矩形')
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects).toHaveLength(1)
+    const rect = doc.objects[0]
+    expect(rect).toMatchObject({ kind: 'rect' })
+    // 默认尺寸 = round(min(1080, 1440)·0.16) = 173，起点为按下场景点
+    expect(rect.width).toBe(173)
+    expect(rect.height).toBe(173)
+    expect(rect.x).toBeCloseTo(108 / 0.13 - 173 / 2, 0)
+  })
+
   it('saves and closes via the top-bar X button', () => {
-    const { onCommit, onClose } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    const { onCommit, onClose, container } = setup()
+    drawShapeOnBoard(container, '矩形')
     fireEvent.click(screen.getByRole('button', { name: '保存并关闭' }))
     expect(onCommit).toHaveBeenCalledTimes(1)
     const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
@@ -84,11 +171,11 @@ describe('DesignBoardEditor', () => {
   })
 
   it('preserves text draft when adding a rect mid-edit', () => {
-    const { onCommit } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    const { onCommit, container } = setup()
+    placeTextOnBoard(container)
     const textarea = screen.getByRole('textbox')
     fireEvent.change(textarea, { target: { value: '你好' } })
-    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    drawShapeOnBoard(container, '矩形')
     fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
     const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
     expect(doc.objects).toHaveLength(2)
@@ -100,12 +187,12 @@ describe('DesignBoardEditor', () => {
     )
   })
 
-  it('commits the previous draft when adding another text mid-edit', () => {
-    const { onCommit } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+  it('commits the previous draft when placing another text mid-edit', () => {
+    const { onCommit, container } = setup()
+    placeTextOnBoard(container)
     const textarea = screen.getByRole('textbox')
     fireEvent.change(textarea, { target: { value: '你好' } })
-    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    placeTextOnBoard(container)
     fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
     const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
     expect(doc.objects).toHaveLength(2)
@@ -118,8 +205,8 @@ describe('DesignBoardEditor', () => {
   })
 
   it('commits text draft on blur and keeps it when finishing', () => {
-    const { onCommit } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    const { onCommit, container } = setup()
+    placeTextOnBoard(container)
     const textarea = screen.getByRole('textbox')
     fireEvent.change(textarea, { target: { value: '你好' } })
     // React 19 把 onBlur 委托到冒泡的 focusout（原生 blur 不冒泡，React 收不到）
@@ -131,8 +218,8 @@ describe('DesignBoardEditor', () => {
   })
 
   it('restores selection-free state and supports undo of creation', async () => {
-    const { onCommit } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    const { onCommit, container } = setup()
+    drawShapeOnBoard(container, '矩形')
     // 撤销快照经 140ms debounce 落栈：等真实定时器触发后再撤销
     await new Promise((resolve) => setTimeout(resolve, 250))
     fireEvent.click(screen.getByRole('button', { name: '撤销' }))
@@ -158,7 +245,7 @@ describe('DesignBoardEditor', () => {
 
   it('选择手柄为屏幕恒定尺寸（命中区/视觉条不随缩放）', () => {
     const { container } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    drawShapeOnBoard(container, '矩形')
     const handles = [...container.querySelectorAll('[data-design-board-handle]')] as HTMLElement[]
     // RESIZE_HANDLE_IDS 顺序：nw, n, ne, e, se, s, sw, w
     expect(handles).toHaveLength(8)
@@ -176,8 +263,8 @@ describe('DesignBoardEditor', () => {
 
   it('invokes export callback with current doc and default png format', () => {
     const onExport = vi.fn().mockResolvedValue(undefined)
-    const { onClose } = setup({ onExport })
-    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    const { onClose, container } = setup({ onExport })
+    drawShapeOnBoard(container, '矩形')
     fireEvent.click(screen.getByRole('button', { name: '导出图片' }))
     expect(onExport).toHaveBeenCalledTimes(1)
     expect(onExport).toHaveBeenCalledWith(
@@ -202,8 +289,8 @@ describe('DesignBoardEditor', () => {
 
   it('merges pending text draft into the exported doc', () => {
     const onExport = vi.fn().mockResolvedValue(undefined)
-    setup({ onExport })
-    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    const { container } = setup({ onExport })
+    placeTextOnBoard(container)
     fireEvent.change(screen.getByRole('textbox'), { target: { value: '导出文本' } })
     fireEvent.click(screen.getByRole('button', { name: '导出图片' }))
     const doc = onExport.mock.calls[0][1] as DesignBoardDoc
@@ -271,7 +358,7 @@ describe('DesignBoardEditor', () => {
 
   it('opens context menu on object right-click, deletes and closes', () => {
     const { onCommit, container } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    drawShapeOnBoard(container, '矩形')
     // 视口空白处按下取消选中，右键对象时应先切换回选中
     fireEvent.pointerDown(container.querySelector('[data-design-board-viewport]') as HTMLElement)
     expect(container.querySelectorAll('[data-design-board-handle]')).toHaveLength(0)
@@ -289,7 +376,7 @@ describe('DesignBoardEditor', () => {
 
   it('context menu 复制 duplicates the object', () => {
     const { onCommit, container } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    drawShapeOnBoard(container, '矩形')
     const objectEl = container.querySelector('[data-design-board-object]') as HTMLElement
     fireEvent.contextMenu(objectEl)
     const menu = container.querySelector('[data-design-board-context-menu]') as HTMLElement
@@ -364,7 +451,7 @@ describe('DesignBoardEditor', () => {
 
   it('closes context menu on Escape and outside pointerdown', () => {
     const { container } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    drawShapeOnBoard(container, '矩形')
     const objectEl = container.querySelector('[data-design-board-object]') as HTMLElement
     fireEvent.contextMenu(objectEl)
     expect(container.querySelector('[data-design-board-context-menu]')).toBeTruthy()
@@ -384,7 +471,7 @@ describe('DesignBoardEditor', () => {
 
   it('选中矩形后显示浮动属性工具栏（含填充颜色输入，定位在对象上方居中）', () => {
     const { container } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    drawShapeOnBoard(container, '矩形')
     const toolbar = container.querySelector('[data-design-board-property-toolbar]') as HTMLElement
     expect(toolbar).toBeTruthy()
     expect(within(toolbar).getByLabelText('填充颜色')).toBeTruthy()
@@ -414,9 +501,32 @@ describe('DesignBoardEditor', () => {
     expect(Number.parseFloat(toolbar.style.top)).toBeCloseTo(objectTop + objectHeight + 8)
   })
 
+  it('shape 属性组：多边形边数可编辑，直线仅描边色/宽无填充', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    doc.objects.push(createPolygonObject(10, 10, 100, 80))
+    doc.objects.push(createLineObject(10, 400, 200, 4))
+    const { container } = setup({ node: { ...boardNode, metadata: { design: doc } } })
+    const objectEls = [...container.querySelectorAll('[data-design-board-object]')] as HTMLElement[]
+    fireEvent.pointerDown(objectEls[0], { button: 0 })
+    const toolbar = container.querySelector('[data-design-board-property-toolbar]') as HTMLElement
+    const sidesInput = within(toolbar).getByLabelText('边数') as HTMLInputElement
+    expect(sidesInput.value).toBe('6')
+    expect(within(toolbar).getByLabelText('填充颜色')).toBeTruthy()
+    fireEvent.change(sidesInput, { target: { value: '9' } })
+    expect(sidesInput.value).toBe('9')
+    fireEvent.pointerDown(objectEls[1], { button: 0 })
+    const lineToolbar = container.querySelector(
+      '[data-design-board-property-toolbar]'
+    ) as HTMLElement
+    expect(within(lineToolbar).getByLabelText('描边颜色')).toBeTruthy()
+    expect(within(lineToolbar).getByLabelText('描边宽度')).toBeTruthy()
+    expect(within(lineToolbar).queryByLabelText('填充颜色')).toBeNull()
+    expect(within(lineToolbar).queryByLabelText('边数')).toBeNull()
+  })
+
   it('文本编辑态隐藏属性工具栏，退出编辑后恢复', () => {
     const { container } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    placeTextOnBoard(container)
     expect(container.querySelector('[data-design-board-property-toolbar]')).toBeNull()
     // 失焦提交草稿退出编辑，选中保持
     fireEvent.focusOut(screen.getByRole('textbox'))
@@ -424,8 +534,8 @@ describe('DesignBoardEditor', () => {
   })
 
   it('属性工具栏修改文本字号并随完成编辑提交', () => {
-    const { onCommit } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    const { onCommit, container } = setup()
+    placeTextOnBoard(container)
     fireEvent.focusOut(screen.getByRole('textbox'))
     const fontSizeInput = screen.getByLabelText('字号') as HTMLInputElement
     fireEvent.change(fontSizeInput, { target: { value: '32' } })
@@ -437,7 +547,7 @@ describe('DesignBoardEditor', () => {
 
   it('属性工具栏描边颜色以白色占位显示 transparent 并写回新 hex', () => {
     const { onCommit, container } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    drawShapeOnBoard(container, '矩形')
     const toolbar = container.querySelector('[data-design-board-property-toolbar]') as HTMLElement
     const strokeInput = within(toolbar).getByLabelText('描边颜色') as HTMLInputElement
     expect(strokeInput.value).toBe('#ffffff')
@@ -449,7 +559,7 @@ describe('DesignBoardEditor', () => {
 
   it('属性工具栏删除选中对象', () => {
     const { onCommit, container } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    drawShapeOnBoard(container, '矩形')
     const toolbar = container.querySelector('[data-design-board-property-toolbar]') as HTMLElement
     fireEvent.click(within(toolbar).getByRole('button', { name: '删除' }))
     expect(container.querySelector('[data-design-board-property-toolbar]')).toBeNull()
@@ -460,7 +570,7 @@ describe('DesignBoardEditor', () => {
 
   it('文本按显式换行渲染为逐行 div（与 canvas 排版同源）', () => {
     const { container } = setup()
-    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    placeTextOnBoard(container)
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a\nb' } })
     // 失焦提交草稿：对象切到非编辑态，按排版结果逐行渲染
     fireEvent.focusOut(screen.getByRole('textbox'))

@@ -10,21 +10,27 @@ import {
   AlignLeft,
   AlignRight,
   ArrowDown,
+  ArrowRight,
   ArrowUp,
   BringToFront,
+  Check,
   ChevronDown,
   ChevronUp,
+  Circle,
   Copy,
   Eye,
   EyeOff,
   Frame,
   GripVertical,
   HelpCircle,
+  Hexagon,
   Image as ImageIcon,
   Layers,
+  Minus,
   Redo2,
   SendToBack,
   Square,
+  Star,
   Trash2,
   Type,
   Undo2,
@@ -38,9 +44,14 @@ import type { CanvasNodeData } from '@/api/infinite-canvas-client'
 import { collectCanvasImageResources } from './design-board-resources'
 import {
   DESIGN_IMAGE_PLACEHOLDER,
+  createArrowObject,
   createDesignBoardDoc,
+  createEllipseObject,
   createImageObject,
+  createLineObject,
+  createPolygonObject,
   createRectObject,
+  createStarObject,
   createTextObject,
   designBoardFontFamily,
   parseDesignBoardDoc,
@@ -57,6 +68,9 @@ import type {
 } from './design-board-types'
 import {
   DESIGN_TEXT_LINE_HEIGHT_RATIO,
+  designArrowGeometry,
+  designPolygonPoints,
+  designStarPoints,
   exportDesignTextFont,
   layoutDesignText
 } from './design-board-renderer'
@@ -85,6 +99,32 @@ const SELECTION_TOOLBAR_OFFSET_PX = 44
 const SELECTION_TOOLBAR_BELOW_GAP_PX = 8
 const WHEEL_ZOOM_SENSITIVITY = 0.006
 const ZOOM_STEP_MULTIPLIER = 1.1
+const PLACE_TEXT_WIDTH = 320
+/** 拖画尺寸不足该值（近似点击）时按默认尺寸居中放置 */
+const MIN_DRAW_SIZE_PX = 12
+/** 默认绘制尺寸系数：min(画板宽, 高)·16% */
+const DEFAULT_DRAW_SIZE_RATIO = 0.16
+/** line/arrow 创建时的默认描边宽（与工厂默认一致） */
+const LINE_DEFAULT_STROKE_WIDTH = 4
+
+/** 形状绘制工具的 6 种 kind（rect 复用点击放置语义） */
+const SHAPE_TOOL_OPTIONS = [
+  { kind: 'rect', label: '矩形', Icon: Square },
+  { kind: 'ellipse', label: '椭圆', Icon: Circle },
+  { kind: 'polygon', label: '多边形', Icon: Hexagon },
+  { kind: 'star', label: '星形', Icon: Star },
+  { kind: 'line', label: '直线', Icon: Minus },
+  { kind: 'arrow', label: '箭头', Icon: ArrowRight }
+] as const
+
+type DesignShapeKind = (typeof SHAPE_TOOL_OPTIONS)[number]['kind']
+
+/** 形状拖画草稿：起点 + 当前点（场景坐标） */
+interface ShapeDraft {
+  kind: DesignShapeKind
+  start: { x: number; y: number }
+  current: { x: number; y: number }
+}
 
 interface DragState {
   kind: 'move' | 'resize'
@@ -120,7 +160,12 @@ type SidePanelKind = 'layers' | 'images' | 'help'
 const LAYER_KIND_LABELS: Record<DesignBoardObject['kind'], string> = {
   text: '文本',
   rect: '矩形',
-  image: '图片'
+  image: '图片',
+  ellipse: '椭圆',
+  polygon: '多边形',
+  star: '星形',
+  line: '直线',
+  arrow: '箭头'
 }
 
 export interface DesignBoardEditorProps {
@@ -156,6 +201,12 @@ export function DesignBoardEditor({
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [sidePanel, setSidePanel] = useState<SidePanelKind | null>(null)
   const [layerDragOverId, setLayerDragOverId] = useState<string | null>(null)
+  // 形状绘制模式：非空时画板空白区拖画创建该类型对象；文字点选放置模式独立开关
+  const [drawShape, setDrawShape] = useState<DesignShapeKind | null>(null)
+  const [placeText, setPlaceText] = useState(false)
+  const [shapeMenuOpen, setShapeMenuOpen] = useState(false)
+  const [shapeDraft, setShapeDraft] = useState<ShapeDraft | null>(null)
+  const shapeDraftRef = useRef<ShapeDraft | null>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const artboardRef = useRef<HTMLDivElement>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
@@ -168,6 +219,7 @@ export function DesignBoardEditor({
   const selectedObject = doc.objects.find((object) => object.id === selectedId) ?? null
   const hoveredObject = doc.objects.find((object) => object.id === hoveredId) ?? null
   const resources = useMemo(() => collectCanvasImageResources(nodes), [nodes])
+  const shapeDraftBox = shapeDraft ? normalizeDraftBox(shapeDraft) : null
 
   // 统一缩放入口：写状态 + 同步 ref；带锚点时在 rAF（布局完成后）校正滚动，
   // 使锚点场景坐标重绘后仍落在原 client 屏幕位置
@@ -340,20 +392,44 @@ export function DesignBoardEditor({
     setSelectedId(object.id)
   }, [])
 
-  const addText = useCallback((): void => {
-    // 先落盘草稿：下方 setTextEditingId/setTextDraft 会覆写当前编辑状态
-    commitTextDraft()
-    const object = createTextObject(doc.width / 2 - 160, doc.height / 2 - 40, 320)
-    addObject(object)
-    setTextEditingId(object.id)
-    setTextDraft('')
-  }, [addObject, commitTextDraft, doc.height, doc.width])
+  /** 文字点选放置：在场景点创建文本并进入编辑态，随后退出放置模式 */
+  const addTextAtScenePoint = useCallback(
+    (x: number, y: number): void => {
+      // 先落盘草稿：下方 setTextEditingId/setTextDraft 会覆写当前编辑状态
+      commitTextDraft()
+      const object = createTextObject(x, y, PLACE_TEXT_WIDTH)
+      addObject(object)
+      setTextEditingId(object.id)
+      setTextDraft('')
+      setPlaceText(false)
+    },
+    [addObject, commitTextDraft]
+  )
 
-  const addRect = useCallback((): void => {
+  const enterPlaceText = useCallback((): void => {
     commitTextDraft()
-    const size = Math.round(Math.min(doc.width, doc.height) * 0.16)
-    addObject(createRectObject(doc.width / 2 - size / 2, doc.height / 2 - size / 2, size, size))
-  }, [addObject, commitTextDraft, doc.height, doc.width])
+    setPlaceText(true)
+    setDrawShape(null)
+    setShapeMenuOpen(false)
+    setSelectedId(null)
+  }, [commitTextDraft])
+
+  /** 选择形状工具：再点同项取消，切换工具互斥 */
+  const selectShapeTool = useCallback(
+    (kind: DesignShapeKind): void => {
+      commitTextDraft()
+      setShapeMenuOpen(false)
+      setDrawShape((current) => (current === kind ? null : kind))
+      setPlaceText(false)
+      setSelectedId(null)
+    },
+    [commitTextDraft]
+  )
+
+  const cancelShapeDraft = useCallback((): void => {
+    shapeDraftRef.current = null
+    setShapeDraft(null)
+  }, [])
 
   const insertResource = useCallback(
     (nodeId: string, index: number): void => {
@@ -478,7 +554,22 @@ export function DesignBoardEditor({
   useEffect(() => {
     const handleMove = (event: PointerEvent): void => {
       const drag = dragRef.current
-      if (!drag) return
+      if (!drag) {
+        // 形状拖画中：仅更新预览终点（场景坐标），不触碰对象
+        const draft = shapeDraftRef.current
+        if (!draft) return
+        const pointer = pointerToScene(
+          event.clientX,
+          event.clientY,
+          boardRect(),
+          scale,
+          doc.width,
+          doc.height
+        )
+        shapeDraftRef.current = { ...draft, current: pointer }
+        setShapeDraft(shapeDraftRef.current)
+        return
+      }
       const pointer = pointerToScene(
         event.clientX,
         event.clientY,
@@ -553,6 +644,16 @@ export function DesignBoardEditor({
     const handleUp = (): void => {
       dragRef.current = null
       setSnapGuides({ x: null, y: null })
+      // 形状拖画结束：按草稿创建对象并退出绘制模式
+      const draft = shapeDraftRef.current
+      if (!draft) return
+      shapeDraftRef.current = null
+      setShapeDraft(null)
+      const object = createShapeObjectFromDraft(draft, doc.width, doc.height)
+      if (!object) return
+      addObject(object)
+      setDrawShape(null)
+      setShapeMenuOpen(false)
     }
     window.addEventListener('pointermove', handleMove)
     window.addEventListener('pointerup', handleUp)
@@ -562,7 +663,7 @@ export function DesignBoardEditor({
       window.removeEventListener('pointerup', handleUp)
       window.removeEventListener('pointercancel', handleUp)
     }
-  }, [doc, scale, updateObject])
+  }, [addObject, doc, scale, updateObject])
 
   // 快捷键（window keydown capture，编辑控件守卫）
   useEffect(() => {
@@ -575,6 +676,14 @@ export function DesignBoardEditor({
       if (event.key === 'Escape') {
         if (textEditingId) {
           commitTextDraft()
+          event.preventDefault()
+        } else if (shapeDraftRef.current) {
+          cancelShapeDraft()
+          event.preventDefault()
+        } else if (drawShape || placeText) {
+          setDrawShape(null)
+          setPlaceText(false)
+          setShapeMenuOpen(false)
           event.preventDefault()
         }
         return
@@ -624,10 +733,13 @@ export function DesignBoardEditor({
     window.addEventListener('keydown', handleKeyDown, true)
     return () => window.removeEventListener('keydown', handleKeyDown, true)
   }, [
+    cancelShapeDraft,
     commitTextDraft,
     deleteSelected,
+    drawShape,
     duplicateSelected,
     fitZoom,
+    placeText,
     redo,
     reorderSelected,
     selectedId,
@@ -767,7 +879,10 @@ export function DesignBoardEditor({
           ref={viewportRef}
           data-design-board-viewport
           className="relative flex-1 overflow-auto overscroll-contain"
-          style={{ background: theme.canvas.background }}
+          style={{
+            background: theme.canvas.background,
+            cursor: drawShape || placeText ? 'crosshair' : undefined
+          }}
           onPointerDown={(event) => {
             const target = event.target as HTMLElement
             if (
@@ -777,6 +892,27 @@ export function DesignBoardEditor({
             )
               return
             commitTextDraft()
+            setShapeMenuOpen(false)
+            const scene = pointerToScene(
+              event.clientX,
+              event.clientY,
+              boardRect(),
+              scale,
+              doc.width,
+              doc.height
+            )
+            // 文字点选放置：点击处创建文本并进入编辑态
+            if (placeText) {
+              addTextAtScenePoint(scene.x, scene.y)
+              return
+            }
+            // 形状绘制模式：空白区按下开始拖画（替代取消选中）
+            if (drawShape) {
+              setSelectedId(null)
+              shapeDraftRef.current = { kind: drawShape, start: scene, current: scene }
+              setShapeDraft(shapeDraftRef.current)
+              return
+            }
             setSelectedId(null)
           }}
           onContextMenu={(event) => event.preventDefault()}
@@ -941,22 +1077,96 @@ export function DesignBoardEditor({
                   }}
                 />
               )}
+              {/* 形状拖画预览：起点到当前点的虚线框 */}
+              {shapeDraftBox && (
+                <div
+                  data-design-board-shape-draft
+                  className="absolute z-[24] border border-dashed"
+                  style={{
+                    left: shapeDraftBox.x * scale,
+                    top: shapeDraftBox.y * scale,
+                    width: shapeDraftBox.width * scale,
+                    height: shapeDraftBox.height * scale,
+                    borderColor: '#3b82f6',
+                    pointerEvents: 'none'
+                  }}
+                />
+              )}
             </div>
           </div>
         </div>
       </div>
-      {/* 底部工具条：添加文本/矩形 ｜ 复制/删除（缩放控件独立悬浮于右下角） */}
+      {/* 底部工具条：文字点选 ｜ 形状下拉 ｜ 图片面板 ｜ 复制/删除（缩放控件独立悬浮于右下角） */}
       <div
         className="flex h-14 shrink-0 items-center gap-2 border-t px-4"
         style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}
       >
-        <Button variant="outline" size="sm" onClick={addText}>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-pressed={placeText}
+          style={
+            placeText
+              ? { backgroundColor: theme.toolbar.activeBg, color: theme.toolbar.activeText }
+              : undefined
+          }
+          onClick={enterPlaceText}
+        >
           <Type className="mr-1 size-4" />
-          添加文本
+          文字
         </Button>
-        <Button variant="outline" size="sm" onClick={addRect}>
-          <Square className="mr-1 size-4" />
-          添加矩形
+        <div className="relative">
+          <Button
+            variant="outline"
+            size="sm"
+            aria-pressed={drawShape !== null}
+            style={
+              drawShape
+                ? { backgroundColor: theme.toolbar.activeBg, color: theme.toolbar.activeText }
+                : undefined
+            }
+            onClick={() => setShapeMenuOpen((current) => !current)}
+          >
+            <Square className="mr-1 size-4" />
+            形状
+          </Button>
+          {/* 形状下拉：6 项，选中项打勾；再点同项取消绘制模式 */}
+          {shapeMenuOpen && (
+            <div
+              data-design-board-shape-menu
+              className="absolute bottom-full left-0 z-40 mb-2 w-32 overflow-hidden rounded-xl border py-1 shadow-xl"
+              style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}
+            >
+              {SHAPE_TOOL_OPTIONS.map(({ kind, label, Icon }) => {
+                const active = drawShape === kind
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    data-design-board-shape-option={kind}
+                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition hover:bg-black/5 dark:hover:bg-white/10 ${
+                      active ? 'font-medium' : ''
+                    }`}
+                    style={{ color: theme.toolbar.item }}
+                    onClick={() => selectShapeTool(kind)}
+                  >
+                    <Icon className="size-3.5" />
+                    {label}
+                    {active && <Check className="ml-auto size-3.5" />}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-pressed={sidePanel === 'images'}
+          onClick={() => toggleSidePanel('images')}
+        >
+          <ImageIcon className="mr-1 size-4" />
+          图片
         </Button>
         <ToolbarDivider />
         <Button variant="outline" size="sm" onClick={duplicateSelected} disabled={!selectedObject}>
@@ -1439,6 +1649,83 @@ function ObjectView({
       </svg>
     )
   }
+  // 以下形状几何公式与 canvas 渲染共用（designPolygonPoints/designStarPoints/designArrowGeometry）
+  if (object.kind === 'ellipse') {
+    return (
+      <svg className="h-full w-full" viewBox={`0 0 ${object.width} ${object.height}`}>
+        <ellipse
+          cx={object.width / 2}
+          cy={object.height / 2}
+          rx={object.width / 2}
+          ry={object.height / 2}
+          fill={object.fill}
+          stroke={object.stroke}
+          strokeWidth={object.strokeWidth}
+        />
+      </svg>
+    )
+  }
+  if (object.kind === 'polygon') {
+    return (
+      <svg className="h-full w-full" viewBox={`0 0 ${object.width} ${object.height}`}>
+        <polygon
+          points={designPolygonPoints(object.width, object.height, object.sides)}
+          fill={object.fill}
+          stroke={object.stroke}
+          strokeWidth={object.strokeWidth}
+        />
+      </svg>
+    )
+  }
+  if (object.kind === 'star') {
+    return (
+      <svg className="h-full w-full" viewBox={`0 0 ${object.width} ${object.height}`}>
+        <polygon
+          points={designStarPoints(object.width, object.height, object.points)}
+          fill={object.fill}
+          stroke={object.stroke}
+          strokeWidth={object.strokeWidth}
+        />
+      </svg>
+    )
+  }
+  if (object.kind === 'line') {
+    const sw = object.strokeWidth
+    return (
+      <svg className="h-full w-full" viewBox={`0 0 ${object.width} ${object.height}`}>
+        <line
+          x1={sw / 2}
+          y1={object.height / 2}
+          x2={Math.max(sw / 2, object.width - sw / 2)}
+          y2={object.height / 2}
+          stroke={object.stroke}
+          strokeWidth={sw}
+        />
+      </svg>
+    )
+  }
+  if (object.kind === 'arrow') {
+    const geometry = designArrowGeometry(object)
+    const headPoints = [
+      `${formatSvgCoord(geometry.tipX)},${formatSvgCoord(geometry.y)}`,
+      `${formatSvgCoord(geometry.tipX - geometry.headLen)},${formatSvgCoord(geometry.y - geometry.spread / 2)}`,
+      `${formatSvgCoord(geometry.tipX - geometry.headLen * 0.82)},${formatSvgCoord(geometry.y)}`,
+      `${formatSvgCoord(geometry.tipX - geometry.headLen)},${formatSvgCoord(geometry.y + geometry.spread / 2)}`
+    ].join(' ')
+    return (
+      <svg className="h-full w-full" viewBox={`0 0 ${object.width} ${object.height}`}>
+        <line
+          x1={geometry.shaftX1}
+          y1={geometry.y}
+          x2={geometry.tipX}
+          y2={geometry.y}
+          stroke={object.stroke}
+          strokeWidth={object.strokeWidth}
+        />
+        <polygon points={headPoints} fill={object.stroke} strokeLinejoin="round" />
+      </svg>
+    )
+  }
   const url = resolveUrl(object.source)
   return url === DESIGN_IMAGE_PLACEHOLDER ? (
     <div
@@ -1638,6 +1925,147 @@ function SelectionToolbar({
           />
         </div>
       )}
+      {object.kind === 'ellipse' && (
+        <div className="flex shrink-0 items-center gap-1">
+          <ToolbarColorInput
+            label="填充颜色"
+            value={object.fill}
+            onCommit={(fill) =>
+              onUpdate((current) => (current.kind === 'ellipse' ? { ...current, fill } : current))
+            }
+          />
+          <ToolbarColorInput
+            label="描边颜色"
+            value={object.stroke}
+            onCommit={(stroke) =>
+              onUpdate((current) => (current.kind === 'ellipse' ? { ...current, stroke } : current))
+            }
+          />
+          <ToolbarNumberInput
+            label="描边宽度"
+            value={object.strokeWidth}
+            min={0}
+            max={1600}
+            theme={theme}
+            onCommit={(strokeWidth) =>
+              onUpdate((current) =>
+                current.kind === 'ellipse' ? { ...current, strokeWidth } : current
+              )
+            }
+          />
+        </div>
+      )}
+      {object.kind === 'polygon' && (
+        <div className="flex shrink-0 items-center gap-1">
+          <ToolbarNumberInput
+            label="边数"
+            value={object.sides}
+            min={3}
+            max={32}
+            integer
+            theme={theme}
+            onCommit={(sides) =>
+              onUpdate((current) => (current.kind === 'polygon' ? { ...current, sides } : current))
+            }
+          />
+          <ToolbarColorInput
+            label="填充颜色"
+            value={object.fill}
+            onCommit={(fill) =>
+              onUpdate((current) => (current.kind === 'polygon' ? { ...current, fill } : current))
+            }
+          />
+          <ToolbarColorInput
+            label="描边颜色"
+            value={object.stroke}
+            onCommit={(stroke) =>
+              onUpdate((current) => (current.kind === 'polygon' ? { ...current, stroke } : current))
+            }
+          />
+          <ToolbarNumberInput
+            label="描边宽度"
+            value={object.strokeWidth}
+            min={0}
+            max={1600}
+            theme={theme}
+            onCommit={(strokeWidth) =>
+              onUpdate((current) =>
+                current.kind === 'polygon' ? { ...current, strokeWidth } : current
+              )
+            }
+          />
+        </div>
+      )}
+      {object.kind === 'star' && (
+        <div className="flex shrink-0 items-center gap-1">
+          <ToolbarNumberInput
+            label="角数"
+            value={object.points}
+            min={4}
+            max={32}
+            integer
+            theme={theme}
+            onCommit={(points) =>
+              onUpdate((current) => (current.kind === 'star' ? { ...current, points } : current))
+            }
+          />
+          <ToolbarColorInput
+            label="填充颜色"
+            value={object.fill}
+            onCommit={(fill) =>
+              onUpdate((current) => (current.kind === 'star' ? { ...current, fill } : current))
+            }
+          />
+          <ToolbarColorInput
+            label="描边颜色"
+            value={object.stroke}
+            onCommit={(stroke) =>
+              onUpdate((current) => (current.kind === 'star' ? { ...current, stroke } : current))
+            }
+          />
+          <ToolbarNumberInput
+            label="描边宽度"
+            value={object.strokeWidth}
+            min={0}
+            max={1600}
+            theme={theme}
+            onCommit={(strokeWidth) =>
+              onUpdate((current) =>
+                current.kind === 'star' ? { ...current, strokeWidth } : current
+              )
+            }
+          />
+        </div>
+      )}
+      {(object.kind === 'line' || object.kind === 'arrow') && (
+        <div className="flex shrink-0 items-center gap-1">
+          <ToolbarColorInput
+            label="描边颜色"
+            value={object.stroke}
+            onCommit={(stroke) =>
+              onUpdate((current) =>
+                current.kind === 'line' || current.kind === 'arrow'
+                  ? { ...current, stroke }
+                  : current
+              )
+            }
+          />
+          <ToolbarNumberInput
+            label="描边宽度"
+            value={object.strokeWidth}
+            min={1}
+            max={1600}
+            theme={theme}
+            onCommit={(strokeWidth) =>
+              onUpdate((current) =>
+                current.kind === 'line' || current.kind === 'arrow'
+                  ? { ...current, strokeWidth }
+                  : current
+              )
+            }
+          />
+        </div>
+      )}
       {object.kind === 'image' && (
         <div className="flex shrink-0 items-center gap-1">
           <ToolbarNumberInput
@@ -1808,4 +2236,64 @@ function makeObjectId(): string {
     return crypto.randomUUID()
   }
   return `dbo-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+}
+
+function formatSvgCoord(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+/** 归一化拖画框：min 角 + abs 尺寸（场景坐标）。 */
+function normalizeDraftBox(draft: ShapeDraft): {
+  x: number
+  y: number
+  width: number
+  height: number
+} {
+  return {
+    x: Math.min(draft.start.x, draft.current.x),
+    y: Math.min(draft.start.y, draft.current.y),
+    width: Math.abs(draft.current.x - draft.start.x),
+    height: Math.abs(draft.current.y - draft.start.y)
+  }
+}
+
+/**
+ * 拖画结束创建对象：
+ * - rect/ellipse/polygon/star 用归一化框；拖画尺寸过小（近似点击）时以默认尺寸（画板短边·16%）在起点居中放置
+ * - line/arrow 用起点终点构造：水平线段 x 取 min/max，y 取两点均值上移半描边宽，height=max(sw,2)
+ */
+function createShapeObjectFromDraft(
+  draft: ShapeDraft,
+  boardWidth: number,
+  boardHeight: number
+): DesignBoardObject | null {
+  const { kind, start, current } = draft
+  if (kind === 'line' || kind === 'arrow') {
+    const sw = LINE_DEFAULT_STROKE_WIDTH
+    let x = Math.min(start.x, current.x)
+    let width = Math.abs(current.x - start.x)
+    if (width < MIN_DRAW_SIZE_PX) {
+      width = Math.round(Math.min(boardWidth, boardHeight) * DEFAULT_DRAW_SIZE_RATIO)
+      x = start.x - width / 2
+    }
+    const centerY = (start.y + current.y) / 2
+    const y = centerY - sw / 2
+    return kind === 'line'
+      ? createLineObject(x, y, width, Math.max(sw, 2))
+      : createArrowObject(x, y, width, Math.max(sw, 2))
+  }
+  const box = normalizeDraftBox(draft)
+  let { x, y, width, height } = box
+  if (width < MIN_DRAW_SIZE_PX || height < MIN_DRAW_SIZE_PX) {
+    const size = Math.round(Math.min(boardWidth, boardHeight) * DEFAULT_DRAW_SIZE_RATIO)
+    x = start.x - size / 2
+    y = start.y - size / 2
+    width = size
+    height = size
+  }
+  if (kind === 'rect') return createRectObject(x, y, width, height)
+  if (kind === 'ellipse') return createEllipseObject(x, y, width, height)
+  if (kind === 'polygon') return createPolygonObject(x, y, width, height)
+  if (kind === 'star') return createStarObject(x, y, width, height)
+  return null
 }

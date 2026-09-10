@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { CanvasNodeData } from '@/api/infinite-canvas-client'
 import {
+  createArrowObject,
   createDesignBoardDoc,
+  createEllipseObject,
   createImageObject,
+  createLineObject,
+  createPolygonObject,
   createRectObject,
+  createStarObject,
   createTextObject,
   parseDesignBoardDoc,
   reorderDesignBoardObject,
@@ -53,6 +58,59 @@ describe('design board document', () => {
     const image = createImageObject({ kind: 'node-ref', nodeId: 'n1', index: 0 }, 0, 0, 300, 200)
     expect(image).toMatchObject({ kind: 'image', radius: 0, visible: true })
     expect(text.id).not.toBe(rect.id)
+  })
+
+  it('creates the five shape kinds with spec defaults', () => {
+    const ellipse = createEllipseObject(0, 0, 100, 80)
+    expect(ellipse).toMatchObject({
+      kind: 'ellipse',
+      fill: '#262626',
+      stroke: 'transparent',
+      strokeWidth: 0,
+      visible: true
+    })
+    const polygon = createPolygonObject(0, 0, 100, 80)
+    expect(polygon).toMatchObject({
+      kind: 'polygon',
+      fill: '#262626',
+      stroke: 'transparent',
+      strokeWidth: 0,
+      sides: 6,
+      visible: true
+    })
+    const star = createStarObject(0, 0, 100, 80)
+    expect(star).toMatchObject({ kind: 'star', points: 5, visible: true })
+    const line = createLineObject(0, 0, 200, 4)
+    expect(line).toMatchObject({
+      kind: 'line',
+      stroke: '#262626',
+      strokeWidth: 4,
+      visible: true
+    })
+    const arrow = createArrowObject(0, 0, 200, 4)
+    expect(arrow).toMatchObject({ kind: 'arrow', strokeWidth: 4, headSize: 1, visible: true })
+    expect(ellipse.id).not.toBe(line.id)
+  })
+
+  it('parses shape objects with per-field fallbacks and clamps (sides/points/headSize)', () => {
+    const doc = createDesignBoardDoc(100, 100)
+    doc.objects.push({ ...createPolygonObject(0, 0, 10, 10), sides: 99 })
+    doc.objects.push({ ...createPolygonObject(0, 0, 10, 10), sides: 1 })
+    doc.objects.push({ ...createStarObject(0, 0, 10, 10), points: Number.NaN })
+    doc.objects.push({ ...createArrowObject(0, 0, 10, 4), headSize: 0.01 })
+    doc.objects.push({ ...createLineObject(0, 0, 10, 4), strokeWidth: 0 })
+    doc.objects.push({ ...createLineObject(0, 0, 10, 4), stroke: '' })
+    const raw = JSON.parse(JSON.stringify(doc)) as { objects: Array<Record<string, unknown>> }
+    raw.objects.push({ kind: 'ellipse', fill: '#123456' })
+    const parsed = parseDesignBoardDoc(raw)
+    expect(parsed?.objects[0]).toMatchObject({ kind: 'polygon', sides: 32 })
+    expect(parsed?.objects[1]).toMatchObject({ kind: 'polygon', sides: 3 })
+    expect(parsed?.objects[2]).toMatchObject({ kind: 'star', points: 5 })
+    expect(parsed?.objects[3]).toMatchObject({ kind: 'arrow', headSize: 0.2 })
+    expect(parsed?.objects[4]).toMatchObject({ kind: 'line', strokeWidth: 1 })
+    expect(parsed?.objects[5]).toMatchObject({ kind: 'line', stroke: '#262626' })
+    // 非法 base 字段回退默认：对象仍有效
+    expect(parsed?.objects[6]).toMatchObject({ kind: 'ellipse', fill: '#123456' })
   })
 
   it('parses valid docs, drops invalid objects, clamps fields, blocks NaN', () => {
