@@ -54,6 +54,7 @@ import {
   createStarObject,
   createTextObject,
   designBoardFontFamily,
+  layerDisplayName,
   parseDesignBoardDoc,
   reorderDesignBoardObject,
   reorderDesignBoardObjectToIndex,
@@ -156,17 +157,6 @@ interface ContextMenuState {
 }
 
 type SidePanelKind = 'layers' | 'images' | 'help'
-
-const LAYER_KIND_LABELS: Record<DesignBoardObject['kind'], string> = {
-  text: '文本',
-  rect: '矩形',
-  image: '图片',
-  ellipse: '椭圆',
-  polygon: '多边形',
-  star: '星形',
-  line: '直线',
-  arrow: '箭头'
-}
 
 export interface DesignBoardEditorProps {
   node: CanvasNodeData
@@ -514,10 +504,14 @@ export function DesignBoardEditor({
     setSidePanel((current) => (current === panel ? null : panel))
   }, [])
 
-  // 图层条目按 z 序倒序展示（最上层在最上），保留原数组索引用于拖拽落点定位
+  // 图层条目按 z 序倒序展示（最上层在最上），保留原数组索引用于拖拽落点定位；
+  // 显示名按对象类型 + 来源节点标题生成
   const layerEntries = useMemo(
-    () => doc.objects.map((object, index) => ({ object, index })).reverse(),
-    [doc.objects]
+    () =>
+      doc.objects
+        .map((object, index) => ({ object, index, label: layerDisplayName(object, nodes) }))
+        .reverse(),
+    [doc.objects, nodes]
   )
 
   // 拖拽/缩放（window 级 move/up/cancel）
@@ -1394,7 +1388,7 @@ function LayersPanel({
   onReorderToIndex,
   onDragOverRow
 }: {
-  entries: Array<{ object: DesignBoardObject; index: number }>
+  entries: Array<{ object: DesignBoardObject; index: number; label: string }>
   selectedId: string | null
   dragOverId: string | null
   theme: CanvasTheme
@@ -1409,13 +1403,9 @@ function LayersPanel({
   }
   return (
     <div className="flex flex-col gap-0.5" data-design-board-layers-panel>
-      {entries.map(({ object, index }) => {
+      {entries.map(({ object, index, label }) => {
         const selected = object.id === selectedId
         const dragOver = object.id === dragOverId
-        const label =
-          object.kind === 'text' && object.text.trim()
-            ? object.text.trim()
-            : LAYER_KIND_LABELS[object.kind]
         return (
           <div
             key={object.id}

@@ -473,6 +473,46 @@ export function parseDesignBoardDoc(raw: unknown): DesignBoardDoc | null {
   }
 }
 
+const LAYER_KIND_LABELS: Record<DesignBoardObject['kind'], string> = {
+  text: '文本',
+  rect: '矩形',
+  image: '图片',
+  ellipse: '椭圆',
+  polygon: '多边形',
+  star: '星形',
+  line: '直线',
+  arrow: '箭头'
+}
+
+/** 图层文本条目显示名截断长度：超过则截断加省略号 */
+const LAYER_TEXT_LABEL_MAX_CHARS = 12
+
+function truncateLayerTextLabel(text: string): string {
+  return text.length > LAYER_TEXT_LABEL_MAX_CHARS
+    ? `${text.slice(0, LAYER_TEXT_LABEL_MAX_CHARS)}…`
+    : text
+}
+
+/**
+ * 图层面板条目显示名：文本显示内容截断（空回退「文本」），
+ * 图片按来源取节点标题（node-ref 找不到节点/标题为空回退「图片」，url/data 显示「图片」），
+ * 其余形状按类型名。
+ */
+export function layerDisplayName(object: DesignBoardObject, nodes: CanvasNodeData[]): string {
+  if (object.kind === 'text') {
+    const text = object.text.trim()
+    return text ? truncateLayerTextLabel(text) : LAYER_KIND_LABELS.text
+  }
+  if (object.kind === 'image') {
+    if (object.source.kind !== 'node-ref') return LAYER_KIND_LABELS.image
+    const { nodeId } = object.source
+    const node = nodes.find((item) => item.id === nodeId)
+    const title = node?.title.trim() ?? ''
+    return title || LAYER_KIND_LABELS.image
+  }
+  return LAYER_KIND_LABELS[object.kind]
+}
+
 export function resolveDesignImageSource(
   source: DesignImageSource,
   nodes: CanvasNodeData[]

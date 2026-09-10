@@ -3,9 +3,11 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import type { CanvasNodeData } from '@/api/infinite-canvas-client'
 import {
   createDesignBoardDoc,
+  createImageObject,
   createLineObject,
   createPolygonObject,
   createRectObject,
+  createTextObject,
   type DesignBoardDoc
 } from '../design-board-types'
 import { DesignBoardEditor, type DesignBoardEditorProps } from '../design-board-editor'
@@ -322,6 +324,83 @@ describe('DesignBoardEditor', () => {
       kind: 'image',
       source: { kind: 'node-ref', nodeId: 'img1', index: 0 }
     })
+  })
+
+  it('图层面板图片条目显示来源节点标题（资源插入流）', async () => {
+    const imageNode: CanvasNodeData = {
+      id: 'img1',
+      type: 'image',
+      title: '海边日落',
+      position: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      metadata: { content: 'data:image/png;base64,AAA' }
+    }
+    const { container } = setup({ nodes: [boardNode, imageNode] })
+    fireEvent.click(screen.getByRole('button', { name: '画布资源' }))
+    fireEvent.click(await screen.findByRole('button', { name: /海边日落/ }))
+    fireEvent.click(screen.getByRole('button', { name: '图层' }))
+    const panel = container.querySelector('[data-design-board-layers-panel]') as HTMLElement
+    const rows = [...panel.querySelectorAll('[data-design-board-layer-item]')] as HTMLElement[]
+    expect(rows).toHaveLength(1)
+    expect(within(rows[0]).getByTitle('海边日落')).toBeTruthy()
+  })
+
+  it('图片图层按来源区分名称：节点标题，空标题/缺失节点/url 回退「图片」', () => {
+    const titled: CanvasNodeData = {
+      id: 'img1',
+      type: 'image',
+      title: '海边日落',
+      position: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      metadata: { content: 'data:image/png;base64,AAA' }
+    }
+    const untitled: CanvasNodeData = {
+      id: 'img2',
+      type: 'image',
+      title: '',
+      position: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      metadata: { content: 'data:image/png;base64,BBB' }
+    }
+    const doc = createDesignBoardDoc(1080, 1440)
+    doc.objects.push(
+      createImageObject({ kind: 'node-ref', nodeId: 'img1', index: 0 }, 10, 10, 100, 80),
+      createImageObject({ kind: 'node-ref', nodeId: 'img2', index: 0 }, 10, 200, 100, 80),
+      createImageObject({ kind: 'url', url: 'https://example.com/a.png' }, 10, 400, 100, 80),
+      createImageObject({ kind: 'node-ref', nodeId: 'missing', index: 0 }, 10, 600, 100, 80)
+    )
+    const { container } = setup({
+      node: { ...boardNode, metadata: { design: doc } },
+      nodes: [boardNode, titled, untitled]
+    })
+    fireEvent.click(screen.getByRole('button', { name: '图层' }))
+    const panel = container.querySelector('[data-design-board-layers-panel]') as HTMLElement
+    const rows = [...panel.querySelectorAll('[data-design-board-layer-item]')] as HTMLElement[]
+    expect(rows).toHaveLength(4)
+    // 倒序展示：missing 节点 / url / 空标题节点 / 有标题节点
+    expect(within(rows[0]).getByTitle('图片')).toBeTruthy()
+    expect(within(rows[1]).getByTitle('图片')).toBeTruthy()
+    expect(within(rows[2]).getByTitle('图片')).toBeTruthy()
+    expect(within(rows[3]).getByTitle('海边日落')).toBeTruthy()
+  })
+
+  it('文本图层显示内容截断（超过 12 字符加省略号），空内容回退「文本」', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    doc.objects.push(
+      { ...createTextObject(10, 10, 320), text: '这是一段超过十二个字符的文本内容' },
+      createTextObject(10, 300, 320)
+    )
+    const { container } = setup({ node: { ...boardNode, metadata: { design: doc } } })
+    fireEvent.click(screen.getByRole('button', { name: '图层' }))
+    const panel = container.querySelector('[data-design-board-layers-panel]') as HTMLElement
+    const rows = [...panel.querySelectorAll('[data-design-board-layer-item]')] as HTMLElement[]
+    expect(rows).toHaveLength(2)
+    // 倒序展示：空文本在前，长文本截断在后
+    expect(within(rows[0]).getByTitle('文本')).toBeTruthy()
+    expect(within(rows[1]).getByTitle('这是一段超过十二个字符的…')).toBeTruthy()
   })
 
   it('zoom step buttons scale the zoom percent by 1.1 steps', () => {
