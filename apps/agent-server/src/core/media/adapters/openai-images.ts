@@ -78,10 +78,13 @@ interface AdapterRuntime {
 }
 
 function createRuntime(ctx: MediaModalityContext): AdapterRuntime {
+  const baseUrl = normalizeImageBaseUrl(ctx.baseUrl)
   return {
     providerId: ctx.providerId,
-    baseUrl: normalizeImageBaseUrl(ctx.baseUrl),
-    model: ctx.model,
+    baseUrl,
+    // 行内默认：Provider 行 model 留空时回退厂商默认（与迁移前
+    // resolveRequestContext 的 modelId 兜底链末端一致）
+    model: ctx.model || defaultImageModelForBaseUrl(baseUrl),
     // 与迁移前等价：空 Key 时不携带 Authorization 头
     headers: ctx.apiKey ? { Authorization: `Bearer ${ctx.apiKey}` } : {},
     logger: ctx.logger

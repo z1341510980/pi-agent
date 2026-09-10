@@ -10,9 +10,9 @@
  * - ctx.baseUrl 经 normalizeImageBaseUrl 归一（原依赖 resolveRequestContext
  *   上游归一；此处幂等，已含 /v1 的 URL 原样保留）。
  * - ctx.params.resolution/language 取代 ImageRequestContext.mediaResolution/
- *   mediaLanguage（兼容 facade 桥接时映射，见 media-generator.ts）。
- * - size 无值时 payload 不携带该字段；'1:1' 兜底仍由兼容 facade 的
- *   createMediaGenerator 提供（与迁移前同层级）。
+ *   mediaLanguage（由 Registry 从 media_providers 行解析）。
+ * - size 无值时 payload 不携带该字段（formSchema 未声明 size 参数，
+ *   旧 facade 的 '1:1' 兜底随旧双路一并移除，由服务端默认兜底）。
  */
 
 import type { FastifyBaseLogger } from 'fastify'
@@ -70,7 +70,9 @@ function createRuntime(ctx: MediaModalityContext): AdapterRuntime {
   return {
     providerId: ctx.providerId,
     baseUrl: normalizeImageBaseUrl(ctx.baseUrl),
-    model: ctx.model,
+    // 行内默认：Provider 行 model 留空时回退文档默认模型（与迁移前
+    // resolveRequestContext 的 defaultImageModelForProtocol 兜底一致）
+    model: ctx.model || APIMART_DEFAULT_IMAGE_MODEL,
     // 与迁移前等价：空 Key 时不携带 Authorization 头
     headers: ctx.apiKey ? { Authorization: `Bearer ${ctx.apiKey}` } : {},
     logger: ctx.logger

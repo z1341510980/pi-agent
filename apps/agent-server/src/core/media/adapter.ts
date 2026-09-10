@@ -63,6 +63,8 @@ export interface MediaProviderRow {
 
 /** 图片生成输入：与 MediaGenerator.generateImage 现签名对齐（含 traceId）。 */
 export interface MediaGenerationInput {
+  /** 画布透传的 Provider 提示：Registry resolve 时优先于模态默认（spec §6）。 */
+  providerId?: string
   prompt: string
   references?: string[]
   model?: string

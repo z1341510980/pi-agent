@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import type { FastifyBaseLogger } from 'fastify'
 import Database from 'better-sqlite3'
 import { runMigrations } from '../../db/migrations.js'
 import type { MediaProviderRow } from '../adapter.js'
@@ -98,6 +99,29 @@ describe('MediaProviderRegistry', () => {
     expect(resolved.adapter).toBe(apimartAdapter)
   })
 
+  it('falls back to the modality default when the explicit providerId does not exist', async () => {
+    const fallback = createImageProvider({ name: '兜底默认' })
+    store.setDefault(fallback.id)
+
+    const registry = createMediaProviderRegistry(store)
+    const resolved = await registry.resolve('image', { providerId: 'no-such-provider' })
+    expect(resolved.providerId).toBe(fallback.id)
+  })
+
+  it('falls back to the modality default when the explicit providerId belongs to another modality', async () => {
+    const audioRow = store.create({
+      name: '音频位误传',
+      modality: 'audio',
+      adapter: 'openai-images'
+    })
+    const fallback = createImageProvider({ name: '图片默认' })
+    store.setDefault(fallback.id)
+
+    const registry = createMediaProviderRegistry(store)
+    const resolved = await registry.resolve('image', { providerId: audioRow.id })
+    expect(resolved.providerId).toBe(fallback.id)
+  })
+
   it('skips a disabled explicit providerId and falls back to the enabled default', async () => {
     const disabled = createImageProvider({ name: '已停用' })
     const fallback = createImageProvider({ name: '启用默认' })
@@ -116,18 +140,36 @@ describe('MediaProviderRegistry', () => {
 
     const registry = createMediaProviderRegistry(store)
     await expect(registry.resolve('image')).rejects.toThrow(
-      '该模态尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
+      '图片尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
     )
   })
 
-  it('throws the guidance message when the modality has no configured provider', async () => {
+  it('throws per-modality guidance messages when the modality has no configured provider', async () => {
     const registry = createMediaProviderRegistry(store)
     await expect(registry.resolve('image')).rejects.toThrow(
-      '该模态尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
+      '图片尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
     )
     await expect(registry.resolve('video')).rejects.toThrow(
-      '该模态尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
+      '视频尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
     )
+    await expect(registry.resolve('audio')).rejects.toThrow(
+      '音频尚未配置生成 Provider，请到 设置 → 媒体生成 配置'
+    )
+  })
+
+  it('injects the host logger into resolved contexts', async () => {
+    const row = createImageProvider()
+    store.setDefault(row.id)
+    const logger = {
+      info: vi.fn(),
+      debug: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn()
+    } as unknown as FastifyBaseLogger
+
+    const registry = createMediaProviderRegistry(store, { logger })
+    const resolved = await registry.resolve('image')
+    expect(resolved.ctx.logger).toBe(logger)
   })
 
   it('rejects rows whose adapter is not registered', async () => {

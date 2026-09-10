@@ -9,6 +9,7 @@
  *   类本身不带默认注册，保持直接构造时为空。
  */
 
+import type { FastifyBaseLogger } from 'fastify'
 import type {
   MediaModality,
   MediaModalityContext,
@@ -25,6 +26,8 @@ export type MediaTextBridge = (providerId?: string) => Promise<ResolvedMediaProv
 
 export interface MediaProviderRegistryOptions {
   textBridge?: MediaTextBridge
+  /** 宿主日志器：注入 resolve 出的 MediaModalityContext，供 adapter 记录诊断日志。 */
+  logger?: FastifyBaseLogger
 }
 
 /** 内置 adapter 清单：工厂默认注册 + 路由 adapters 元数据共用。 */
@@ -33,19 +36,28 @@ export const MEDIA_PROVIDER_ADAPTERS: readonly MediaProviderAdapter[] = [
   apimartAdapter
 ]
 
-function unconfiguredProviderError(modality: MediaModality): Error {
-  // text 走 LLM Provider 体系，文案以「文字」指代；其余模态沿用 spec 统一引导文案
-  const label = modality === 'text' ? '文字' : '该模态'
-  return new Error(`${label}尚未配置生成 Provider，请到 设置 → 媒体生成 配置`)
+/** 未配置引导文案中的模态名：按模态给出准确指代（音频/视频等）。 */
+const MODALITY_LABELS: Record<MediaModality, string> = {
+  text: '文字',
+  image: '图片',
+  audio: '音频',
+  video: '视频'
 }
 
-function contextFromRow(row: MediaProviderRow): MediaModalityContext {
+function unconfiguredProviderError(modality: MediaModality): Error {
+  return new Error(
+    `${MODALITY_LABELS[modality]}尚未配置生成 Provider，请到 设置 → 媒体生成 配置`
+  )
+}
+
+function contextFromRow(row: MediaProviderRow, logger?: FastifyBaseLogger): MediaModalityContext {
   return {
     providerId: row.id,
     baseUrl: row.baseUrl,
     apiKey: row.apiKey,
     model: row.model,
-    params: row.params
+    params: row.params,
+    ...(logger ? { logger } : {})
   }
 }
 
@@ -86,7 +98,7 @@ export class MediaProviderRegistry {
     if (!adapter) {
       throw new Error(`媒体 Provider "${row.id}" 的适配器 "${row.adapter}" 未注册`)
     }
-    return { providerId: row.id, adapter, ctx: contextFromRow(row) }
+    return { providerId: row.id, adapter, ctx: contextFromRow(row, this.options.logger) }
   }
 
   /** providerId 精确命中（modality 匹配 + enabled）→ 模态 enabled 默认 → null。 */

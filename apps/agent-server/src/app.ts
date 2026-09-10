@@ -22,6 +22,7 @@ import { gateRoute } from './routes/gate.route.js'
 import { memoryRoute } from './routes/memory.route.js'
 import { usageRoute } from './routes/usage.route.js'
 import { providerRoute } from './routes/provider.route.js'
+import { mediaProviderRoute } from './routes/media-provider.route.js'
 import { sessionRoute } from './routes/session.route.js'
 import { settingsRoute } from './routes/settings.route.js'
 import { agentsRoute } from './routes/agents.route.js'
@@ -45,6 +46,8 @@ import { ConfirmationManager } from './core/tool/confirmation-manager.js'
 import { createPiSession } from './core/agent/pi-session.js'
 import { Tracer, SqliteTraceStore, createTraceTables } from './core/tracer/index.js'
 import { createMediaGenerator } from './core/config/media-generator.js'
+import { createMediaProviderRegistry } from './core/media/registry.js'
+import { MediaProviderStore } from './core/media/media-provider-store.js'
 
 export async function createApp(): Promise<Fastify.FastifyInstance> {
   const app = Fastify({
@@ -162,7 +165,17 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   app.pluginManager?.setModelRegistry(app.modelRegistry)
   // 注入 ProviderConfigStore（供 onPayload 读取 stream_options 屏蔽开关等应用级配置）
   app.pluginManager?.setProviderConfigStore(app.providerConfigStore)
-  app.pluginManager?.setMediaGenerator(createMediaGenerator(app.providerConfigStore, undefined, { logger: app.log }))
+  // 媒体 Provider 体系（spec §3/§6）：media_providers 表 + Registry 按模态解析。
+  // store 同时注入 PluginManager（画布旧 media-config 路由的兼容读写入口）。
+  const mediaProviderStore = new MediaProviderStore(app.db)
+  app.decorate('mediaProviderStore', mediaProviderStore)
+  const mediaProviderRegistry = createMediaProviderRegistry(mediaProviderStore, {
+    logger: app.log
+  })
+  app.decorate('mediaProviderRegistry', mediaProviderRegistry)
+  // 宿主媒体 facade：经 Registry 分发（providerId 优先 → 模态默认），插件侧零改动
+  app.pluginManager?.setMediaGenerator(createMediaGenerator(mediaProviderRegistry, { logger: app.log }))
+  app.pluginManager?.setMediaProviderStore(mediaProviderStore)
 
   // ===== 初始化追踪系统（对标 DSH session-query） =====
   const tracerStore = new SqliteTraceStore(app.db)
@@ -213,6 +226,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(memoryRoute)
   await app.register(usageRoute)
   await app.register(providerRoute)
+  await app.register(mediaProviderRoute)
   await app.register(sessionRoute)
   await app.register(settingsRoute)
   await app.register(agentsRoute)

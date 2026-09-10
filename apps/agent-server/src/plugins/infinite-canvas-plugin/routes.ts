@@ -4,7 +4,8 @@ import type { RouteDefinition } from '../../core/plugin/plugin-types.js'
 import type { InfiniteCanvasStore } from './store.js'
 import type { AnyCanvasNodeType } from './types.js'
 import type { PromptSourceService } from './prompt-source-service.js'
-import type { CanvasMediaSettingsService } from './media-settings.js'
+import type { MediaProviderRow } from '../../core/media/adapter.js'
+import type { MediaProviderStore } from '../../core/media/media-provider-store.js'
 import type { CanvasAssetStore, MediaLogStore } from './canvas-assets.js'
 import { imageMimeFromBytes } from './canvas-assets.js'
 import {
@@ -59,6 +60,7 @@ export type CanvasMediaGenerateHandler = (input: {
 export type CanvasImageEditHandler = (input: {
   projectId?: string
   prompt: string
+  providerId?: string
   image: string
   images?: string[]
   mask?: string
@@ -118,6 +120,39 @@ function requireNodeType(value: unknown): AnyCanvasNodeType {
   return type
 }
 
+/**
+ * @deprecated 画布媒体配置已迁移到 media_providers 表（设置 → 媒体生成）。
+ * 旧桌面端 CanvasMediaConfigStatus 形状的兼容视图：由 image 默认 Provider 行映射。
+ */
+interface CanvasMediaConfigStatus {
+  configured: boolean
+  baseUrl: string
+  model: string
+  imageSize: string
+  imageProtocol: 'openai-images' | 'apimart'
+  imageResolution: string
+  imageLanguage: string
+  keyHint: string
+}
+
+/** image 默认 Provider 行 → 旧媒体配置视图；无默认行时返回未配置空态。 */
+function canvasMediaStatusFromRow(row: MediaProviderRow | null): CanvasMediaConfigStatus {
+  return {
+    configured: Boolean(row?.baseUrl && row.apiKey),
+    baseUrl: row?.baseUrl ?? '',
+    model: row?.model ?? '',
+    imageSize: row?.params.size ?? '1024x1024',
+    imageProtocol: row?.adapter === 'apimart' ? 'apimart' : 'openai-images',
+    imageResolution: row?.params.resolution ?? '',
+    imageLanguage: row?.params.language ?? 'en',
+    keyHint: row?.apiKey ? `${row.apiKey.slice(0, 4)}…${row.apiKey.slice(-4)}` : ''
+  }
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
 export function createInfiniteCanvasRoutes(
   store: InfiniteCanvasStore,
   generate?: CanvasGenerateHandler,
@@ -126,7 +161,11 @@ export function createInfiniteCanvasRoutes(
   editImage?: CanvasImageEditHandler,
   reversePrompt?: CanvasReversePromptHandler,
   promptSources?: PromptSourceService,
-  mediaSettings?: CanvasMediaSettingsService,
+  /**
+   * 媒体 Provider store 的惰性获取器：宿主在插件 setup 之后才注入
+   * （与 PluginContext.modelRegistry 的 getter 模式一致），请求期读取。
+   */
+  getMediaProviders?: () => MediaProviderStore | undefined,
   assets?: CanvasAssetStore,
   mediaLogs?: MediaLogStore
 ): RouteDefinition[] {
@@ -207,32 +246,61 @@ export function createInfiniteCanvasRoutes(
       }
     },
     {
+      // @deprecated 画布媒体配置已迁移 media_providers（设置 → 媒体生成）：
+      // 以 image 默认 Provider 的只读视图兼容旧桌面端，阶段三清理本路由。
       method: 'GET',
       path: '/media-config',
       handler: async (request, reply) => {
-        if (!mediaSettings) return reply.code(503).send({ ok: false, error: '媒体配置服务未初始化' })
-        return success(mediaSettings.getStatus(), request.traceId)
+        const mediaProviders = getMediaProviders?.()
+        if (!mediaProviders) return reply.code(503).send({ ok: false, error: '媒体配置服务未初始化' })
+        return success(canvasMediaStatusFromRow(mediaProviders.resolveDefault('image')), request.traceId)
       }
     },
     {
+      // @deprecated 写回 image 默认 Provider（baseUrl/model/params 字段映射、
+      // imageProtocol → adapter 映射、空 Key 保留旧值）；无默认行时创建首行并设默认。
+      // 阶段三清理本路由，新配置入口统一走 /api/media-providers。
       method: 'PUT',
       path: '/media-config',
       bodyLimit: 4096,
       handler: async (request, reply) => {
-        if (!mediaSettings) return reply.code(503).send({ ok: false, error: '媒体配置服务未初始化' })
+        const mediaProviders = getMediaProviders?.()
+        if (!mediaProviders) return reply.code(503).send({ ok: false, error: '媒体配置服务未初始化' })
         const input = body(request)
-        mediaSettings.update({
-          imageBaseUrl: typeof input.imageBaseUrl === 'string' ? input.imageBaseUrl : undefined,
-          imageApiKey: typeof input.imageApiKey === 'string' ? input.imageApiKey : undefined,
-          imageModel: typeof input.imageModel === 'string' ? input.imageModel : undefined,
-          imageSize: typeof input.imageSize === 'string' ? input.imageSize : undefined,
-          imageProtocol: input.imageProtocol === 'apimart' || input.imageProtocol === 'openai-images'
-            ? input.imageProtocol
-            : undefined,
-          imageResolution: typeof input.imageResolution === 'string' ? input.imageResolution : undefined,
-          imageLanguage: typeof input.imageLanguage === 'string' ? input.imageLanguage : undefined
-        })
-        return success(mediaSettings.getStatus(), request.traceId)
+        const adapter = input.imageProtocol === 'apimart' ? 'apimart' : 'openai-images'
+        // 提供的字段才写入 params，避免旧客户端缺省字段清空已配置参数
+        const patchParams: Record<string, string> = {}
+        const size = optionalString(input.imageSize)
+        const resolution = optionalString(input.imageResolution)
+        const language = optionalString(input.imageLanguage)
+        if (size) patchParams.size = size
+        if (resolution) patchParams.resolution = resolution
+        if (language) patchParams.language = language
+
+        const current = mediaProviders.resolveDefault('image')
+        if (current) {
+          mediaProviders.update(current.id, {
+            ...(optionalString(input.imageBaseUrl) !== undefined ? { baseUrl: optionalString(input.imageBaseUrl) } : {}),
+            ...(optionalString(input.imageModel) !== undefined ? { model: optionalString(input.imageModel) } : {}),
+            adapter,
+            ...(Object.keys(patchParams).length ? { params: { ...current.params, ...patchParams } } : {}),
+            // 空/缺省 Key 由 store.update 保留旧值
+            ...(optionalString(input.imageApiKey) !== undefined ? { apiKey: optionalString(input.imageApiKey) } : {})
+          })
+        } else {
+          // 旧弹窗「先配置再生图」流程在全新库上的兜底：创建首行并设为模态默认
+          const created = mediaProviders.create({
+            name: '画布媒体配置',
+            modality: 'image',
+            adapter,
+            baseUrl: optionalString(input.imageBaseUrl) ?? '',
+            apiKey: optionalString(input.imageApiKey) ?? '',
+            model: optionalString(input.imageModel) ?? '',
+            params: patchParams
+          })
+          mediaProviders.setDefault(created.id)
+        }
+        return success(canvasMediaStatusFromRow(mediaProviders.resolveDefault('image')), request.traceId)
       }
     },
     {
@@ -592,6 +660,7 @@ export function createInfiniteCanvasRoutes(
             projectId: request.params.projectId,
             prompt,
             image,
+            providerId: input.providerId === undefined ? undefined : String(input.providerId),
             images: Array.isArray(input.images)
               ? input.images.filter((item): item is string => typeof item === 'string' && item.startsWith('data:'))
               : undefined,

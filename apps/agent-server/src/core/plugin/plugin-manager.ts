@@ -37,6 +37,7 @@ import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
 import { runtimePerformance } from '../../config/performance.js'
 import type { AgentConfig, AgentManager } from '../agent/subagent-tool.js'
 import type { ProviderConfigStore } from '../config/provider-config-store.js'
+import type { MediaProviderStore } from '../media/media-provider-store.js'
 import {
   supportsAnthropicCacheControl,
   usesOpenAiPromptCacheKey,
@@ -175,12 +176,14 @@ export class PluginManager {
    * 与 SessionStore / ModelRegistry 同时期注入。
    */
   private providerConfigStore?: ProviderConfigStore
-  private mediaGenerator?: {
-     generateImage(input: { prompt: string; references?: string[]; model?: string; size?: string; count?: number; signal?: AbortSignal }): Promise<{ images: string[] }>
-    generateAudio(input: { prompt: string; model?: string; voice?: string; format?: string; speed?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
-    generateVideo(input: { prompt: string; model?: string; size?: string; seconds?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
-    editImage?(input: { prompt: string; image: string; images?: string[]; mask?: string; model?: string; size?: string; signal?: AbortSignal }): Promise<{ images: string[] }>
-  }
+  private mediaGenerator?: PluginContext['media']
+  /**
+   * MediaProviderStore（媒体 Provider 兼容读写入口）
+   *
+   * 通过 setMediaProviderStore() 在 app.ts 启动后期注入，
+   * 供插件（画布旧 media-config 路由）按 media.generate 授权访问。
+   */
+  private mediaProviderStore?: MediaProviderStore
   /** Tracer 在 app 启动后注入；未注入时插件会话保持原有行为。 */
   private tracer?: Tracer
   /**
@@ -352,14 +355,20 @@ export class PluginManager {
     this.logger.debug('已注入 ProviderConfigStore，onPayload 可读取应用级配置')
   }
 
-  setMediaGenerator(generator: {
-     generateImage(input: { prompt: string; references?: string[]; model?: string; size?: string; count?: number; signal?: AbortSignal }): Promise<{ images: string[] }>
-    generateAudio(input: { prompt: string; model?: string; voice?: string; format?: string; speed?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
-    generateVideo(input: { prompt: string; model?: string; size?: string; seconds?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
-    editImage?(input: { prompt: string; image: string; images?: string[]; mask?: string; model?: string; size?: string; signal?: AbortSignal }): Promise<{ images: string[] }>
-  }): void {
+  setMediaGenerator(generator: PluginContext['media']): void {
     this.mediaGenerator = generator
-    this.logger.debug('已注入媒体生成服务')
+    this.logger.debug('已注入媒体生成服务（Registry facade）')
+  }
+
+  /**
+   * 注入 MediaProviderStore（在 app.ts 启动后期调用）
+   *
+   * 供插件按 media.generate 授权读写媒体 Provider 兼容配置
+   * （画布旧 GET/PUT /media-config 路由的存储层）。
+   */
+  setMediaProviderStore(store: MediaProviderStore): void {
+    this.mediaProviderStore = store
+    this.logger.debug('已注入 MediaProviderStore，插件可读写媒体 Provider 兼容配置')
   }
 
   private mediaGeneratorFacade(): PluginContext['media'] {
@@ -1526,6 +1535,7 @@ export class PluginManager {
     const getModelRegistry = (): ModelRegistryLike | undefined =>
       this.modelRegistry as ModelRegistryLike | undefined
     const getMediaGenerator = (): PluginContext['media'] => this.mediaGenerator
+    const getMediaProviderStore = (): MediaProviderStore | undefined => this.mediaProviderStore
 
     const registerEffect = (
       kind: string,
@@ -1622,6 +1632,11 @@ export class PluginManager {
         : {}),
       get media(): PluginContext['media'] {
         return entry.grants.has('media.generate') ? getMediaGenerator() : undefined
+      },
+      // 与 media facade 同一授权：未授予 media.generate 的插件拿到 undefined。
+      // getter 而非直接取值：setMediaProviderStore 在 app.ts 启动后期才调用。
+      get mediaProviderStore(): MediaProviderStore | undefined {
+        return entry.grants.has('media.generate') ? getMediaProviderStore() : undefined
       },
       // getter 而非直接取值：setModelRegistry 在 app.ts 启动后期才调用，
       // 晚于插件 setup（createPluginContext 构建本 context 的时机），

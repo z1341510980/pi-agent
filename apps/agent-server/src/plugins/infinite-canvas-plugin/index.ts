@@ -8,15 +8,8 @@ import { createInfiniteCanvasRoutes } from './routes.js'
 import { InfiniteCanvasStore } from './store.js'
 import type { AnyCanvasNodeType } from './types.js'
 import { createPromptSourceService } from './prompt-source-service.js'
-import { CanvasMediaSettingsService } from './media-settings.js'
 import { CanvasAssetStore, MediaLogStore, referencesToDataUrls } from './canvas-assets.js'
-import {
-  defaultImageModelForProtocol,
-  normalizeImageBaseUrl,
-  normalizeOpenAiCompatibleSize,
-  requestImageEdit,
-  requestImageGeneration
-} from '../../core/config/media-generator.js'
+import { normalizeOpenAiCompatibleSize } from '../../core/media/shared.js'
 import {
   applyCanvasAgentOperations,
   summarizeCanvasAgentOperations,
@@ -65,8 +58,11 @@ export function createInfiniteCanvasPlugin(): Plugin {
       const store = new InfiniteCanvasStore(context.db)
       context.registerService('infiniteCanvasStore', store)
       const promptSourceService = createPromptSourceService(context.db, context)
-      const mediaSettings = new CanvasMediaSettingsService(context.db)
       const imageLogger = context.logger.child({ module: 'infinite-canvas-image' })
+      // 旧 media-config 兼容路由的读写入口：宿主注入的媒体 Provider store
+      // （Registry 体系落位后，画布媒体配置统一存 media_providers 表）。
+      // 惰性读取：宿主在插件 setup 之后才注入（同 PluginContext.modelRegistry 模式）。
+      const getMediaProviderStore = (): typeof context.mediaProviderStore => context.mediaProviderStore
       // 生成结果本地资产：落盘后前端拿稳定的 /assets/:id，不再依赖慢 CDN
       const dataDir = process.env.PI_DATA_DIR ?? join(homedir(), '.pi')
       const assets = new CanvasAssetStore(context.db, join(dataDir, 'agent', 'canvas-assets'))
@@ -86,10 +82,16 @@ export function createInfiniteCanvasPlugin(): Plugin {
           return image
         })
 
-      /** 画布独立生图：优先用画布自己的 Base URL + Key，否则走宿主 Provider。 */
+      /**
+       * 画布生图：providerId/model/size 等输入透传宿主媒体 facade
+       * （Registry 按「画布 providerId 优先 → image 默认」解析，旧双路已删除）。
+       * 参考图统一归一化成 data URL：本地资产/localhost/内网 URL 服务商取不到，
+       * 直接透传必然被上游拒绝或悄悄忽略。
+       */
       const generateImageCore = async (input: {
         projectId?: string
         prompt: string
+        providerId?: string
         references?: string[]
         model?: string
         size?: string
@@ -97,87 +99,33 @@ export function createInfiniteCanvasPlugin(): Plugin {
         traceId?: string
         signal?: AbortSignal
       }): Promise<{ images: string[] }> => {
-        const settings = mediaSettings.get()
-        const hasOverride = Boolean(settings.imageBaseUrl && settings.imageApiKey)
-        const baseUrl = hasOverride ? normalizeImageBaseUrl(settings.imageBaseUrl) : ''
-        const modelId =
-          input.model ||
-          settings.imageModel ||
-          (hasOverride ? defaultImageModelForProtocol(settings.imageProtocol, baseUrl) : undefined)
-
-        // 参考图统一归一化成 data URL：本地资产/localhost/内网 URL 服务商取不到，
-        // 直接透传必然被上游拒绝或悄悄忽略
+        if (!context.media?.generateImage)
+          throw new Error('图片 Provider 尚未配置，请到 设置 → 媒体生成 配置')
         const references = input.references?.length
           ? await referencesToDataUrls(assets, input.references)
           : input.references
-        const normalizedInput = { ...input, references }
-
-        if (references?.length && hasOverride) {
-          const [image, ...images] = references
-          return requestImageEdit({
-            context: {
-              baseUrl,
-              modelId: modelId || defaultImageModelForProtocol(settings.imageProtocol, baseUrl),
-              mediaProtocol: settings.imageProtocol,
-              mediaResolution: settings.imageResolution,
-              mediaLanguage: settings.imageLanguage,
-              headers: { Authorization: `Bearer ${settings.imageApiKey}` }
-            },
-            prompt: input.prompt,
-            image,
-            images,
-            size: input.size || settings.imageSize,
-            signal: input.signal,
-            logger: imageLogger,
-            traceId: input.traceId
-          })
-        }
-        if (references?.length) {
-          if (!context.media?.editImage) throw new Error('图像编辑 Provider 尚未配置')
-          return context.media.editImage({
-            prompt: input.prompt,
-            image: references[0],
-            images: references.slice(1),
-            model: input.model,
-            size: input.size,
-            signal: input.signal
-          })
-        }
-        if (hasOverride) {
-          const size = input.size || settings.imageSize || (settings.imageProtocol === 'apimart' ? '1:1' : '1024x1024')
-          return requestImageGeneration({
-            context: {
-              baseUrl,
-              modelId: modelId || defaultImageModelForProtocol(settings.imageProtocol, baseUrl),
-              mediaProtocol: settings.imageProtocol,
-              mediaResolution: settings.imageResolution,
-              mediaLanguage: settings.imageLanguage,
-              headers: { Authorization: `Bearer ${settings.imageApiKey}` }
-            },
-            prompt: input.prompt,
-            size,
-            count: input.count ?? 1,
-            signal: input.signal,
-            logger: imageLogger,
-            traceId: input.traceId
-          })
-        }
-        if (!context.media) throw new Error('图片 Provider 尚未配置，请在设置中添加 Provider 或在画布中配置生图 API')
-        return context.media.generateImage(normalizedInput)
+        return context.media.generateImage({
+          providerId: input.providerId,
+          prompt: input.prompt,
+          references,
+          model: input.model,
+          size: input.size,
+          count: input.count,
+          traceId: input.traceId,
+          signal: input.signal
+        })
       }
 
       /** 对外入口：归一化参考图 → 生图 → 本地化结果 → 记录日志。 */
-      const generateImageWithOverride = async (input: Parameters<typeof generateImageCore>[0]): Promise<{ images: string[] }> => {
+      const generateImageLocalized = async (input: Parameters<typeof generateImageCore>[0]): Promise<{ images: string[] }> => {
         const startedAt = Date.now()
         const endpoint = input.references?.length ? '/images/edits' : '/images/generations'
-        // 记录实际生效的 model/size（客户端未传时用画布全局设置兜底）
-        const settingsForLog = mediaSettings.get()
         const logBase = {
           kind: 'generate' as const,
           projectId: input.projectId ?? null,
           endpoint,
-          model: input.model || settingsForLog.imageModel || null,
-          size: normalizeOpenAiCompatibleSize(input.size || settingsForLog.imageSize) ?? null,
+          model: input.model ?? null,
+          size: normalizeOpenAiCompatibleSize(input.size) ?? null,
           prompt: input.prompt,
           traceId: input.traceId ?? null
         }
@@ -219,6 +167,7 @@ export function createInfiniteCanvasPlugin(): Plugin {
       const editImageCore = async (input: {
         projectId?: string
         prompt: string
+        providerId?: string
         image: string
         images?: string[]
         mask?: string
@@ -227,42 +176,30 @@ export function createInfiniteCanvasPlugin(): Plugin {
         traceId?: string
         signal?: AbortSignal
       }): Promise<{ images: string[] }> => {
-        const settings = mediaSettings.get()
-        if (settings.imageBaseUrl && settings.imageApiKey) {
-          const baseUrl = normalizeImageBaseUrl(settings.imageBaseUrl)
-          return requestImageEdit({
-            context: {
-              baseUrl,
-              modelId: input.model || settings.imageModel || defaultImageModelForProtocol(settings.imageProtocol, baseUrl),
-              mediaProtocol: settings.imageProtocol,
-              mediaResolution: settings.imageResolution,
-              mediaLanguage: settings.imageLanguage,
-              headers: { Authorization: `Bearer ${settings.imageApiKey}` }
-            },
-            prompt: input.prompt,
-            image: input.image,
-            images: input.images,
-            mask: input.mask,
-            size: input.size || settings.imageSize,
-            signal: input.signal,
-            logger: imageLogger,
-            traceId: input.traceId
-          })
-        }
-        if (!context.media?.editImage) throw new Error('图像编辑 Provider 尚未配置')
-        return context.media.editImage(input)
+        if (!context.media?.editImage)
+          throw new Error('图像编辑 Provider 尚未配置，请到 设置 → 媒体生成 配置')
+        return context.media.editImage({
+          providerId: input.providerId,
+          prompt: input.prompt,
+          image: input.image,
+          images: input.images,
+          mask: input.mask,
+          model: input.model,
+          size: input.size,
+          traceId: input.traceId,
+          signal: input.signal
+        })
       }
 
       /** 对外编辑入口：归一化原图 → 编辑 → 本地化结果 → 记录日志。 */
       const editImageLocalized = async (input: Parameters<typeof editImageCore>[0]): Promise<{ images: string[] }> => {
         const startedAt = Date.now()
-        const settingsForLog = mediaSettings.get()
         const logBase = {
           kind: 'edit' as const,
           projectId: input.projectId ?? null,
           endpoint: '/images/edits',
-          model: input.model || settingsForLog.imageModel || null,
-          size: normalizeOpenAiCompatibleSize(input.size || settingsForLog.imageSize) ?? null,
+          model: input.model ?? null,
+          size: normalizeOpenAiCompatibleSize(input.size) ?? null,
           prompt: input.prompt,
           traceId: input.traceId ?? null
         }
@@ -333,20 +270,20 @@ export function createInfiniteCanvasPlugin(): Plugin {
             session.dispose()
           }
         },
-        generateImageWithOverride,
+        generateImageLocalized,
         ({ mode, prompt, model, voice, format, speed, size, seconds, signal }) => {
-          if (!context.media) throw new Error('媒体 Provider 尚未配置')
+          if (!context.media) throw new Error('媒体 Provider 尚未配置，请到 设置 → 媒体生成 配置')
           return mode === 'audio'
             ? context.media.generateAudio({ prompt, model, voice, format, speed, signal })
             : context.media.generateVideo({ prompt, model, size, seconds, signal })
         },
         editImageLocalized,
         ({ image, instruction, model, signal }) => {
-          if (!context.media?.analyzeImage) throw new Error('视觉理解 Provider 尚未配置')
+          if (!context.media?.analyzeImage) throw new Error('视觉理解 Provider 尚未配置，请到 设置 → 媒体生成 配置')
           return context.media.analyzeImage({ image, instruction, model, signal })
         },
         promptSourceService,
-        mediaSettings,
+        getMediaProviderStore,
         assets,
         mediaLogs
       ))
@@ -403,7 +340,7 @@ export function createInfiniteCanvasPlugin(): Plugin {
                 signal,
                 generate: async ({ prompt, mode, signal: generationSignal }) => {
                   if (mode === 'image')
-                    return generateImageWithOverride({
+                    return generateImageLocalized({
                       projectId: project.id,
                       prompt,
                       signal: generationSignal
@@ -541,7 +478,7 @@ export function createInfiniteCanvasPlugin(): Plugin {
             signal: toolContext.signal,
             generate: async ({ prompt, mode, signal }) => {
               if (mode === 'image')
-                return generateImageWithOverride({ projectId: project.id, prompt, signal })
+                return generateImageLocalized({ projectId: project.id, prompt, signal })
               const session = await context.createSession({
                 systemPrompt: '你是画布 Agent，只输出可直接写入节点的结果正文。',
                 userMessage: prompt,
