@@ -19,10 +19,11 @@ const boardNode: CanvasNodeData = {
 function setup(overrides: Partial<DesignBoardEditorProps> = {}): {
   onCommit: ReturnType<typeof vi.fn>
   onClose: ReturnType<typeof vi.fn>
+  container: HTMLElement
 } {
   const onCommit = vi.fn()
   const onClose = vi.fn()
-  render(
+  const view = render(
     <DesignBoardEditor
       node={boardNode}
       nodes={[boardNode]}
@@ -31,7 +32,7 @@ function setup(overrides: Partial<DesignBoardEditorProps> = {}): {
       {...overrides}
     />
   )
-  return { onCommit, onClose }
+  return { onCommit, onClose, container: view.container }
 }
 
 describe('DesignBoardEditor', () => {
@@ -127,6 +128,33 @@ describe('DesignBoardEditor', () => {
   it('shows empty-resources hint when canvas has no image nodes', async () => {
     setup()
     expect(await screen.findByText('画布上暂无图片资源')).toBeTruthy()
+  })
+
+  it('画板对象层存在 overflow-hidden 裁切容器（越界对象隐藏）', () => {
+    const { container } = setup()
+    const artboard = container.querySelector('[data-design-board-artboard]')
+    expect(artboard).toBeTruthy()
+    const objectLayer = artboard?.firstElementChild
+    expect(objectLayer).toBeTruthy()
+    expect(objectLayer?.className).toContain('overflow-hidden')
+  })
+
+  it('选择手柄为屏幕恒定尺寸（命中区/视觉条不随缩放）', () => {
+    const { container } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    const handles = [...container.querySelectorAll('[data-design-board-handle]')] as HTMLElement[]
+    // RESIZE_HANDLE_IDS 顺序：nw, n, ne, e, se, s, sw, w
+    expect(handles).toHaveLength(8)
+    expect(handles[0].style.width).toBe('24px')
+    expect(handles[0].style.height).toBe('24px')
+    expect(handles[1].style.width).toBe('32px')
+    expect(handles[1].style.height).toBe('24px')
+    expect(handles[3].style.width).toBe('24px')
+    expect(handles[3].style.height).toBe('32px')
+    const cornerVisual = handles[0].firstElementChild as HTMLElement
+    expect(cornerVisual).toBeTruthy()
+    expect(cornerVisual.style.width).toBe('12px')
+    expect(cornerVisual.style.height).toBe('12px')
   })
 
   it('invokes export callback with current doc and default png format', () => {

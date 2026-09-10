@@ -74,6 +74,7 @@ export function DesignBoardEditor({
     () => parseDesignBoardDoc(node.metadata?.design) ?? createDesignBoardDoc(1080, 1440)
   )
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [zoomPercent, setZoomPercent] = useState(100)
   const [exportFormat, setExportFormat] = useState<'png' | 'jpg'>('png')
   const [textEditingId, setTextEditingId] = useState<string | null>(null)
@@ -89,6 +90,7 @@ export function DesignBoardEditor({
 
   const scale = zoomPercent / 100
   const selectedObject = doc.objects.find((object) => object.id === selectedId) ?? null
+  const hoveredObject = doc.objects.find((object) => object.id === hoveredId) ?? null
   const resources = useMemo(() => collectCanvasImageResources(nodes), [nodes])
 
   const fitZoom = useCallback((): void => {
@@ -424,8 +426,6 @@ export function DesignBoardEditor({
     onClose()
   }, [doc, textDraft, textEditingId, onCommit, onClose])
 
-  const screenScale = Math.max(scale, 0.01)
-
   return (
     <div
       className="fixed inset-0 z-[150] flex flex-col"
@@ -539,46 +539,66 @@ export function DesignBoardEditor({
             <div
               ref={artboardRef}
               data-design-board-artboard
-              className="relative shadow-2xl"
+              className="relative overflow-visible shadow-2xl"
               style={{
                 width: doc.width * scale,
                 height: doc.height * scale,
                 background: doc.background
               }}
             >
-              {/* 对象视图（DOM/SVG） */}
-              {doc.objects.map((object) => (
-                <div
-                  key={object.id}
-                  data-design-board-object
-                  className="absolute"
-                  style={{
-                    left: object.x * scale,
-                    top: object.y * scale,
-                    width: object.width * scale,
-                    height: object.height * scale
-                  }}
-                  onPointerDown={(event) => startDrag(event, object.id)}
-                  onDoubleClick={() => {
-                    if (object.kind === 'text') {
-                      setSelectedId(object.id)
-                      setTextEditingId(object.id)
-                      setTextDraft(object.text)
+              {/* 对象层：越界内容裁切隐藏，与导出 canvas 行为一致 */}
+              <div className="absolute inset-0 overflow-hidden">
+                {doc.objects.map((object) => (
+                  <div
+                    key={object.id}
+                    data-design-board-object
+                    className="absolute"
+                    style={{
+                      left: object.x * scale,
+                      top: object.y * scale,
+                      width: object.width * scale,
+                      height: object.height * scale
+                    }}
+                    onPointerDown={(event) => startDrag(event, object.id)}
+                    onMouseEnter={() => setHoveredId(object.id)}
+                    onMouseLeave={() =>
+                      setHoveredId((current) => (current === object.id ? null : current))
                     }
+                    onDoubleClick={() => {
+                      if (object.kind === 'text') {
+                        setSelectedId(object.id)
+                        setTextEditingId(object.id)
+                        setTextDraft(object.text)
+                      }
+                    }}
+                  >
+                    <ObjectView
+                      object={object}
+                      scale={scale}
+                      editing={textEditingId === object.id}
+                      draft={textDraft}
+                      onDraftChange={setTextDraft}
+                      onCommitDraft={commitTextDraft}
+                      resolveUrl={(source) => resolveDesignImageSource(source, nodes)}
+                    />
+                  </div>
+                ))}
+              </div>
+              {/* 悬停高亮：1px 虚线边框，不随缩放变化 */}
+              {hoveredObject && hoveredObject.id !== selectedId && (
+                <div
+                  className="absolute z-[21] border border-dashed"
+                  style={{
+                    left: hoveredObject.x * scale,
+                    top: hoveredObject.y * scale,
+                    width: hoveredObject.width * scale,
+                    height: hoveredObject.height * scale,
+                    borderColor: '#3b82f6',
+                    pointerEvents: 'none'
                   }}
-                >
-                  <ObjectView
-                    object={object}
-                    scale={scale}
-                    editing={textEditingId === object.id}
-                    draft={textDraft}
-                    onDraftChange={setTextDraft}
-                    onCommitDraft={commitTextDraft}
-                    resolveUrl={(source) => resolveDesignImageSource(source, nodes)}
-                  />
-                </div>
-              ))}
-              {/* 选择覆盖层 */}
+                />
+              )}
+              {/* 选择覆盖层：手柄/边框为屏幕恒定尺寸，不随缩放变化 */}
               {selectedObject && !textEditingId && (
                 <div
                   className="absolute z-[22]"
@@ -592,29 +612,42 @@ export function DesignBoardEditor({
                 >
                   <div
                     className="absolute inset-0 border"
-                    style={{ borderWidth: 1.5 / screenScale, borderColor: '#3b82f6' }}
+                    style={{ borderWidth: 1.5, borderColor: '#3b82f6' }}
                   />
-                  {RESIZE_HANDLE_IDS.map((handle) => (
-                    <button
-                      key={handle}
-                      type="button"
-                      data-design-board-handle
-                      className="absolute z-[23] rounded-sm border border-white"
-                      style={{
-                        width: 12 / screenScale,
-                        height: 12 / screenScale,
-                        left: `calc(${handle.includes('w') ? 0 : handle.includes('e') ? 100 : 50}% - ${6 / screenScale}px)`,
-                        top: `calc(${handle.includes('n') ? 0 : handle.includes('s') ? 100 : 50}% - ${6 / screenScale}px)`,
-                        background: '#3b82f6',
-                        cursor: cursorForHandle(handle),
-                        pointerEvents: 'auto'
-                      }}
-                      onPointerDown={(event) => {
-                        event.stopPropagation()
-                        startDrag(event, selectedObject.id, handle)
-                      }}
-                    />
-                  ))}
+                  {RESIZE_HANDLE_IDS.map((handle) => {
+                    const metrics = handleMetrics(handle)
+                    const leftPercent = handle.includes('w') ? 0 : handle.includes('e') ? 100 : 50
+                    const topPercent = handle.includes('n') ? 0 : handle.includes('s') ? 100 : 50
+                    return (
+                      <button
+                        key={handle}
+                        type="button"
+                        data-design-board-handle
+                        className="absolute z-[23] grid place-items-center"
+                        style={{
+                          width: metrics.hitWidth,
+                          height: metrics.hitHeight,
+                          left: `calc(${leftPercent}% - ${metrics.hitWidth / 2}px)`,
+                          top: `calc(${topPercent}% - ${metrics.hitHeight / 2}px)`,
+                          cursor: cursorForHandle(handle),
+                          pointerEvents: 'auto'
+                        }}
+                        onPointerDown={(event) => {
+                          event.stopPropagation()
+                          startDrag(event, selectedObject.id, handle)
+                        }}
+                      >
+                        <span
+                          className="block rounded-[2px] border border-white"
+                          style={{
+                            width: metrics.visualWidth,
+                            height: metrics.visualHeight,
+                            background: '#3b82f6'
+                          }}
+                        />
+                      </button>
+                    )
+                  })}
                 </div>
               )}
               {/* 吸附参考线 */}
@@ -623,7 +656,7 @@ export function DesignBoardEditor({
                   className="absolute top-0 bottom-0 z-[19]"
                   style={{
                     left: snapGuides.x * scale,
-                    width: 1 / screenScale,
+                    width: 1,
                     background: '#3b82f6',
                     pointerEvents: 'none'
                   }}
@@ -634,7 +667,7 @@ export function DesignBoardEditor({
                   className="absolute right-0 left-0 z-[19]"
                   style={{
                     top: snapGuides.y * scale,
-                    height: 1 / screenScale,
+                    height: 1,
                     background: '#3b82f6',
                     pointerEvents: 'none'
                   }}
@@ -680,6 +713,22 @@ export function DesignBoardEditor({
       </div>
     </div>
   )
+}
+
+/** 手柄命中区/视觉条尺寸（屏幕像素恒定）：角 24×24 命中 + 12×12 视觉；边 n/s 32×24 + 22×8，e/w 24×32 + 8×22。 */
+function handleMetrics(handle: ResizeHandleId): {
+  hitWidth: number
+  hitHeight: number
+  visualWidth: number
+  visualHeight: number
+} {
+  if (handle === 'n' || handle === 's') {
+    return { hitWidth: 32, hitHeight: 24, visualWidth: 22, visualHeight: 8 }
+  }
+  if (handle === 'e' || handle === 'w') {
+    return { hitWidth: 24, hitHeight: 32, visualWidth: 8, visualHeight: 22 }
+  }
+  return { hitWidth: 24, hitHeight: 24, visualWidth: 12, visualHeight: 12 }
 }
 
 function ObjectView({

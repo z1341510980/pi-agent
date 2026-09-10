@@ -618,6 +618,11 @@ export function InfiniteCanvasWorkspace({
             naturalHeight: result.height
           }
         )
+        // 导出节点尺寸保持画板比例（默认 640×640 fit），位置与源节点顶部对齐
+        const fitted = fitNodeSize(result.width, result.height)
+        imageNode.width = fitted.width
+        imageNode.height = fitted.height
+        imageNode.position = { x: source.position.x + source.width + 96, y: source.position.y }
         imageNode.title = `${source.title}-导出`
         pushHistory()
         setNodes((current) => [...current, imageNode])
@@ -2925,6 +2930,14 @@ export function InfiniteCanvasWorkspace({
                 design: doc,
                 designUpdatedAt: Date.now()
               })
+              // 节点尺寸保持画板比例（最长边 340/640 内 fit），position 仍以点击点为中心
+              const fitted = fitNodeSize(width, height, 340, 640)
+              node.width = fitted.width
+              node.height = fitted.height
+              node.position = {
+                x: position.x - fitted.width / 2,
+                y: position.y - fitted.height / 2
+              }
               node.title = `设计画板 ${width}×${height}`
               pushHistory()
               setNodes((current) => [...current, node])
