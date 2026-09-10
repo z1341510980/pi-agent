@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'framer-motion'
 import { Home, MessageSquare, SettingsIcon, PlugIcon } from 'lucide-react'
@@ -9,7 +9,7 @@ import { ThemeProvider } from './components/theme-provider'
 import { TooltipProvider } from './components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { ChatWorkspace } from './components/chat/chat-workspace'
-import { SettingsPage } from './components/settings/settings-page'
+import { SettingsPage, type SettingsSection } from './components/settings/settings-page'
 import { PluginPage } from './components/settings/plugin-page'
 import { HomePage } from './components/home/home-page'
 import { ErrorBoundary } from './components/overlays/error-boundary'
@@ -54,17 +54,36 @@ export default function App(): ReactElement {
   // 流程（create-flow 等路由的 abortOnDisconnect）。因此访问过一次后就保持挂载，
   // 切换页面只隐藏不卸载。home/settings/plugins 无长连接状态，离开即卸载。
   const [persistentViews, setPersistentViews] = useState<AppView[]>([])
+  // 设置页关闭时的回跳目标：进入 settings 前的视图。chat / plugin:* 都在
+  // 保活数组里，回跳即恢复；重启后为 null，关闭设置默认回 home。
+  const [returnTo, setReturnTo] = useState<AppView | null>(null)
+  // 设置页初始分区种子：画布「打开设置」直达「插件设置 → 媒体生成」。
+  // 仅作为 SettingsPage 挂载时的 initialSection，挂载后立即清除（见下方 effect）。
+  const [settingsSeed, setSettingsSeed] = useState<SettingsSection | null>(null)
   const [autoUpdateDialogOpen, setAutoUpdateDialogOpen] = useState(false)
   const [ready, setReady] = useState(false)
   const { status, download, install } = useUpdateStatus()
+  // navigate 保持稳定引用（deps []），用 ref 追踪当前视图供 returnTo 记录来源
+  const viewRef = useRef<AppView>('home')
 
   /** 带保活登记的导航：chat 与插件工作区进过一次就常驻 */
   const navigate = useCallback((next: AppView): void => {
+    // 进设置时记下来源视图供关闭时回跳；已在 settings 内不覆盖（理论不可达）
+    if (next === 'settings' && viewRef.current !== 'settings') {
+      setReturnTo(viewRef.current)
+    }
+    viewRef.current = next
     setView(next)
     if (next === 'chat' || next.startsWith('plugin:')) {
       setPersistentViews((prev) => (prev.includes(next) ? prev : [...prev, next]))
     }
   }, [])
+
+  // settingsSeed 消费即清：只在 SettingsPage 首次挂载的渲染里生效（useState 初值），
+  // 避免后续从侧栏 / 首页等入口进设置时误落插件分区
+  useEffect(() => {
+    if (view === 'settings') setSettingsSeed(null)
+  }, [view])
 
   const onboardingSetView = (next: 'home' | 'chat' | 'novel' | 'settings'): void => {
     navigate(next === 'novel' ? 'plugin:novel' : next)
@@ -168,6 +187,14 @@ export default function App(): ReactElement {
                                 entryKey={persistentView.slice('plugin:'.length)}
                                 extraProps={{
                                   onClose: () => navigate('home'),
+                                  // 「打开设置」直达设置页；画布入口额外带媒体生成
+                                  // 分区种子（其余插件工作区不带 seed，落默认分区）
+                                  onOpenSettings: () => {
+                                    if (persistentView === 'plugin:infinite-canvas') {
+                                      setSettingsSeed('plugin:infinite-canvas')
+                                    }
+                                    navigate('settings')
+                                  },
                                   active: view === persistentView
                                 }}
                                 fallback={
@@ -188,7 +215,12 @@ export default function App(): ReactElement {
                             onOpenSettings={() => navigate('settings')}
                           />
                         )}
-                        {view === 'settings' && <SettingsPage onClose={() => navigate('home')} />}
+                        {view === 'settings' && (
+                          <SettingsPage
+                            initialSection={settingsSeed ?? undefined}
+                            onClose={() => navigate(returnTo ?? 'home')}
+                          />
+                        )}
                         {view === 'plugins' && <PluginPage />}
                       </div>
                     </div>

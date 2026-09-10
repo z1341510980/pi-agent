@@ -44,6 +44,11 @@ export type SettingsSection =
 
 interface SettingsPageProps {
   onClose: () => void
+  /**
+   * 挂载时的初始分区（宿主注入；画布「打开设置」直达「插件设置 → 媒体生成」）。
+   * 仅作为 useState 初值消费一次，挂载后改传新值不生效。
+   */
+  initialSection?: SettingsSection
 }
 
 interface NavItem {
@@ -88,9 +93,10 @@ const hostNavGroups: NavGroup[] = [
   }
 ]
 
-export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
-  // 默认落在"通用设置"，对齐 AionUi 首屏聚焦应用偏好的体验
-  const [section, setSection] = useState<SettingsSection>('general')
+export function SettingsPage({ onClose, initialSection }: SettingsPageProps): ReactElement {
+  // 默认落在"通用设置"，对齐 AionUi 首屏聚焦应用偏好的体验；
+  // 宿主可用 initialSection 指定初始分区（仅挂载时消费一次）
+  const [section, setSection] = useState<SettingsSection>(initialSection ?? 'general')
   // 插件声明驱动的动态分区：有设置声明（schema 或自定义面板）的插件各占一项
   const { entries: pluginSettingEntries } = usePluginSettingsEntries()
   const navGroups: NavGroup[] = useMemo(() => {

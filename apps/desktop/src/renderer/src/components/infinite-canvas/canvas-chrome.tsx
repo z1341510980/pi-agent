@@ -345,8 +345,9 @@ export function CanvasToolbar({
 // ── 媒体配置入口提示卡（配置已迁至设置页「媒体生成」分区） ──
 
 /**
- * 「媒体生成配置」Dock 按钮的落地提示：桌面端暂无画布 → 设置页的跨页导航通道，
- * 「打开设置」走最近可用通道（宿主注入的 onClose，关闭画布回到主界面后进设置）。
+ * 「媒体生成配置」Dock 按钮的落地提示：媒体生成 Provider 已迁至设置页。
+ * 「打开设置」走宿主注入的 onOpenSettings 直达设置页（画布保活不关闭，返回时
+ * 状态还在）；未注入时隐藏该按钮，仅保留关闭。
  */
 export function MediaSettingsNoticeCard({
   theme,

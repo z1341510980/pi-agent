@@ -112,7 +112,7 @@ describe('MediaSettingsNoticeCard', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('offers the host navigation escape hatch when a channel is provided', () => {
+  it('navigates to settings via the host channel without closing the notice itself', () => {
     const onClose = vi.fn()
     const onOpenSettings = vi.fn()
     render(

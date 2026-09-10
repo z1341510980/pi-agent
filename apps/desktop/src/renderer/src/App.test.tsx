@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EventType } from '@repo/protocol/events'
 
@@ -272,20 +272,38 @@ describe('App shell', () => {
     expect(screen.queryByRole('main', { name: 'Wenlang Agent 工作台' })).toBeNull()
   })
 
-  it('TC-08: closes the settings page and returns to home', async () => {
+  it('TC-08: closes the settings page and returns to the originating view', async () => {
     vi.stubGlobal('fetch', createFetchMock())
 
     const { default: App } = await import('./App')
     render(<App />)
 
-    // 打开设置
+    // 从对话工作台进入设置
     await enterChatWorkspace()
     await openSettings()
 
     // 点击关闭按钮
     fireEvent.click(screen.getByRole('button', { name: '关闭设置' }))
 
-    // 当前导航约定：关闭独立设置页后返回首页
+    // 关闭设置回跳来源视图：从 chat 进入则回到 chat（保活恢复，不落首页）
+    expect(await screen.findByRole('main', { name: 'Wenlang Agent 工作台' })).toBeTruthy()
+    expect(screen.queryByLabelText('设置中心')).toBeNull()
+  })
+
+  it('returns to home when settings was opened from home', async () => {
+    vi.stubGlobal('fetch', createFetchMock())
+
+    const { default: App } = await import('./App')
+    render(<App />)
+
+    // 首页直接进设置（首页另有同名「设置」CTA，需限定主导航侧栏范围）
+    const nav = await screen.findByRole('navigation', { name: '主导航' })
+    fireEvent.click(within(nav).getByRole('button', { name: '设置' }))
+    await screen.findByLabelText('设置中心')
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭设置' }))
+
+    // 来源是 home，关闭后回首页
     const homeButton = await screen.findByRole('button', { name: '首页' })
     expect(homeButton.getAttribute('aria-current')).toBe('page')
     expect(screen.queryByLabelText('设置中心')).toBeNull()
@@ -388,7 +406,10 @@ interface FetchMockOptions {
   models?: Array<{ provider: string; id: string }>
 }
 
-function createFetchMock(runEvents: SseEvent[] = [], options: FetchMockOptions = {}) {
+function createFetchMock(
+  runEvents: SseEvent[] = [],
+  options: FetchMockOptions = {}
+): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
 

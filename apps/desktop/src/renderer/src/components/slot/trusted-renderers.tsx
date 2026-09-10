@@ -183,9 +183,14 @@ export function NovelHomeShowcaseContribution(props: Record<string, unknown>): R
 
 export function InfiniteCanvasWorkspaceContribution(props: Record<string, unknown>): ReactElement {
   const onClose = typeof props.onClose === 'function' ? (props.onClose as () => void) : undefined
+  // 宿主注入的直达设置页通道（媒体配置提示卡「打开设置」用），缺省时提示卡隐藏按钮
+  const onOpenSettings =
+    typeof props.onOpenSettings === 'function' ? (props.onOpenSettings as () => void) : undefined
   // active 由 App 外壳注入：keep-alive 隐藏挂载时为 false（工作台让出全局按键）
   const active = props.active !== false
-  return <InfiniteCanvasWorkspace onClose={onClose} active={active} />
+  return (
+    <InfiniteCanvasWorkspace onClose={onClose} onOpenSettings={onOpenSettings} active={active} />
+  )
 }
 
 export { InfiniteCanvasNavigationContribution }

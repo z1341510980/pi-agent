@@ -258,9 +258,15 @@ function readMediaSize(
 
 export function InfiniteCanvasWorkspace({
   onClose,
-  active = true,
+  onOpenSettings,
+  active = true
 }: {
   onClose?: () => void
+  /**
+   * 直达设置页的通道（宿主注入）：媒体配置提示卡「打开设置」按钮用。
+   * 缺省时提示卡隐藏该按钮，仅保留关闭。
+   */
+  onOpenSettings?: () => void
   /**
    * 当前视图是否可见。keep-alive 下隐藏挂载时必须关闭全局按键监听：
    * 这里的 Delete/Backspace/Ctrl+Z/Ctrl+A 都带 preventDefault，会在
@@ -2917,10 +2923,16 @@ export function InfiniteCanvasWorkspace({
         {mediaNoticeOpen && (
           <MediaSettingsNoticeCard
             theme={theme}
-            onOpenSettings={() => {
-              setMediaNoticeOpen(false)
-              onClose?.()
-            }}
+            // 「打开设置」直达设置页：不再调 onClose（画布保活，返回时状态还在）；
+            // 宿主未注入通道时传 undefined，提示卡按「无回调隐藏」处理
+            onOpenSettings={
+              onOpenSettings
+                ? () => {
+                    setMediaNoticeOpen(false)
+                    onOpenSettings()
+                  }
+                : undefined
+            }
             onClose={() => setMediaNoticeOpen(false)}
           />
         )}
