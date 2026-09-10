@@ -385,7 +385,7 @@ export function MediaSettingsNoticeCard({
           </button>
         </div>
         <p className="text-sm leading-6 opacity-75">
-          媒体生成 Provider 已移至 设置 → AI 核心 → 媒体生成 配置
+          媒体生成 Provider 已移至 设置 → 插件设置 → 媒体生成 配置
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button

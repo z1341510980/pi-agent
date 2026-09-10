@@ -105,7 +105,7 @@ describe('MediaSettingsNoticeCard', () => {
     const onClose = vi.fn()
     render(<MediaSettingsNoticeCard theme={canvasThemes.light} onClose={onClose} />)
 
-    expect(screen.getByText('媒体生成 Provider 已移至 设置 → AI 核心 → 媒体生成 配置')).toBeTruthy()
+    expect(screen.getByText('媒体生成 Provider 已移至 设置 → 插件设置 → 媒体生成 配置')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '打开设置' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: '关闭' }))

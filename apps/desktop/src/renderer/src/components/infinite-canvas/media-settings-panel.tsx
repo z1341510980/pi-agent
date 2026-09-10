@@ -8,7 +8,6 @@ import {
   ImageIcon,
   PlusIcon,
   TrashIcon,
-  TypeIcon,
   VideoIcon
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -31,8 +30,7 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import { Segmented } from '@/components/ui/segmented'
-import { SettingsPageHeader } from './setting-primitives'
-import { ProviderManager } from './provider-manager'
+import { SettingsPageHeader } from '../settings/setting-primitives'
 import {
   createMediaProvider,
   deleteMediaProvider,
@@ -41,30 +39,27 @@ import {
   setMediaProviderDefault,
   updateMediaProvider,
   type MediaAdapterMeta,
-  type MediaModality,
   type MediaProviderRow,
   type StoredMediaModality
 } from '@/api/media-provider-client'
 
 /**
- * MediaSettings —— 设置页「媒体生成」分区（spec §5）
+ * InfiniteCanvasMediaSettings —— 无限画布插件的「媒体生成」设置面板
+ * （plugin-settings slot，spec §5；自宿主设置页 settings/media-settings.tsx 迁入）。
  *
- * 四模态 tab：
- * - 文字：内嵌现有 ProviderManager（LLM Provider 体系即文字生成体系，共享同一数据源，
- *   与「模型与 Provider」页保持单一真实来源，不迁移数据）
+ * 图片/视频/音频三模态 tab（文字生成属宿主 LLM 体系，留在「模型与 Provider」页）：
  * - 图片：Provider 卡片列表 + 新增/编辑表单（adapter formSchema 驱动动态字段）
- * - 视频/音频：阶段一空态引导卡，待阶段二 adapter 上线后 formSchema 自动可用
+ * - 视频/音频：openai-audio / newapi-video adapter 上线后 formSchema 自动可用
  *
  * 数据流：挂载加载 adapters 元数据一次；各模态 Provider 列表在首次切到该 tab 时懒加载，
  * 增删改/默认切换后仅刷新当前模态。
  */
 
 const MODALITY_TABS: ReadonlyArray<{
-  value: MediaModality
+  value: StoredMediaModality
   label: string
   icon: ComponentType<{ className?: string }>
 }> = [
-  { value: 'text', label: '文字', icon: TypeIcon },
   { value: 'image', label: '图片', icon: ImageIcon },
   { value: 'video', label: '视频', icon: VideoIcon },
   { value: 'audio', label: '音频', icon: AudioLinesIcon }
@@ -89,8 +84,9 @@ interface MediaProviderFormState {
   params: Record<string, string>
 }
 
-export function MediaSettings(): ReactElement {
-  const [tab, setTab] = useState<MediaModality>('text')
+export function InfiniteCanvasMediaSettings(): ReactElement {
+  // 面板只有存储模态（图片/视频/音频）；文字生成属宿主 LLM 体系，不在本面板
+  const [tab, setTab] = useState<StoredMediaModality>('image')
   const [adapters, setAdapters] = useState<MediaAdapterMeta[]>([])
   const [providersByModality, setProvidersByModality] = useState<
     Partial<Record<StoredMediaModality, MediaProviderRow[]>>
@@ -135,15 +131,17 @@ export function MediaSettings(): ReactElement {
     }
   }, [])
 
-  function handleTabChange(next: MediaModality): void {
+  // 懒加载 Provider 列表：挂载时补齐默认 tab（图片），切换 tab 时按需拉取；
+  // loadedModalities 防重复（操作后的刷新走 loadProviders 显式调用）。
+  useEffect(() => {
+    if (!loadedModalities.has(tab)) void loadProviders(tab)
+  }, [tab, loadedModalities, loadProviders])
+
+  function handleTabChange(next: StoredMediaModality): void {
     setTab(next)
-    // tab 切换懒加载：文字 tab 由 ProviderManager 自取数据，其余模态首次进入时拉取
-    if (next !== 'text' && !loadedModalities.has(next)) void loadProviders(next)
   }
 
   function openCreateForm(): void {
-    // 新增入口只出现在非文字 tab（文字复用 ProviderManager），此处收窄类型
-    if (tab === 'text') return
     const modality: StoredMediaModality = tab
     const options = adapters.filter((a) => a.modality === modality)
     setFormState({
@@ -194,14 +192,14 @@ export function MediaSettings(): ReactElement {
   }
 
   const tabAdapters = adapters.filter((a) => a.modality === tab)
-  const rows = tab !== 'text' ? (providersByModality[tab] ?? []) : []
+  const rows = providersByModality[tab] ?? []
 
   return (
-    <section className="grid gap-5 p-6" aria-label="媒体生成">
+    <section className="grid gap-5" aria-label="媒体生成">
       <SettingsPageHeader
         eyebrow="Media"
         title="媒体生成"
-        description="按模态管理生成 Provider：图片 / 视频 / 音频各自可配置多个实例并指定默认。文字生成复用「模型与 Provider」的 LLM Provider 体系。"
+        description="按模态管理生成 Provider：图片 / 视频 / 音频各自可配置多个实例并指定默认。"
       />
 
       <div>
@@ -224,11 +222,8 @@ export function MediaSettings(): ReactElement {
         </p>
       )}
 
-      {/* 文字 tab：内嵌现有 ProviderManager（零适配，共享同一数据源） */}
-      {tab === 'text' && <ProviderManager />}
-
-      {/* 视频/音频：阶段一暂无 adapter，渲染引导卡（阶段二 adapter 上线后自动进入列表模式） */}
-      {tab !== 'text' && tabAdapters.length === 0 && (
+      {/* 模态暂无 adapter 时渲染引导卡（adapter 上线后自动进入列表模式） */}
+      {tabAdapters.length === 0 && (
         <div className="rounded-[18px] border border-dashed border-border bg-surface-1/40 p-8 text-center">
           <p className="text-sm font-medium text-text">该模态即将支持，将在后续版本提供配置</p>
           <p className="mt-2 text-xs text-hint">
@@ -237,7 +232,7 @@ export function MediaSettings(): ReactElement {
         </div>
       )}
 
-      {tab !== 'text' && tabAdapters.length > 0 && (
+      {tabAdapters.length > 0 && (
         <>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-muted-foreground">
@@ -268,7 +263,7 @@ export function MediaSettings(): ReactElement {
           {!loading && rows.length === 0 && (
             <div className="rounded-[18px] border border-dashed border-border bg-surface-1/40 p-8 text-center">
               <p className="text-sm text-hint">
-                尚未配置{MODALITY_LABELS[tab]}生成 Provider，新增后即可在画布生成图片
+                尚未配置{MODALITY_LABELS[tab]}生成 Provider，新增后即可在画布中直接使用
               </p>
               <Button
                 size="sm"

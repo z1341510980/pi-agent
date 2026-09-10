@@ -7,6 +7,7 @@ import {
   InfiniteCanvasNavigationContribution,
   InfiniteCanvasWorkspace
 } from '../infinite-canvas/infinite-canvas-workspace'
+import { InfiniteCanvasMediaSettings } from '../infinite-canvas/media-settings-panel'
 
 /**
  * 受信任 renderer：桌面构建产物中的静态组件。
@@ -192,4 +193,9 @@ export { InfiniteCanvasNavigationContribution }
 /** novel 插件设置面板：群聊模式设置（plugin-settings slot）。 */
 export function NovelDiscussionSettingsContribution(): ReactElement {
   return <NovelDiscussionSettingsPanel />
+}
+
+/** infinite-canvas 插件设置面板：媒体生成 Provider 配置（plugin-settings slot）。 */
+export function InfiniteCanvasMediaSettingsContribution(): ReactElement {
+  return <InfiniteCanvasMediaSettings />
 }

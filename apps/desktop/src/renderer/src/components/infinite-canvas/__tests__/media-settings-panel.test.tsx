@@ -1,18 +1,19 @@
 /**
- * 媒体生成设置分区测试
+ * 无限画布插件「媒体生成」设置面板测试
+ * （自宿主 settings/__tests__/media-settings.test.tsx 迁入）
  *
- * 覆盖：四模态 tab 渲染与切换懒加载、图片 Provider 卡片渲染（名称/默认徽标/keyHint 掩码）、
- * 空态引导卡、formSchema 驱动的动态表单字段（openai-images ↔ apimart）、
- * 设为默认调用客户端、文字 tab 内嵌 ProviderManager。
+ * 覆盖：图片/视频/音频三模态 tab 渲染与切换懒加载、图片 Provider 卡片渲染
+ * （名称/默认徽标/keyHint 掩码）、空态引导卡、formSchema 驱动的动态表单字段
+ * （openai-images ↔ apimart）、设为默认调用客户端。
+ * （文字生成属宿主 LLM 体系，留在「模型与 Provider」页，不在本面板范围。）
  *
- * mock 策略：媒体客户端整体替换（@/api/media-provider-client）；
- * 文字 tab 内嵌的 ProviderManager 走 '@/api' 通用 HTTP 客户端，给最小 mock 让其空列表落地。
+ * mock 策略：媒体客户端整体替换（@/api/media-provider-client）。
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { MediaAdapterMeta, MediaProviderRow } from '@/api/media-provider-client'
-import { MediaSettings } from '../media-settings'
+import { InfiniteCanvasMediaSettings } from '../media-settings-panel'
 
 const mediaApi = vi.hoisted(() => ({
   listMediaAdapters: vi.fn(),
@@ -24,15 +25,6 @@ const mediaApi = vi.hoisted(() => ({
 }))
 
 vi.mock('@/api/media-provider-client', () => mediaApi)
-
-const httpApi = vi.hoisted(() => ({
-  getApi: vi.fn(),
-  postApi: vi.fn(),
-  deleteApi: vi.fn(),
-  getAgui: vi.fn()
-}))
-
-vi.mock('@/api', () => httpApi)
 
 // formSchema 与服务端 adapter 声明对齐（openai-images: size；apimart: resolution/language）
 const ADAPTERS: MediaAdapterMeta[] = [
@@ -109,7 +101,7 @@ function renderMediaSettings(): void {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
-      <MediaSettings />
+      <InfiniteCanvasMediaSettings />
     </QueryClientProvider>
   )
 }
@@ -125,11 +117,6 @@ beforeEach(() => {
   mediaApi.updateMediaProvider.mockResolvedValue(DEFAULT_ROW)
   mediaApi.deleteMediaProvider.mockResolvedValue(undefined)
   mediaApi.setMediaProviderDefault.mockResolvedValue(undefined)
-  // ProviderManager（文字 tab）的后端列表 / 默认 / 模型请求
-  httpApi.getApi.mockResolvedValue([])
-  httpApi.postApi.mockResolvedValue({})
-  httpApi.deleteApi.mockResolvedValue({})
-  httpApi.getAgui.mockResolvedValue({ threadId: 'main', models: [] })
 })
 
 afterEach(() => {
@@ -137,20 +124,19 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe('媒体生成分区', () => {
-  it('渲染四个模态 tab，默认落在文字 tab 并内嵌 ProviderManager', async () => {
+describe('媒体生成设置面板', () => {
+  it('渲染图片/视频/音频三个模态 tab，默认落在图片 tab 并懒加载列表', async () => {
     renderMediaSettings()
 
     expect(screen.getByRole('tablist', { name: '媒体模态' })).toBeTruthy()
-    expect(screen.getByRole('tab', { name: '文字' }).getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByRole('tab', { name: '图片' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: '图片' }).getAttribute('aria-selected')).toBe('true')
     expect(screen.getByRole('tab', { name: '视频' })).toBeTruthy()
     expect(screen.getByRole('tab', { name: '音频' })).toBeTruthy()
+    expect(screen.queryByRole('tab', { name: '文字' })).toBeNull()
 
-    // 文字 tab：ProviderManager 自管数据加载；媒体 Provider 列表不被拉取
-    expect(screen.getByText('Provider 管理')).toBeTruthy()
-    expect(mediaApi.listMediaProviders).not.toHaveBeenCalled()
-    await screen.findByText(/暂无已注册的 Provider/)
+    // 图片 tab 即默认 tab：挂载即拉取该模态 Provider 列表
+    expect(await screen.findByText('主图库')).toBeTruthy()
+    expect(mediaApi.listMediaProviders).toHaveBeenCalledWith('image')
   })
 
   it('切换图片 tab 懒加载列表并渲染卡片（名称/默认徽标/keyHint 掩码）', async () => {
@@ -245,7 +231,7 @@ describe('媒体生成分区', () => {
     })
   })
 
-  it('视频/音频 tab 渲染阶段二引导卡', async () => {
+  it('模态清单里没有对应 adapter 时渲染引导卡（mock 未含音视频 adapter）', async () => {
     renderMediaSettings()
 
     fireEvent.click(screen.getByRole('tab', { name: '视频' }))
@@ -254,5 +240,49 @@ describe('媒体生成分区', () => {
     fireEvent.click(screen.getByRole('tab', { name: '音频' }))
     expect(await screen.findByText('该模态即将支持，将在后续版本提供配置')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '新增 Provider' })).toBeNull()
+  })
+
+  it('音视频 adapter 上线后列表模式自动可用（openai-audio formSchema 驱动字段）', async () => {
+    mediaApi.listMediaAdapters.mockResolvedValue({
+      adapters: [
+        ...ADAPTERS,
+        {
+          id: 'openai-audio',
+          label: 'OpenAI 语音合成',
+          modality: 'audio',
+          capabilities: { generate: true },
+          formSchema: [
+            {
+              key: 'voice',
+              label: '音色',
+              type: 'select',
+              options: [{ value: 'alloy', label: 'alloy' }, { value: 'nova', label: 'nova' }]
+            },
+            { key: 'format', label: '音频格式', type: 'select', options: [{ value: 'mp3', label: 'mp3' }] },
+            { key: 'speed', label: '语速 (0.25-4)', type: 'number', placeholder: '1' }
+          ]
+        }
+      ]
+    })
+    mediaApi.listMediaProviders.mockImplementation(async (modality: string) =>
+      modality === 'audio'
+        ? [
+            mediaRow({
+              id: 'mp-audio',
+              name: '配音库',
+              modality: 'audio',
+              adapter: 'openai-audio',
+              model: 'tts-1',
+              params: { voice: 'nova' },
+              keyHint: 'sk-a…wxyz'
+            })
+          ]
+        : []
+    )
+    renderMediaSettings()
+
+    fireEvent.click(screen.getByRole('tab', { name: '音频' }))
+    expect(await screen.findByText('配音库')).toBeTruthy()
+    expect(screen.getByText(/OpenAI 语音合成 · tts-1/)).toBeTruthy()
   })
 })

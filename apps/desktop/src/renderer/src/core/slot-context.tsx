@@ -22,7 +22,8 @@ import {
   NovelHomeShowcaseContribution,
   NovelDiscussionSettingsContribution,
   InfiniteCanvasWorkspaceContribution,
-  InfiniteCanvasNavigationContribution
+  InfiniteCanvasNavigationContribution,
+  InfiniteCanvasMediaSettingsContribution
 } from '../components/slot/trusted-renderers'
 
 /**
@@ -41,7 +42,8 @@ const RENDERERS: Record<string, React.ComponentType<Record<string, unknown>>> = 
   // 设置中心"插件设置"分区使用的自定义面板（plugin-settings slot）
   'novel.discussion-settings': NovelDiscussionSettingsContribution,
   'infinite-canvas.workspace': InfiniteCanvasWorkspaceContribution,
-  'infinite-canvas.navigation': InfiniteCanvasNavigationContribution
+  'infinite-canvas.navigation': InfiniteCanvasNavigationContribution,
+  'infinite-canvas.media-settings': InfiniteCanvasMediaSettingsContribution
 }
 
 export function registerTrustedRenderer(
