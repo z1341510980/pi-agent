@@ -7,6 +7,7 @@ import {
   createTextObject,
   parseDesignBoardDoc,
   reorderDesignBoardObject,
+  reorderDesignBoardObjectToIndex,
   resolveDesignImageSource,
   DESIGN_IMAGE_PLACEHOLDER
 } from '../design-board-types'
@@ -37,7 +38,8 @@ describe('design board document', () => {
       align: 'left',
       color: '#171717',
       width: 400,
-      height: 78
+      height: 78,
+      visible: true
     })
     const rect = createRectObject(0, 0, 200, 120)
     expect(rect).toMatchObject({
@@ -45,10 +47,11 @@ describe('design board document', () => {
       fill: '#262626',
       stroke: 'transparent',
       strokeWidth: 0,
-      radius: 0
+      radius: 0,
+      visible: true
     })
     const image = createImageObject({ kind: 'node-ref', nodeId: 'n1', index: 0 }, 0, 0, 300, 200)
-    expect(image).toMatchObject({ kind: 'image', radius: 0 })
+    expect(image).toMatchObject({ kind: 'image', radius: 0, visible: true })
     expect(text.id).not.toBe(rect.id)
   })
 
@@ -196,5 +199,60 @@ describe('reorderDesignBoardObject', () => {
     expect(JSON.stringify(objects)).toBe(snapshot)
     expect(moved[2]).toBe(objects[0])
     expect(moved.filter((object) => object === objects[0])).toHaveLength(1)
+  })
+})
+
+describe('reorderDesignBoardObjectToIndex', () => {
+  function makeObjects(): DesignBoardObject[] {
+    return [
+      createRectObject(0, 0, 10, 10),
+      createTextObject(10, 10, 100),
+      createImageObject({ kind: 'url', url: 'x.png' }, 20, 20, 30, 30)
+    ]
+  }
+  const ids = (objects: DesignBoardObject[]): string[] => objects.map((object) => object.id)
+
+  it('moves the object to the target index', () => {
+    const [a, b, c] = makeObjects()
+    expect(ids(reorderDesignBoardObjectToIndex([a, b, c], a.id, 2))).toEqual([b.id, c.id, a.id])
+    const [x, y, z] = makeObjects()
+    expect(ids(reorderDesignBoardObjectToIndex([x, y, z], z.id, 0))).toEqual([z.id, x.id, y.id])
+  })
+
+  it('clamps out-of-range target indices', () => {
+    const [a, b, c] = makeObjects()
+    expect(ids(reorderDesignBoardObjectToIndex([a, b, c], a.id, 99))).toEqual([b.id, c.id, a.id])
+    const [x, y, z] = makeObjects()
+    expect(ids(reorderDesignBoardObjectToIndex([x, y, z], z.id, -5))).toEqual([z.id, x.id, y.id])
+  })
+
+  it('returns the original reference when the id is missing or the index is unchanged', () => {
+    const objects = makeObjects()
+    expect(reorderDesignBoardObjectToIndex(objects, 'missing-id', 0)).toBe(objects)
+    expect(reorderDesignBoardObjectToIndex(objects, objects[1].id, 1)).toBe(objects)
+  })
+
+  it('does not mutate the input array', () => {
+    const objects = makeObjects()
+    const snapshot = JSON.stringify(objects)
+    const moved = reorderDesignBoardObjectToIndex(objects, objects[0].id, 2)
+    expect(JSON.stringify(objects)).toBe(snapshot)
+    expect(moved).not.toBe(objects)
+  })
+})
+
+describe('design board object visibility', () => {
+  it('parses non-boolean or missing visible as true and keeps explicit false', () => {
+    const doc = createDesignBoardDoc(100, 100)
+    doc.objects.push(createRectObject(0, 0, 10, 10))
+    doc.objects.push({ ...createTextObject(0, 0, 50), visible: false })
+    doc.objects.push(createRectObject(20, 20, 10, 10))
+    const raw = JSON.parse(JSON.stringify(doc)) as { objects: Array<Record<string, unknown>> }
+    raw.objects[0].visible = 'yes'
+    delete raw.objects[2].visible
+    const parsed = parseDesignBoardDoc(raw)
+    expect(parsed?.objects[0].visible).toBe(true)
+    expect(parsed?.objects[1].visible).toBe(false)
+    expect(parsed?.objects[2].visible).toBe(true)
   })
 })

@@ -19,7 +19,8 @@ const obj = (x: number, y: number, width: number, height: number): DesignBoardOb
   fill: '#000',
   stroke: 'transparent',
   strokeWidth: 0,
-  radius: 0
+  radius: 0,
+  visible: true
 })
 
 describe('pointerToScene', () => {

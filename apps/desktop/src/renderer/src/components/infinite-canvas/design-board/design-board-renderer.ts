@@ -210,6 +210,7 @@ export async function renderDesignBoardToCanvas(
   ctx.fillStyle = doc.background
   ctx.fillRect(0, 0, doc.width, doc.height)
   for (const object of doc.objects) {
+    if (!object.visible) continue
     // 调用方必须对 ctx 独占（await 交错会损坏状态栈）
     ctx.save()
     ctx.translate(object.x + object.width / 2, object.y + object.height / 2)

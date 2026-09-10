@@ -125,9 +125,22 @@ describe('renderDesignBoardToCanvas', () => {
       width: 50,
       height: 50,
       source: { kind: 'url', url: DESIGN_IMAGE_PLACEHOLDER },
-      radius: 0
+      radius: 0,
+      visible: true
     })
     await renderDesignBoardToCanvas(ctx, doc, () => Promise.resolve(DESIGN_IMAGE_PLACEHOLDER))
     expect(ctx.drawImage).not.toHaveBeenCalled()
+  })
+
+  it('skips invisible objects before touching the context state stack', async () => {
+    const ctx = mockCtx()
+    const doc = createDesignBoardDoc(100, 100)
+    doc.objects.push(createRectObject(0, 0, 50, 50))
+    doc.objects.push({ ...createRectObject(20, 20, 30, 30), visible: false })
+    await renderDesignBoardToCanvas(ctx, doc, () => Promise.resolve(DESIGN_IMAGE_PLACEHOLDER))
+    // 不可见对象在对象循环 save 之前被 continue：仅可见对象走一次 save/restore/translate
+    expect(ctx.save).toHaveBeenCalledTimes(1)
+    expect(ctx.restore).toHaveBeenCalledTimes(1)
+    expect(ctx.translate).toHaveBeenCalledTimes(2)
   })
 })

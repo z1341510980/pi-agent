@@ -18,6 +18,8 @@ interface DesignBoardBase {
   y: number
   width: number
   height: number
+  /** 图层可见性：false 时 canvas 渲染与 DOM 对象视图均跳过该对象 */
+  visible: boolean
 }
 
 export interface DesignBoardTextObject extends DesignBoardBase {
@@ -104,7 +106,8 @@ export function createTextObject(x: number, y: number, width: number): DesignBoa
     fontSize,
     fontWeight: 400,
     align: 'left',
-    color: '#171717'
+    color: '#171717',
+    visible: true
   }
 }
 
@@ -124,7 +127,8 @@ export function createRectObject(
     fill: '#262626',
     stroke: 'transparent',
     strokeWidth: 0,
-    radius: 0
+    radius: 0,
+    visible: true
   }
 }
 
@@ -135,7 +139,7 @@ export function createImageObject(
   width: number,
   height: number
 ): DesignBoardImageObject {
-  return { id: makeId(), kind: 'image', x, y, width, height, source, radius: 0 }
+  return { id: makeId(), kind: 'image', x, y, width, height, source, radius: 0, visible: true }
 }
 
 export type DesignBoardZOrderAction = 'front' | 'back' | 'forward' | 'backward'
@@ -163,13 +167,31 @@ export function reorderDesignBoardObject(
   return next
 }
 
+/** 图层面板拖拽排序：把 id 对象移动到目标索引（clamp），id 不存在或索引未变时返回原数组引用。 */
+export function reorderDesignBoardObjectToIndex(
+  objects: DesignBoardObject[],
+  id: string,
+  toIndex: number
+): DesignBoardObject[] {
+  const index = objects.findIndex((object) => object.id === id)
+  if (index === -1) return objects
+  const target = clampInt(toIndex, 0, objects.length - 1, index)
+  if (target === index) return objects
+  const next = objects.slice()
+  const [object] = next.splice(index, 1)
+  next.splice(target, 0, object)
+  return next
+}
+
 function parseBase(raw: Record<string, unknown>): DesignBoardBase | null {
   const x = clampNumber(toNumber(raw.x), -100000, 100000, 0)
   const y = clampNumber(toNumber(raw.y), -100000, 100000, 0)
   const width = clampInt(toNumber(raw.width), 1, 16000, 1)
   const height = clampInt(toNumber(raw.height), 1, 16000, 1)
   const id = typeof raw.id === 'string' && raw.id ? raw.id : makeId()
-  return { id, x, y, width, height }
+  // 字段级解析：非 boolean 或缺失一律回退 true（旧文档无该字段）
+  const visible = typeof raw.visible === 'boolean' ? raw.visible : true
+  return { id, x, y, width, height, visible }
 }
 
 function parseImageSource(raw: unknown): DesignImageSource | null {

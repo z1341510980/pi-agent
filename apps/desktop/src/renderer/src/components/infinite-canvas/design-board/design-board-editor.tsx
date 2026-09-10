@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react'
+import type {
+  DragEvent as ReactDragEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactElement,
+  ReactNode
+} from 'react'
 import {
   AlignCenter,
   AlignLeft,
@@ -7,8 +12,16 @@ import {
   ArrowDown,
   ArrowUp,
   BringToFront,
+  ChevronDown,
+  ChevronUp,
   Copy,
+  Eye,
+  EyeOff,
   Frame,
+  GripVertical,
+  HelpCircle,
+  Image as ImageIcon,
+  Layers,
   Redo2,
   SendToBack,
   Square,
@@ -32,6 +45,7 @@ import {
   designBoardFontFamily,
   parseDesignBoardDoc,
   reorderDesignBoardObject,
+  reorderDesignBoardObjectToIndex,
   resolveDesignImageSource
 } from './design-board-types'
 import type {
@@ -101,6 +115,14 @@ interface ContextMenuState {
   y: number
 }
 
+type SidePanelKind = 'layers' | 'images' | 'help'
+
+const LAYER_KIND_LABELS: Record<DesignBoardObject['kind'], string> = {
+  text: '文本',
+  rect: '矩形',
+  image: '图片'
+}
+
 export interface DesignBoardEditorProps {
   node: CanvasNodeData
   nodes: CanvasNodeData[]
@@ -132,6 +154,8 @@ export function DesignBoardEditor({
     y: null
   })
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  const [sidePanel, setSidePanel] = useState<SidePanelKind | null>(null)
+  const [layerDragOverId, setLayerDragOverId] = useState<string | null>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const artboardRef = useRef<HTMLDivElement>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
@@ -380,6 +404,46 @@ export function DesignBoardEditor({
     [selectedId]
   )
 
+  // 图层面板操作：可见性 / ↑↓ 层级 / 拖拽排序（与画布选中解耦，按对象 id 直改）
+  const toggleObjectVisible = useCallback(
+    (objectId: string): void => {
+      updateObject(objectId, (object) => ({ ...object, visible: !object.visible }))
+    },
+    [updateObject]
+  )
+
+  const moveLayerObject = useCallback((objectId: string, action: DesignBoardZOrderAction): void => {
+    setDoc((current) => ({
+      ...current,
+      objects: reorderDesignBoardObject(current.objects, objectId, action)
+    }))
+  }, [])
+
+  const reorderObjectToIndex = useCallback((objectId: string, toIndex: number): void => {
+    setDoc((current) => ({
+      ...current,
+      objects: reorderDesignBoardObjectToIndex(current.objects, objectId, toIndex)
+    }))
+  }, [])
+
+  const selectFromLayers = useCallback(
+    (objectId: string): void => {
+      if (textEditingId && textEditingId !== objectId) commitTextDraft()
+      setSelectedId(objectId)
+    },
+    [commitTextDraft, textEditingId]
+  )
+
+  const toggleSidePanel = useCallback((panel: SidePanelKind): void => {
+    setSidePanel((current) => (current === panel ? null : panel))
+  }, [])
+
+  // 图层条目按 z 序倒序展示（最上层在最上），保留原数组索引用于拖拽落点定位
+  const layerEntries = useMemo(
+    () => doc.objects.map((object, index) => ({ object, index })).reverse(),
+    [doc.objects]
+  )
+
   // 拖拽/缩放（window 级 move/up/cancel）
   const boardRect = (): { left: number; top: number } => {
     const rect = artboardRef.current?.getBoundingClientRect()
@@ -606,28 +670,28 @@ export function DesignBoardEditor({
       data-canvas-no-zoom
       style={{ background: theme.canvas.background, color: theme.node.text }}
     >
-      {/* 顶栏 */}
+      {/* 顶栏：左 = 标题 + 画板尺寸；右 = 撤销/重做 ｜ Export ｜ 完成编辑 ｜ 保存并关闭 */}
       <div
-        className="flex h-14 items-center gap-2 border-b px-4"
+        className="flex h-14 shrink-0 items-center gap-2 border-b px-4"
         style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}
       >
-        <Frame className="size-4" />
-        <span className="mr-2 truncate text-base font-semibold">{node.title}</span>
-        <span className="text-xs opacity-55">
+        <Frame className="size-4 shrink-0" />
+        <span className="min-w-0 truncate text-base font-semibold">{node.title}</span>
+        <span className="shrink-0 text-xs opacity-55">
           {doc.width}×{doc.height}
         </span>
-        <div className="mx-2 h-6 w-px" style={{ background: theme.toolbar.border }} />
-        <Button variant="ghost" size="sm" onClick={undo}>
-          <Undo2 className="mr-1 size-4" />
-          撤销
-        </Button>
-        <Button variant="ghost" size="sm" onClick={redo}>
-          <Redo2 className="mr-1 size-4" />
-          重做
-        </Button>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={undo}>
+            <Undo2 className="mr-1 size-4" />
+            撤销
+          </Button>
+          <Button variant="ghost" size="sm" onClick={redo}>
+            <Redo2 className="mr-1 size-4" />
+            重做
+          </Button>
           {onExport && (
             <>
+              <ToolbarDivider />
               <div className="flex items-center gap-2 text-xs opacity-80">
                 <label className="flex cursor-pointer items-center gap-1">
                   <input
@@ -655,6 +719,7 @@ export function DesignBoardEditor({
               </Button>
             </>
           )}
+          <ToolbarDivider />
           <Button size="sm" onClick={finish}>
             完成编辑
           </Button>
@@ -669,36 +734,34 @@ export function DesignBoardEditor({
           </Button>
         </div>
       </div>
-      <div className="flex min-h-0 flex-1">
-        {/* 资源面板 */}
-        <div
-          className="thin-scrollbar w-56 shrink-0 overflow-y-auto border-r p-3"
+      <div className="relative flex min-h-0 flex-1">
+        {/* 左侧固定窄导航：图标竖排，悬浮面板经 absolute 卡片展开 */}
+        <nav
+          className="flex w-14 shrink-0 flex-col items-center gap-1 border-r py-3"
           style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}
         >
-          <p className="mb-2 text-xs font-semibold opacity-60">画布资源</p>
-          {resources.length === 0 && <p className="text-xs opacity-50">画布上暂无图片资源</p>}
-          <div className="grid grid-cols-2 gap-2">
-            {resources.map((resource) => (
-              <button
-                key={resource.id}
-                type="button"
-                title={`${resource.title}（点击插入）`}
-                className="overflow-hidden rounded-lg border text-left"
-                style={{ borderColor: theme.toolbar.border }}
-                onClick={() => insertResource(resource.nodeId, resource.index)}
-              >
-                <img
-                  src={proxyExternalImageUrl(resource.url)}
-                  alt={resource.title}
-                  className="h-16 w-full object-cover"
-                />
-                <span className="block truncate px-1 py-0.5 text-[10px] opacity-70">
-                  {resource.title}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
+          <SideNavButton
+            Icon={Layers}
+            label="图层"
+            theme={theme}
+            active={sidePanel === 'layers'}
+            onClick={() => toggleSidePanel('layers')}
+          />
+          <SideNavButton
+            Icon={ImageIcon}
+            label="画布资源"
+            theme={theme}
+            active={sidePanel === 'images'}
+            onClick={() => toggleSidePanel('images')}
+          />
+          <SideNavButton
+            Icon={HelpCircle}
+            label="快捷键"
+            theme={theme}
+            active={sidePanel === 'help'}
+            onClick={() => toggleSidePanel('help')}
+          />
+        </nav>
         {/* 画板视口 */}
         <div
           ref={viewportRef}
@@ -729,50 +792,52 @@ export function DesignBoardEditor({
                 background: doc.background
               }}
             >
-              {/* 对象层：越界内容裁切隐藏，与导出 canvas 行为一致 */}
+              {/* 对象层：越界内容裁切隐藏，与导出 canvas 行为一致；隐藏图层不渲染 DOM */}
               <div className="absolute inset-0 overflow-hidden">
-                {doc.objects.map((object) => (
-                  <div
-                    key={object.id}
-                    data-design-board-object
-                    className="absolute"
-                    style={{
-                      left: object.x * scale,
-                      top: object.y * scale,
-                      width: object.width * scale,
-                      height: object.height * scale
-                    }}
-                    onPointerDown={(event) => startDrag(event, object.id)}
-                    onContextMenu={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                      if (textEditingId && textEditingId !== object.id) commitTextDraft()
-                      if (selectedId !== object.id) setSelectedId(object.id)
-                      setContextMenu({ x: event.clientX, y: event.clientY })
-                    }}
-                    onMouseEnter={() => setHoveredId(object.id)}
-                    onMouseLeave={() =>
-                      setHoveredId((current) => (current === object.id ? null : current))
-                    }
-                    onDoubleClick={() => {
-                      if (object.kind === 'text') {
-                        setSelectedId(object.id)
-                        setTextEditingId(object.id)
-                        setTextDraft(object.text)
+                {doc.objects
+                  .filter((object) => object.visible)
+                  .map((object) => (
+                    <div
+                      key={object.id}
+                      data-design-board-object
+                      className="absolute"
+                      style={{
+                        left: object.x * scale,
+                        top: object.y * scale,
+                        width: object.width * scale,
+                        height: object.height * scale
+                      }}
+                      onPointerDown={(event) => startDrag(event, object.id)}
+                      onContextMenu={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        if (textEditingId && textEditingId !== object.id) commitTextDraft()
+                        if (selectedId !== object.id) setSelectedId(object.id)
+                        setContextMenu({ x: event.clientX, y: event.clientY })
+                      }}
+                      onMouseEnter={() => setHoveredId(object.id)}
+                      onMouseLeave={() =>
+                        setHoveredId((current) => (current === object.id ? null : current))
                       }
-                    }}
-                  >
-                    <ObjectView
-                      object={object}
-                      scale={scale}
-                      editing={textEditingId === object.id}
-                      draft={textDraft}
-                      onDraftChange={setTextDraft}
-                      onCommitDraft={commitTextDraft}
-                      resolveUrl={(source) => resolveDesignImageSource(source, nodes)}
-                    />
-                  </div>
-                ))}
+                      onDoubleClick={() => {
+                        if (object.kind === 'text') {
+                          setSelectedId(object.id)
+                          setTextEditingId(object.id)
+                          setTextDraft(object.text)
+                        }
+                      }}
+                    >
+                      <ObjectView
+                        object={object}
+                        scale={scale}
+                        editing={textEditingId === object.id}
+                        draft={textDraft}
+                        onDraftChange={setTextDraft}
+                        onCommitDraft={commitTextDraft}
+                        resolveUrl={(source) => resolveDesignImageSource(source, nodes)}
+                      />
+                    </div>
+                  ))}
               </div>
               {/* 悬停高亮：1px 虚线边框，不随缩放变化 */}
               {hoveredObject && hoveredObject.id !== selectedId && (
@@ -880,9 +945,9 @@ export function DesignBoardEditor({
           </div>
         </div>
       </div>
-      {/* 底部工具条 */}
+      {/* 底部工具条：添加文本/矩形 ｜ 复制/删除（缩放控件独立悬浮于右下角） */}
       <div
-        className="flex h-14 items-center gap-2 border-t px-4"
+        className="flex h-14 shrink-0 items-center gap-2 border-t px-4"
         style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}
       >
         <Button variant="outline" size="sm" onClick={addText}>
@@ -900,30 +965,82 @@ export function DesignBoardEditor({
         <Button variant="outline" size="sm" onClick={deleteSelected} disabled={!selectedObject}>
           删除
         </Button>
-        <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" size="sm" aria-label="缩小" title="缩小" onClick={zoomOut}>
-            −
-          </Button>
-          <input
-            type="range"
-            min={ZOOM_MIN_PCT}
-            max={ZOOM_MAX_PCT}
-            value={zoomPercent}
-            onChange={(event) => setZoomCentered(Number(event.target.value))}
-            className="w-32"
-            aria-label="缩放"
-          />
-          <Button variant="outline" size="sm" aria-label="放大" title="放大" onClick={zoomIn}>
-            +
-          </Button>
-          <Button variant="outline" size="sm" onClick={fitZoom} title="适配 (Ctrl+1)">
-            适配
-          </Button>
-          <span className="w-12 text-right text-xs tabular-nums opacity-70">
-            {Math.round(zoomPercent)}%
-          </span>
-        </div>
       </div>
+      {/* 右下角独立缩放悬浮卡 */}
+      <div
+        className="absolute right-5 bottom-20 z-30 flex items-center gap-2 rounded-xl border px-3 py-2 shadow-lg"
+        style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}
+      >
+        <Button variant="ghost" size="sm" aria-label="缩小" title="缩小" onClick={zoomOut}>
+          −
+        </Button>
+        <input
+          type="range"
+          min={ZOOM_MIN_PCT}
+          max={ZOOM_MAX_PCT}
+          value={zoomPercent}
+          onChange={(event) => setZoomCentered(Number(event.target.value))}
+          className="w-28"
+          aria-label="缩放"
+        />
+        <Button variant="ghost" size="sm" aria-label="放大" title="放大" onClick={zoomIn}>
+          +
+        </Button>
+        <ToolbarDivider />
+        <Button variant="outline" size="sm" onClick={fitZoom} title="适配 (Ctrl+1)">
+          适配
+        </Button>
+        <span className="w-11 text-right text-xs tabular-nums opacity-70">
+          {Math.round(zoomPercent)}%
+        </span>
+      </div>
+      {/* 悬浮侧面板：同一时间只开一个 */}
+      {sidePanel === 'layers' && (
+        <FloatingPanel title="图层" theme={theme} onClose={() => setSidePanel(null)}>
+          <LayersPanel
+            entries={layerEntries}
+            selectedId={selectedId}
+            dragOverId={layerDragOverId}
+            theme={theme}
+            onSelect={selectFromLayers}
+            onToggleVisible={toggleObjectVisible}
+            onMove={moveLayerObject}
+            onReorderToIndex={reorderObjectToIndex}
+            onDragOverRow={setLayerDragOverId}
+          />
+        </FloatingPanel>
+      )}
+      {sidePanel === 'images' && (
+        <FloatingPanel title="画布资源" theme={theme} onClose={() => setSidePanel(null)}>
+          {resources.length === 0 && <p className="text-xs opacity-50">画布上暂无图片资源</p>}
+          <div className="grid grid-cols-2 gap-2">
+            {resources.map((resource) => (
+              <button
+                key={resource.id}
+                type="button"
+                title={`${resource.title}（点击插入）`}
+                className="overflow-hidden rounded-lg border text-left"
+                style={{ borderColor: theme.toolbar.border }}
+                onClick={() => insertResource(resource.nodeId, resource.index)}
+              >
+                <img
+                  src={proxyExternalImageUrl(resource.url)}
+                  alt={resource.title}
+                  className="h-16 w-full object-cover"
+                />
+                <span className="block truncate px-1 py-0.5 text-[10px] opacity-70">
+                  {resource.title}
+                </span>
+              </button>
+            ))}
+          </div>
+        </FloatingPanel>
+      )}
+      {sidePanel === 'help' && (
+        <FloatingPanel title="快捷键" theme={theme} onClose={() => setSidePanel(null)}>
+          <HelpPanel />
+        </FloatingPanel>
+      )}
       {/* 对象右键菜单：fixed 定位，pointerdown 菜单外/Escape 关闭 */}
       {contextMenu && (
         <div
@@ -979,6 +1096,235 @@ export function DesignBoardEditor({
           </button>
         </div>
       )}
+    </div>
+  )
+}
+
+/** 左侧窄导航按钮：选中态用主题 active 色，悬浮面板同色联动。 */
+function SideNavButton({
+  Icon,
+  label,
+  theme,
+  active,
+  onClick
+}: {
+  Icon: typeof Layers
+  label: string
+  theme: CanvasTheme
+  active: boolean
+  onClick: () => void
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      aria-pressed={active}
+      className="grid size-10 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
+      style={
+        active
+          ? { backgroundColor: theme.toolbar.activeBg, color: theme.toolbar.activeText }
+          : { color: theme.toolbar.item }
+      }
+      onClick={onClick}
+    >
+      <Icon className="size-5" />
+    </button>
+  )
+}
+
+/** 悬浮侧面板外壳：absolute 定位在导航栏右侧，标题行 + × 关闭。 */
+function FloatingPanel({
+  title,
+  theme,
+  onClose,
+  children
+}: {
+  title: string
+  theme: CanvasTheme
+  onClose: () => void
+  children: ReactNode
+}): ReactElement {
+  return (
+    <div
+      data-design-board-side-panel
+      className="absolute top-16 left-16 z-40 w-60 overflow-hidden rounded-xl border shadow-xl"
+      style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}
+    >
+      <div
+        className="flex items-center justify-between border-b px-3 py-2"
+        style={{ borderColor: theme.toolbar.border }}
+      >
+        <span className="text-xs font-semibold opacity-60">{title}</span>
+        <button
+          type="button"
+          aria-label={`关闭${title}`}
+          title={`关闭${title}`}
+          className="grid size-5 place-items-center rounded transition hover:bg-black/5 dark:hover:bg-white/10"
+          style={{ color: theme.toolbar.item }}
+          onClick={onClose}
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
+      <div className="p-3">{children}</div>
+    </div>
+  )
+}
+
+/** 图层面板：z 序倒序条目，支持点选 / 眼睛显隐 / ↑↓ 层级 / 手柄拖拽排序。 */
+function LayersPanel({
+  entries,
+  selectedId,
+  dragOverId,
+  theme,
+  onSelect,
+  onToggleVisible,
+  onMove,
+  onReorderToIndex,
+  onDragOverRow
+}: {
+  entries: Array<{ object: DesignBoardObject; index: number }>
+  selectedId: string | null
+  dragOverId: string | null
+  theme: CanvasTheme
+  onSelect: (objectId: string) => void
+  onToggleVisible: (objectId: string) => void
+  onMove: (objectId: string, action: DesignBoardZOrderAction) => void
+  onReorderToIndex: (objectId: string, toIndex: number) => void
+  onDragOverRow: (objectId: string | null) => void
+}): ReactElement {
+  if (entries.length === 0) {
+    return <p className="text-xs opacity-50">画板上暂无对象</p>
+  }
+  return (
+    <div className="flex flex-col gap-0.5" data-design-board-layers-panel>
+      {entries.map(({ object, index }) => {
+        const selected = object.id === selectedId
+        const dragOver = object.id === dragOverId
+        const label =
+          object.kind === 'text' && object.text.trim()
+            ? object.text.trim()
+            : LAYER_KIND_LABELS[object.kind]
+        return (
+          <div
+            key={object.id}
+            data-design-board-layer-item
+            className={`flex items-center gap-1 rounded-lg px-1.5 py-1 transition ${
+              selected || dragOver ? '' : 'hover:bg-black/5 dark:hover:bg-white/10'
+            }`}
+            style={
+              selected || dragOver
+                ? { backgroundColor: theme.toolbar.activeBg }
+                : { color: theme.toolbar.item }
+            }
+            onDragOver={(event: ReactDragEvent) => {
+              event.preventDefault()
+              onDragOverRow(object.id)
+            }}
+            onDragLeave={() => onDragOverRow(null)}
+            onDrop={(event: ReactDragEvent) => {
+              event.preventDefault()
+              const dragId = event.dataTransfer.getData('text/plain')
+              if (dragId && dragId !== object.id) onReorderToIndex(dragId, index)
+              onDragOverRow(null)
+            }}
+            onClick={() => onSelect(object.id)}
+          >
+            <span
+              data-design-board-layer-handle
+              draggable
+              aria-label={`拖拽排序 ${label}`}
+              title="拖拽排序"
+              className="shrink-0 cursor-grab opacity-40"
+              onDragStart={(event: ReactDragEvent) => {
+                event.dataTransfer.setData('text/plain', object.id)
+                event.dataTransfer.effectAllowed = 'move'
+              }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <GripVertical className="size-3.5" />
+            </span>
+            <button
+              type="button"
+              className={`min-w-0 flex-1 truncate text-left text-xs ${
+                object.visible ? '' : 'opacity-50'
+              }`}
+              title={label}
+            >
+              {label}
+            </button>
+            <button
+              type="button"
+              aria-label={object.visible ? '隐藏图层' : '显示图层'}
+              title={object.visible ? '隐藏图层' : '显示图层'}
+              className="grid size-6 shrink-0 place-items-center rounded transition hover:bg-black/5 dark:hover:bg-white/10"
+              style={{ color: theme.toolbar.item }}
+              onClick={(event) => {
+                event.stopPropagation()
+                onToggleVisible(object.id)
+              }}
+            >
+              {object.visible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+            </button>
+            <button
+              type="button"
+              aria-label="上移一层"
+              title="上移一层"
+              className="grid size-6 shrink-0 place-items-center rounded transition hover:bg-black/5 dark:hover:bg-white/10"
+              style={{ color: theme.toolbar.item }}
+              onClick={(event) => {
+                event.stopPropagation()
+                onMove(object.id, 'forward')
+              }}
+            >
+              <ChevronUp className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              aria-label="下移一层"
+              title="下移一层"
+              className="grid size-6 shrink-0 place-items-center rounded transition hover:bg-black/5 dark:hover:bg-white/10"
+              style={{ color: theme.toolbar.item }}
+              onClick={(event) => {
+                event.stopPropagation()
+                onMove(object.id, 'backward')
+              }}
+            >
+              <ChevronDown className="size-3.5" />
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+const EDITOR_SHORTCUTS: Array<[string, string]> = [
+  ['撤销', 'Ctrl+Z'],
+  ['重做', 'Ctrl+Shift+Z'],
+  ['复制', 'Ctrl+D'],
+  ['删除', 'Delete / Backspace'],
+  ['方向键微移', '方向键（Shift ×10）'],
+  ['上移一层', 'Ctrl+]'],
+  ['下移一层', 'Ctrl+['],
+  ['置顶', 'Ctrl+Shift+]'],
+  ['置底', 'Ctrl+Shift+['],
+  ['适配画板', 'Ctrl+1'],
+  ['退出文本编辑', 'Escape'],
+  ['缩放画板', 'Ctrl+滚轮']
+]
+
+/** 快捷键说明卡：两列 label/键位。 */
+function HelpPanel(): ReactElement {
+  return (
+    <div className="flex flex-col gap-1.5" data-design-board-help-panel>
+      {EDITOR_SHORTCUTS.map(([label, keys]) => (
+        <div key={label} className="flex items-center justify-between gap-3 text-xs">
+          <span className="shrink-0 opacity-70">{label}</span>
+          <span className="text-right font-mono text-[11px]">{keys}</span>
+        </div>
+      ))}
     </div>
   )
 }

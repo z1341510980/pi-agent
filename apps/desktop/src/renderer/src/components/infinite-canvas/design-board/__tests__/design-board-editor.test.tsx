@@ -36,12 +36,28 @@ function setup(overrides: Partial<DesignBoardEditorProps> = {}): {
 }
 
 describe('DesignBoardEditor', () => {
-  it('renders board title, tools and resources panel', () => {
+  it('renders board title, bottom tools and side navigation rail', () => {
     setup()
     expect(screen.getByRole('button', { name: '添加文本' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '添加矩形' })).toBeTruthy()
-    expect(screen.getByText('画布资源')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '图层' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '画布资源' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '快捷键' })).toBeTruthy()
     expect(screen.getByText(/1080×1440/)).toBeTruthy()
+  })
+
+  it('floating side panels open exclusively and toggle off on repeat click', () => {
+    const { container } = setup()
+    expect(container.querySelectorAll('[data-design-board-side-panel]')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: '画布资源' }))
+    expect(container.querySelectorAll('[data-design-board-side-panel]')).toHaveLength(1)
+    expect(screen.getByText('画布资源')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '图层' }))
+    expect(container.querySelectorAll('[data-design-board-side-panel]')).toHaveLength(1)
+    expect(screen.getByText('图层')).toBeTruthy()
+    expect(screen.queryByText('画布上暂无图片资源')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '图层' }))
+    expect(container.querySelectorAll('[data-design-board-side-panel]')).toHaveLength(0)
   })
 
   it('adds a text object centered on the board and commits on close', () => {
@@ -127,6 +143,7 @@ describe('DesignBoardEditor', () => {
 
   it('shows empty-resources hint when canvas has no image nodes', async () => {
     setup()
+    fireEvent.click(screen.getByRole('button', { name: '画布资源' }))
     expect(await screen.findByText('画布上暂无图片资源')).toBeTruthy()
   })
 
@@ -210,6 +227,7 @@ describe('DesignBoardEditor', () => {
       metadata: { content: 'data:image/png;base64,AAA' }
     }
     const { onCommit } = setup({ nodes: [boardNode, imageNode] })
+    fireEvent.click(screen.getByRole('button', { name: '画布资源' }))
     fireEvent.click(await screen.findByRole('button', { name: /素材/ }))
     fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
     const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
@@ -448,5 +466,87 @@ describe('DesignBoardEditor', () => {
     fireEvent.focusOut(screen.getByRole('textbox'))
     const lines = container.querySelectorAll('[data-design-board-text-line]')
     expect(lines).toHaveLength(2)
+  })
+
+  it('图层面板按 z 序倒序列出条目，点条目选中对象并高亮', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    const first = createRectObject(10, 10, 100, 80)
+    const second = createRectObject(300, 10, 100, 80)
+    doc.objects.push(first, second)
+    const { container } = setup({ node: { ...boardNode, metadata: { design: doc } } })
+    fireEvent.click(screen.getByRole('button', { name: '图层' }))
+    const panel = container.querySelector('[data-design-board-layers-panel]') as HTMLElement
+    // 数组后者在上：首行是 second
+    const rows = [...panel.querySelectorAll('[data-design-board-layer-item]')] as HTMLElement[]
+    expect(rows).toHaveLength(2)
+    expect(within(rows[0]).getByTitle('矩形')).toBeTruthy()
+    expect(within(rows[1]).getByTitle('矩形')).toBeTruthy()
+    fireEvent.click(within(rows[1]).getByTitle('矩形'))
+    // 选中反馈：属性工具栏出现该类型控件 + 条目主题 active 底色
+    const toolbar = container.querySelector('[data-design-board-property-toolbar]') as HTMLElement
+    expect(within(toolbar).getByLabelText('填充颜色')).toBeTruthy()
+    expect(rows[1].style.backgroundColor).toBe('rgb(231, 229, 223)')
+    expect(rows[0].style.backgroundColor).toBe('')
+  })
+
+  it('图层面板眼睛切换隐藏对象：画布 DOM 不渲染且提交 visible=false', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    doc.objects.push(createRectObject(10, 10, 100, 80))
+    const { onCommit, container } = setup({ node: { ...boardNode, metadata: { design: doc } } })
+    expect(container.querySelector('[data-design-board-object]')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '图层' }))
+    const panel = container.querySelector('[data-design-board-layers-panel]') as HTMLElement
+    fireEvent.click(within(panel).getByRole('button', { name: '隐藏图层' }))
+    expect(container.querySelector('[data-design-board-object]')).toBeNull()
+    expect(within(panel).getByRole('button', { name: '显示图层' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const committed = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(committed.objects[0].visible).toBe(false)
+  })
+
+  it('图层面板 ↑（上移一层）调整对象层级并随完成编辑提交', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    const first = createRectObject(10, 10, 100, 80)
+    const second = createRectObject(300, 10, 100, 80)
+    doc.objects.push(first, second)
+    const { onCommit, container } = setup({ node: { ...boardNode, metadata: { design: doc } } })
+    fireEvent.click(screen.getByRole('button', { name: '图层' }))
+    const panel = container.querySelector('[data-design-board-layers-panel]') as HTMLElement
+    const rows = [...panel.querySelectorAll('[data-design-board-layer-item]')] as HTMLElement[]
+    // first 在面板底部一行，↑ 后移到数组末尾（z 序最上层）
+    fireEvent.click(within(rows[1]).getByRole('button', { name: '上移一层' }))
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const committed = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(committed.objects.map((object) => object.id)).toEqual([second.id, first.id])
+  })
+
+  it('图层面板拖拽手柄 drop 到目标条目后按索引重排', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    const first = createRectObject(10, 10, 100, 80)
+    const second = createRectObject(300, 10, 100, 80)
+    doc.objects.push(first, second)
+    const { onCommit, container } = setup({ node: { ...boardNode, metadata: { design: doc } } })
+    fireEvent.click(screen.getByRole('button', { name: '图层' }))
+    const panel = container.querySelector('[data-design-board-layers-panel]') as HTMLElement
+    const rows = [...panel.querySelectorAll('[data-design-board-layer-item]')] as HTMLElement[]
+    const handle = rows[1].querySelector('[data-design-board-layer-handle]') as HTMLElement
+    const dataTransfer = { setData: vi.fn(), getData: vi.fn(() => first.id) }
+    fireEvent.dragStart(handle, { dataTransfer })
+    expect(dataTransfer.setData).toHaveBeenCalledWith('text/plain', first.id)
+    fireEvent.dragOver(rows[0], { dataTransfer })
+    fireEvent.drop(rows[0], { dataTransfer })
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const committed = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(committed.objects.map((object) => object.id)).toEqual([second.id, first.id])
+  })
+
+  it('帮助面板静态列出全部编辑器快捷键', () => {
+    const { container } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '快捷键' }))
+    const panel = container.querySelector('[data-design-board-side-panel]') as HTMLElement
+    for (const keys of ['Ctrl+Z', 'Ctrl+Shift+Z', 'Ctrl+D', 'Ctrl+1', 'Escape', 'Ctrl+滚轮']) {
+      expect(within(panel).getByText(keys)).toBeTruthy()
+    }
+    expect(within(panel).getByText('Delete / Backspace')).toBeTruthy()
   })
 })
