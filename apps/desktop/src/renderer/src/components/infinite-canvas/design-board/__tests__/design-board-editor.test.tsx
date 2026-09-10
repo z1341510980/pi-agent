@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import type { CanvasNodeData } from '@/api/infinite-canvas-client'
-import { createDesignBoardDoc, type DesignBoardDoc } from '../design-board-types'
+import { createDesignBoardDoc, createRectObject, type DesignBoardDoc } from '../design-board-types'
 import { DesignBoardEditor, type DesignBoardEditorProps } from '../design-board-editor'
 
 afterEach(cleanup)
@@ -299,5 +299,91 @@ describe('DesignBoardEditor', () => {
     const viewport = container.querySelector('[data-design-board-viewport]') as HTMLElement
     fireEvent.contextMenu(viewport)
     expect(container.querySelector('[data-design-board-context-menu]')).toBeNull()
+  })
+
+  it('选中矩形后显示浮动属性工具栏（含填充颜色输入，定位在对象上方居中）', () => {
+    const { container } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    const toolbar = container.querySelector('[data-design-board-property-toolbar]') as HTMLElement
+    expect(toolbar).toBeTruthy()
+    expect(within(toolbar).getByLabelText('填充颜色')).toBeTruthy()
+    expect(within(toolbar).getByLabelText('描边颜色')).toBeTruthy()
+    expect(within(toolbar).getByLabelText('描边宽度')).toBeTruthy()
+    expect(within(toolbar).getByLabelText('圆角')).toBeTruthy()
+    expect((within(toolbar).getByLabelText('填充颜色') as HTMLInputElement).value).toBe('#262626')
+    // 定位公式：top = y·scale − 44，left = (x + width/2)·scale（从对象元素实测推回）
+    const objectEl = container.querySelector('[data-design-board-object]') as HTMLElement
+    const objectTop = Number.parseFloat(objectEl.style.top)
+    const objectLeft = Number.parseFloat(objectEl.style.left)
+    const objectWidth = Number.parseFloat(objectEl.style.width)
+    expect(Number.parseFloat(toolbar.style.top)).toBeCloseTo(objectTop - 44)
+    expect(Number.parseFloat(toolbar.style.left)).toBeCloseTo(objectLeft + objectWidth / 2)
+  })
+
+  it('对象贴近画板顶部时属性工具栏翻转到对象下方', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    doc.objects.push(createRectObject(120, 0, 240, 120))
+    const { container } = setup({ node: { ...boardNode, metadata: { design: doc } } })
+    const objectEl = container.querySelector('[data-design-board-object]') as HTMLElement
+    fireEvent.pointerDown(objectEl, { button: 0 })
+    const toolbar = container.querySelector('[data-design-board-property-toolbar]') as HTMLElement
+    expect(toolbar).toBeTruthy()
+    const objectTop = Number.parseFloat(objectEl.style.top)
+    const objectHeight = Number.parseFloat(objectEl.style.height)
+    expect(Number.parseFloat(toolbar.style.top)).toBeCloseTo(objectTop + objectHeight + 8)
+  })
+
+  it('文本编辑态隐藏属性工具栏，退出编辑后恢复', () => {
+    const { container } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    expect(container.querySelector('[data-design-board-property-toolbar]')).toBeNull()
+    // 失焦提交草稿退出编辑，选中保持
+    fireEvent.focusOut(screen.getByRole('textbox'))
+    expect(container.querySelector('[data-design-board-property-toolbar]')).toBeTruthy()
+  })
+
+  it('属性工具栏修改文本字号并随完成编辑提交', () => {
+    const { onCommit } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    fireEvent.focusOut(screen.getByRole('textbox'))
+    const fontSizeInput = screen.getByLabelText('字号') as HTMLInputElement
+    fireEvent.change(fontSizeInput, { target: { value: '32' } })
+    expect(fontSizeInput.value).toBe('32')
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects[0]).toMatchObject({ kind: 'text', fontSize: 32 })
+  })
+
+  it('属性工具栏描边颜色以白色占位显示 transparent 并写回新 hex', () => {
+    const { onCommit, container } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    const toolbar = container.querySelector('[data-design-board-property-toolbar]') as HTMLElement
+    const strokeInput = within(toolbar).getByLabelText('描边颜色') as HTMLInputElement
+    expect(strokeInput.value).toBe('#ffffff')
+    fireEvent.change(strokeInput, { target: { value: '#ff0000' } })
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects[0]).toMatchObject({ kind: 'rect', stroke: '#ff0000' })
+  })
+
+  it('属性工具栏删除选中对象', () => {
+    const { onCommit, container } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    const toolbar = container.querySelector('[data-design-board-property-toolbar]') as HTMLElement
+    fireEvent.click(within(toolbar).getByRole('button', { name: '删除' }))
+    expect(container.querySelector('[data-design-board-property-toolbar]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects).toHaveLength(0)
+  })
+
+  it('文本按显式换行渲染为逐行 div（与 canvas 排版同源）', () => {
+    const { container } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加文本' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a\nb' } })
+    // 失焦提交草稿：对象切到非编辑态，按排版结果逐行渲染
+    fireEvent.focusOut(screen.getByRole('textbox'))
+    const lines = container.querySelectorAll('[data-design-board-text-line]')
+    expect(lines).toHaveLength(2)
   })
 })

@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react'
-import { Frame, Redo2, Square, Type, Undo2, X } from 'lucide-react'
+import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  Copy,
+  Frame,
+  Redo2,
+  Square,
+  Trash2,
+  Type,
+  Undo2,
+  X
+} from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { useCanvasTheme } from '../canvas-theme'
+import { useCanvasTheme, type CanvasTheme } from '../canvas-theme'
 import { proxyExternalImageUrl } from '@/api/infinite-canvas-client'
 import type { CanvasNodeData } from '@/api/infinite-canvas-client'
 import { collectCanvasImageResources } from './design-board-resources'
@@ -13,10 +25,22 @@ import {
   createImageObject,
   createRectObject,
   createTextObject,
+  designBoardFontFamily,
   parseDesignBoardDoc,
   resolveDesignImageSource
 } from './design-board-types'
-import type { DesignBoardDoc, DesignBoardObject, DesignImageSource } from './design-board-types'
+import type {
+  DesignBoardDoc,
+  DesignBoardObject,
+  DesignBoardTextObject,
+  DesignImageSource
+} from './design-board-types'
+import {
+  DESIGN_TEXT_LINE_HEIGHT_RATIO,
+  exportDesignTextFont,
+  layoutDesignText
+} from './design-board-renderer'
+import type { DesignTextLayout } from './design-board-renderer'
 import {
   RESIZE_HANDLE_IDS,
   cursorForHandle,
@@ -35,7 +59,10 @@ const NUDGE_PX = 1
 const NUDGE_PX_LARGE = 10
 const CLONE_OFFSET_PX = 24
 const MIN_FONT_SIZE = 8
+const MAX_FONT_SIZE = 512
 const MIN_TEXT_WIDTH = 24
+const SELECTION_TOOLBAR_OFFSET_PX = 44
+const SELECTION_TOOLBAR_BELOW_GAP_PX = 8
 const WHEEL_ZOOM_SENSITIVITY = 0.006
 const ZOOM_STEP_MULTIPLIER = 1.1
 
@@ -651,7 +678,12 @@ export function DesignBoardEditor({
           style={{ background: theme.canvas.background }}
           onPointerDown={(event) => {
             const target = event.target as HTMLElement
-            if (target.closest('[data-design-board-object], [data-design-board-handle]')) return
+            if (
+              target.closest(
+                '[data-design-board-object], [data-design-board-handle], [data-design-board-property-toolbar]'
+              )
+            )
+              return
             commitTextDraft()
             setSelectedId(null)
           }}
@@ -778,6 +810,17 @@ export function DesignBoardEditor({
                     )
                   })}
                 </div>
+              )}
+              {/* 选中对象浮动属性工具栏（avnac editor-selection-toolbar 形态）：编辑态隐藏 */}
+              {selectedObject && !textEditingId && (
+                <SelectionToolbar
+                  object={selectedObject}
+                  scale={scale}
+                  theme={theme}
+                  onUpdate={(updater) => updateObject(selectedObject.id, updater)}
+                  onDuplicate={duplicateSelected}
+                  onDelete={deleteSelected}
+                />
               )}
               {/* 吸附参考线 */}
               {snapGuides.x !== null && (
@@ -921,56 +964,65 @@ function ObjectView({
   onCommitDraft: () => void
   resolveUrl: (source: DesignImageSource) => string
 }): ReactElement {
+  // 文本排版与 canvas 渲染同源（layoutDesignText + 共享测量上下文）：
+  // 展示态提供逐行内容，编辑态提供实时长高的草稿排版高度
+  const textLayout = useMemo<DesignTextLayout | null>(() => {
+    if (object.kind !== 'text') return null
+    return computeTextLayout(editing ? { ...object, text: draft } : object)
+  }, [object, editing, draft])
+
   if (object.kind === 'text') {
+    const lineHeightPx =
+      (textLayout?.lineHeight ?? object.fontSize * DESIGN_TEXT_LINE_HEIGHT_RATIO) * scale
     if (editing) {
+      // 实时长高：编辑容器高度 = max(对象高度, 草稿排版高度)，textarea h-full 跟随
+      const editHeight = Math.max(object.height, textLayout?.height ?? object.height) * scale
       return (
-        <textarea
-          autoFocus
-          value={draft}
-          spellCheck={false}
-          onChange={(event) => onDraftChange(event.target.value)}
-          // blur 提交（工具条/资源面板点击先失焦）；与 pointerdown 路径重复触发时幂等
-          onBlur={onCommitDraft}
-          onPointerDown={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-          className="h-full w-full resize-none bg-transparent p-0 outline-none"
-          style={{
-            color: object.color,
-            fontSize: object.fontSize * scale,
-            fontWeight: object.fontWeight,
-            textAlign: object.align,
-            fontFamily: 'inherit'
-          }}
-        />
+        <div className="w-full overflow-visible" style={{ height: editHeight }}>
+          <textarea
+            autoFocus
+            value={draft}
+            spellCheck={false}
+            onChange={(event) => onDraftChange(event.target.value)}
+            // blur 提交（工具条/资源面板点击先失焦）；与 pointerdown 路径重复触发时幂等
+            onBlur={onCommitDraft}
+            onPointerDown={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            className="h-full w-full resize-none bg-transparent p-0 outline-none"
+            style={{
+              color: object.color,
+              fontSize: object.fontSize * scale,
+              fontWeight: object.fontWeight,
+              textAlign: object.align,
+              lineHeight: `${lineHeightPx}px`,
+              fontFamily: designBoardFontFamily()
+            }}
+          />
+        </div>
       )
     }
-    // MVP 简化渲染：单 text + whiteSpace pre；精确换行由 canvas 渲染器负责
+    // 逐行 div 渲染：换行/对齐与 canvas 排版共用 layoutDesignText 结果；
+    // 基线由 DOM 行高模型近似（不追求像素级），行内不截断、越界不裁切
     return (
-      <svg
-        className="h-full w-full overflow-visible"
-        viewBox={`0 0 ${object.width} ${object.height}`}
-        preserveAspectRatio="none"
-      >
-        <text
-          x={
-            object.align === 'center'
-              ? object.width / 2
-              : object.align === 'right'
-                ? object.width
-                : 0
-          }
-          y={object.fontSize * 1.22 * 0.8}
-          fill={object.color}
-          fontSize={object.fontSize}
-          fontWeight={object.fontWeight}
-          textAnchor={
-            object.align === 'center' ? 'middle' : object.align === 'right' ? 'end' : 'start'
-          }
-          style={{ whiteSpace: 'pre' }}
-        >
-          {object.text}
-        </text>
-      </svg>
+      <div className="h-full w-full overflow-visible">
+        {(textLayout?.lines ?? [object.text]).map((line, index) => (
+          <div
+            key={index}
+            data-design-board-text-line
+            style={{
+              fontSize: object.fontSize * scale,
+              lineHeight: `${lineHeightPx}px`,
+              textAlign: object.align,
+              color: object.color,
+              whiteSpace: 'pre',
+              fontWeight: object.fontWeight,
+              fontFamily: designBoardFontFamily()
+            }}
+          >
+            {line}
+          </div>
+        ))}
+      </div>
     )
   }
   if (object.kind === 'rect') {
@@ -1018,11 +1070,301 @@ function applyTextDraftToDoc(
   if (index === -1) return doc
   const object = doc.objects[index]
   if (object.kind !== 'text') return doc
-  const height = Math.max(object.height, Math.round(object.fontSize * 1.22))
+  // 提交高度与编辑态实时长高同源：草稿排版高度（多行时随行数增长）
+  const layout = computeTextLayout({ ...object, text: draft })
+  const height = Math.max(object.height, Math.round(layout.height))
   if (object.text === draft && object.height === height) return doc
   const objects = [...doc.objects]
   objects[index] = { ...object, text: draft, height }
   return { ...doc, objects }
+}
+
+const TEXT_ALIGN_OPTIONS = [
+  { value: 'left', label: '左对齐', Icon: AlignLeft },
+  { value: 'center', label: '居中对齐', Icon: AlignCenter },
+  { value: 'right', label: '右对齐', Icon: AlignRight }
+] as const
+
+/** 选中对象浮动属性工具栏：对象上方居中，贴顶时翻到对象下方；控件按对象类型分组。 */
+function SelectionToolbar({
+  object,
+  scale,
+  theme,
+  onUpdate,
+  onDuplicate,
+  onDelete
+}: {
+  object: DesignBoardObject
+  scale: number
+  theme: CanvasTheme
+  onUpdate: (updater: (object: DesignBoardObject) => DesignBoardObject) => void
+  onDuplicate: () => void
+  onDelete: () => void
+}): ReactElement {
+  const centerX = (object.x + object.width / 2) * scale
+  const aboveTop = object.y * scale - SELECTION_TOOLBAR_OFFSET_PX
+  const top =
+    aboveTop >= 0 ? aboveTop : (object.y + object.height) * scale + SELECTION_TOOLBAR_BELOW_GAP_PX
+  const updateText = (patch: Partial<DesignBoardTextObject>): void => {
+    onUpdate((current) => (current.kind === 'text' ? { ...current, ...patch } : current))
+  }
+  return (
+    <div
+      data-design-board-property-toolbar
+      className="absolute z-[30] flex -translate-x-1/2 items-center gap-1.5 rounded-xl border p-1 shadow-xl backdrop-blur"
+      style={{
+        left: centerX,
+        top,
+        background: theme.toolbar.panel,
+        borderColor: theme.toolbar.border
+      }}
+    >
+      {object.kind === 'text' && (
+        <>
+          <ToolbarNumberInput
+            label="字号"
+            value={object.fontSize}
+            min={MIN_FONT_SIZE}
+            max={MAX_FONT_SIZE}
+            integer
+            theme={theme}
+            onCommit={(fontSize) => updateText({ fontSize })}
+          />
+          <label className="flex items-center gap-1 text-[10px] opacity-70">
+            字重
+            <select
+              aria-label="字重"
+              value={object.fontWeight === 700 ? '700' : '400'}
+              onChange={(event) => updateText({ fontWeight: Number(event.target.value) })}
+              className="h-7 rounded-full border bg-transparent px-1.5 text-xs outline-none"
+              style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
+            >
+              <option value="400">400</option>
+              <option value="700">700</option>
+            </select>
+          </label>
+          <div role="group" aria-label="对齐" className="flex items-center gap-0.5">
+            {TEXT_ALIGN_OPTIONS.map(({ value, label, Icon }) => {
+              const active = object.align === value
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  aria-label={label}
+                  title={label}
+                  aria-pressed={active}
+                  className="grid size-7 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
+                  style={
+                    active
+                      ? { background: theme.toolbar.activeBg, color: theme.toolbar.activeText }
+                      : { color: theme.toolbar.item }
+                  }
+                  onClick={() => updateText({ align: value })}
+                >
+                  <Icon className="size-3.5" />
+                </button>
+              )
+            })}
+          </div>
+          <ToolbarColorInput
+            label="文本颜色"
+            value={object.color}
+            theme={theme}
+            onCommit={(color) => updateText({ color })}
+          />
+        </>
+      )}
+      {object.kind === 'rect' && (
+        <>
+          <ToolbarColorInput
+            label="填充颜色"
+            value={object.fill}
+            theme={theme}
+            onCommit={(fill) =>
+              onUpdate((current) => (current.kind === 'rect' ? { ...current, fill } : current))
+            }
+          />
+          <ToolbarColorInput
+            label="描边颜色"
+            value={object.stroke}
+            theme={theme}
+            onCommit={(stroke) =>
+              onUpdate((current) => (current.kind === 'rect' ? { ...current, stroke } : current))
+            }
+          />
+          <ToolbarNumberInput
+            label="描边宽度"
+            value={object.strokeWidth}
+            min={0}
+            max={1600}
+            theme={theme}
+            onCommit={(strokeWidth) =>
+              onUpdate((current) =>
+                current.kind === 'rect' ? { ...current, strokeWidth } : current
+              )
+            }
+          />
+          <ToolbarNumberInput
+            label="圆角"
+            value={object.radius}
+            min={0}
+            max={9999}
+            integer
+            theme={theme}
+            onCommit={(radius) =>
+              onUpdate((current) => (current.kind === 'rect' ? { ...current, radius } : current))
+            }
+          />
+        </>
+      )}
+      {object.kind === 'image' && (
+        <ToolbarNumberInput
+          label="圆角"
+          value={object.radius}
+          min={0}
+          max={9999}
+          integer
+          theme={theme}
+          onCommit={(radius) =>
+            onUpdate((current) => (current.kind === 'image' ? { ...current, radius } : current))
+          }
+        />
+      )}
+      <div className="mx-0.5 h-5 w-px shrink-0" style={{ background: theme.toolbar.border }} />
+      <button
+        type="button"
+        aria-label="复制"
+        title="复制"
+        className="grid size-7 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
+        style={{ color: theme.toolbar.item }}
+        onClick={onDuplicate}
+      >
+        <Copy className="size-3.5" />
+      </button>
+      <button
+        type="button"
+        aria-label="删除"
+        title="删除"
+        className="grid size-7 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
+        style={{ color: theme.toolbar.item }}
+        onClick={onDelete}
+      >
+        <Trash2 className="size-3.5" />
+      </button>
+    </div>
+  )
+}
+
+/** 工具栏小尺寸数字输入：change 即写入（整型走 round+clamp，浮型仅 clamp）。 */
+function ToolbarNumberInput({
+  label,
+  value,
+  min,
+  max,
+  integer,
+  theme,
+  onCommit
+}: {
+  label: string
+  value: number
+  min: number
+  max: number
+  integer?: boolean
+  theme: CanvasTheme
+  onCommit: (value: number) => void
+}): ReactElement {
+  return (
+    <label className="flex items-center gap-1 text-[10px] opacity-70">
+      {label}
+      <input
+        type="number"
+        aria-label={label}
+        min={min}
+        max={max}
+        value={value}
+        onChange={(event) => {
+          const next = Number(event.target.value)
+          if (!Number.isFinite(next)) return
+          onCommit(integer ? clampRoundedInt(next, min, max) : clampBounded(next, min, max))
+        }}
+        className="h-7 w-14 rounded-full border bg-transparent px-1.5 text-center text-xs outline-none"
+        style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
+      />
+    </label>
+  )
+}
+
+/** 工具栏颜色输入：受控值经 toHexInputColor 归一为合法 hex，onChange 直接写回新 hex。 */
+function ToolbarColorInput({
+  label,
+  value,
+  theme,
+  onCommit
+}: {
+  label: string
+  value: string
+  theme: CanvasTheme
+  onCommit: (hex: string) => void
+}): ReactElement {
+  return (
+    <label className="flex items-center gap-1 text-[10px] opacity-70">
+      {label}
+      <input
+        type="color"
+        aria-label={label}
+        title={label}
+        value={toHexInputColor(value)}
+        onChange={(event) => onCommit(event.target.value)}
+        className="h-6 w-9 cursor-pointer rounded-full border bg-transparent p-0.5"
+        style={{ borderColor: theme.toolbar.border }}
+      />
+    </label>
+  )
+}
+
+const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/
+
+/**
+ * input[type=color] 受控值必须是合法 #rrggbb；其余任意 CSS 颜色串显示占位色，
+ * onChange 直接写回新 hex（transparent 描边默认按白色占位展示）。
+ */
+function toHexInputColor(value: string): string {
+  if (HEX_COLOR_PATTERN.test(value)) return value
+  return value === 'transparent' ? '#ffffff' : '#000000'
+}
+
+function clampRoundedInt(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(value)))
+}
+
+function clampBounded(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value))
+}
+
+// 共享文本测量上下文：懒创建一次，展示排版 / 编辑长高 / 草稿提交三处复用
+let sharedMeasureContext: CanvasRenderingContext2D | null | undefined
+
+function getMeasureContext(): CanvasRenderingContext2D | null {
+  if (sharedMeasureContext === undefined) {
+    sharedMeasureContext =
+      typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d')
+  }
+  return sharedMeasureContext
+}
+
+/**
+ * DOM 侧文本排版：优先与 canvas 渲染共用 layoutDesignText（同字体、同换行）；
+ * 无 2d 上下文的环境（jsdom 等）回退为仅按显式换行分段，不做宽度折行。
+ */
+function computeTextLayout(object: DesignBoardTextObject): DesignTextLayout {
+  const ctx = getMeasureContext()
+  if (ctx) {
+    exportDesignTextFont(ctx, object)
+    return layoutDesignText(object, ctx)
+  }
+  const lineHeight = object.fontSize * DESIGN_TEXT_LINE_HEIGHT_RATIO
+  const lines = object.text.split(/\r?\n/)
+  return { lines, lineHeight, height: Math.max(lineHeight, lines.length * lineHeight) }
 }
 
 function makeObjectId(): string {

@@ -4,9 +4,14 @@ import {
   createDesignBoardDoc,
   createImageObject,
   createRectObject,
-  createTextObject
+  createTextObject,
+  designBoardFontFamily
 } from '../design-board-types'
-import { layoutDesignText, renderDesignBoardToCanvas } from '../design-board-renderer'
+import {
+  exportDesignTextFont,
+  layoutDesignText,
+  renderDesignBoardToCanvas
+} from '../design-board-renderer'
 
 function mockCtx(): CanvasRenderingContext2D {
   let currentFont = ''
@@ -74,6 +79,12 @@ describe('layoutDesignText', () => {
     const layout = layoutDesignText({ ...createTextObject(0, 0, 25), text: 'abcdef' }, mockCtx())
     expect(layout.lines.length).toBeGreaterThanOrEqual(3)
     layout.lines.forEach((line) => expect(line.length).toBeGreaterThan(0))
+  })
+
+  it('exportDesignTextFont sets the shared canvas font string', () => {
+    const ctx = mockCtx()
+    exportDesignTextFont(ctx, { ...createTextObject(0, 0, 100), fontSize: 32, fontWeight: 700 })
+    expect(ctx.font).toBe(`700 32px ${designBoardFontFamily()}`)
   })
 })
 

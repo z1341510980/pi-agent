@@ -13,9 +13,13 @@ export interface DesignTextLayout {
   height: number
 }
 
-const TEXT_LINE_HEIGHT_RATIO = 1.22
+export const DESIGN_TEXT_LINE_HEIGHT_RATIO = 1.22
 
-function setFont(ctx: CanvasRenderingContext2D, object: DesignBoardTextObject): void {
+/** 与 canvas 渲染一致的字体设置：DOM 文本排版测量前复用，保证换行结果同源。 */
+export function exportDesignTextFont(
+  ctx: CanvasRenderingContext2D,
+  object: DesignBoardTextObject
+): void {
   ctx.font = `${object.fontWeight} ${object.fontSize}px ${designBoardFontFamily()}`
 }
 
@@ -27,8 +31,8 @@ export function layoutDesignText(
   object: DesignBoardTextObject,
   ctx: CanvasRenderingContext2D
 ): DesignTextLayout {
-  setFont(ctx, object)
-  const lineHeight = object.fontSize * TEXT_LINE_HEIGHT_RATIO
+  exportDesignTextFont(ctx, object)
+  const lineHeight = object.fontSize * DESIGN_TEXT_LINE_HEIGHT_RATIO
   const maxWidth = Math.max(8, object.width)
   const lines: string[] = []
   for (const paragraph of object.text.split(/\r?\n/)) {
