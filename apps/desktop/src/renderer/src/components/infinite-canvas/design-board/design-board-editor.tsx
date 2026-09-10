@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import {
   AlignCenter,
   AlignLeft,
   AlignRight,
+  ArrowDown,
+  ArrowUp,
+  BringToFront,
   Copy,
   Frame,
   Redo2,
+  SendToBack,
   Square,
   Trash2,
   Type,
@@ -27,12 +31,14 @@ import {
   createTextObject,
   designBoardFontFamily,
   parseDesignBoardDoc,
+  reorderDesignBoardObject,
   resolveDesignImageSource
 } from './design-board-types'
 import type {
   DesignBoardDoc,
   DesignBoardObject,
   DesignBoardTextObject,
+  DesignBoardZOrderAction,
   DesignImageSource
 } from './design-board-types'
 import {
@@ -363,6 +369,17 @@ export function DesignBoardEditor({
     setSelectedId(null)
   }, [selectedId])
 
+  const reorderSelected = useCallback(
+    (action: DesignBoardZOrderAction): void => {
+      if (!selectedId) return
+      setDoc((current) => ({
+        ...current,
+        objects: reorderDesignBoardObject(current.objects, selectedId, action)
+      }))
+    },
+    [selectedId]
+  )
+
   // 拖拽/缩放（window 级 move/up/cancel）
   const boardRect = (): { left: number; top: number } => {
     const rect = artboardRef.current?.getBoundingClientRect()
@@ -516,6 +533,17 @@ export function DesignBoardEditor({
         fitZoom()
         return
       }
+      // ] / } 与 [ / { 双覆盖：US 布局按住 Shift 时 event.key 输出 } 和 {
+      if (mod && (event.key === ']' || event.key === '}')) {
+        event.preventDefault()
+        reorderSelected(event.shiftKey ? 'front' : 'forward')
+        return
+      }
+      if (mod && (event.key === '[' || event.key === '{')) {
+        event.preventDefault()
+        reorderSelected(event.shiftKey ? 'back' : 'backward')
+        return
+      }
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault()
         deleteSelected()
@@ -537,6 +565,7 @@ export function DesignBoardEditor({
     duplicateSelected,
     fitZoom,
     redo,
+    reorderSelected,
     selectedId,
     textEditingId,
     undo,
@@ -816,8 +845,10 @@ export function DesignBoardEditor({
                 <SelectionToolbar
                   object={selectedObject}
                   scale={scale}
+                  boardWidthPx={doc.width * scale}
                   theme={theme}
                   onUpdate={(updater) => updateObject(selectedObject.id, updater)}
+                  onReorder={reorderSelected}
                   onDuplicate={duplicateSelected}
                   onDelete={deleteSelected}
                 />
@@ -862,6 +893,7 @@ export function DesignBoardEditor({
           <Square className="mr-1 size-4" />
           添加矩形
         </Button>
+        <ToolbarDivider />
         <Button variant="outline" size="sm" onClick={duplicateSelected} disabled={!selectedObject}>
           复制
         </Button>
@@ -924,6 +956,26 @@ export function DesignBoardEditor({
             }}
           >
             删除
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition hover:bg-black/5 dark:hover:bg-white/10"
+            onClick={() => {
+              reorderSelected('front')
+              setContextMenu(null)
+            }}
+          >
+            置顶
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition hover:bg-black/5 dark:hover:bg-white/10"
+            onClick={() => {
+              reorderSelected('back')
+              setContextMenu(null)
+            }}
+          >
+            置底
           </button>
         </div>
       )}
@@ -1085,42 +1137,68 @@ const TEXT_ALIGN_OPTIONS = [
   { value: 'right', label: '右对齐', Icon: AlignRight }
 ] as const
 
-/** 选中对象浮动属性工具栏：对象上方居中，贴顶时翻到对象下方；控件按对象类型分组。 */
+const Z_ORDER_ACTIONS = [
+  { action: 'front', label: '置顶', Icon: BringToFront },
+  { action: 'back', label: '置底', Icon: SendToBack },
+  { action: 'forward', label: '上移一层', Icon: ArrowUp },
+  { action: 'backward', label: '下移一层', Icon: ArrowDown }
+] as const
+
+function ToolbarDivider(): ReactElement {
+  return <div aria-hidden="true" className="h-5 w-px shrink-0 bg-current opacity-20" />
+}
+
+/** 选中对象浮动属性工具栏：贴顶翻到对象下方，left 限制在画板内；分组 + 分隔线，超宽横向滚动。 */
 function SelectionToolbar({
   object,
   scale,
+  boardWidthPx,
   theme,
   onUpdate,
+  onReorder,
   onDuplicate,
   onDelete
 }: {
   object: DesignBoardObject
   scale: number
+  boardWidthPx: number
   theme: CanvasTheme
   onUpdate: (updater: (object: DesignBoardObject) => DesignBoardObject) => void
+  onReorder: (action: DesignBoardZOrderAction) => void
   onDuplicate: () => void
   onDelete: () => void
 }): ReactElement {
+  const toolbarRef = useRef<HTMLDivElement>(null)
+  const [toolbarWidth, setToolbarWidth] = useState(0)
+  useLayoutEffect(() => {
+    const width = toolbarRef.current?.offsetWidth ?? 0
+    setToolbarWidth((current) => (current === width ? current : width))
+  })
   const centerX = (object.x + object.width / 2) * scale
   const aboveTop = object.y * scale - SELECTION_TOOLBAR_OFFSET_PX
   const top =
     aboveTop >= 0 ? aboveTop : (object.y + object.height) * scale + SELECTION_TOOLBAR_BELOW_GAP_PX
+  const left = Math.min(
+    Math.max(centerX - toolbarWidth / 2, 8),
+    Math.max(8, boardWidthPx - toolbarWidth - 8)
+  )
   const updateText = (patch: Partial<DesignBoardTextObject>): void => {
     onUpdate((current) => (current.kind === 'text' ? { ...current, ...patch } : current))
   }
   return (
     <div
+      ref={toolbarRef}
       data-design-board-property-toolbar
-      className="absolute z-[30] flex -translate-x-1/2 items-center gap-1.5 rounded-xl border p-1 shadow-xl backdrop-blur"
+      className="thin-scrollbar absolute z-[30] flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border px-2 py-1 shadow-lg backdrop-blur"
       style={{
-        left: centerX,
+        left,
         top,
         background: theme.toolbar.panel,
         borderColor: theme.toolbar.border
       }}
     >
       {object.kind === 'text' && (
-        <>
+        <div className="flex shrink-0 items-center gap-1">
           <ToolbarNumberInput
             label="字号"
             value={object.fontSize}
@@ -1130,7 +1208,7 @@ function SelectionToolbar({
             theme={theme}
             onCommit={(fontSize) => updateText({ fontSize })}
           />
-          <label className="flex items-center gap-1 text-[10px] opacity-70">
+          <label className="flex shrink-0 items-center gap-1 text-[10px] opacity-70">
             字重
             <select
               aria-label="字重"
@@ -1153,7 +1231,7 @@ function SelectionToolbar({
                   aria-label={label}
                   title={label}
                   aria-pressed={active}
-                  className="grid size-7 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
+                  className="grid size-7 shrink-0 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
                   style={
                     active
                       ? { background: theme.toolbar.activeBg, color: theme.toolbar.activeText }
@@ -1169,17 +1247,15 @@ function SelectionToolbar({
           <ToolbarColorInput
             label="文本颜色"
             value={object.color}
-            theme={theme}
             onCommit={(color) => updateText({ color })}
           />
-        </>
+        </div>
       )}
       {object.kind === 'rect' && (
-        <>
+        <div className="flex shrink-0 items-center gap-1">
           <ToolbarColorInput
             label="填充颜色"
             value={object.fill}
-            theme={theme}
             onCommit={(fill) =>
               onUpdate((current) => (current.kind === 'rect' ? { ...current, fill } : current))
             }
@@ -1187,7 +1263,6 @@ function SelectionToolbar({
           <ToolbarColorInput
             label="描边颜色"
             value={object.stroke}
-            theme={theme}
             onCommit={(stroke) =>
               onUpdate((current) => (current.kind === 'rect' ? { ...current, stroke } : current))
             }
@@ -1215,42 +1290,60 @@ function SelectionToolbar({
               onUpdate((current) => (current.kind === 'rect' ? { ...current, radius } : current))
             }
           />
-        </>
+        </div>
       )}
       {object.kind === 'image' && (
-        <ToolbarNumberInput
-          label="圆角"
-          value={object.radius}
-          min={0}
-          max={9999}
-          integer
-          theme={theme}
-          onCommit={(radius) =>
-            onUpdate((current) => (current.kind === 'image' ? { ...current, radius } : current))
-          }
-        />
+        <div className="flex shrink-0 items-center gap-1">
+          <ToolbarNumberInput
+            label="圆角"
+            value={object.radius}
+            min={0}
+            max={9999}
+            integer
+            theme={theme}
+            onCommit={(radius) =>
+              onUpdate((current) => (current.kind === 'image' ? { ...current, radius } : current))
+            }
+          />
+        </div>
       )}
-      <div className="mx-0.5 h-5 w-px shrink-0" style={{ background: theme.toolbar.border }} />
-      <button
-        type="button"
-        aria-label="复制"
-        title="复制"
-        className="grid size-7 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
-        style={{ color: theme.toolbar.item }}
-        onClick={onDuplicate}
-      >
-        <Copy className="size-3.5" />
-      </button>
-      <button
-        type="button"
-        aria-label="删除"
-        title="删除"
-        className="grid size-7 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
-        style={{ color: theme.toolbar.item }}
-        onClick={onDelete}
-      >
-        <Trash2 className="size-3.5" />
-      </button>
+      <ToolbarDivider />
+      <div className="flex shrink-0 items-center gap-1">
+        {Z_ORDER_ACTIONS.map(({ action, label, Icon }) => (
+          <button
+            key={action}
+            type="button"
+            aria-label={label}
+            title={label}
+            className="grid size-7 shrink-0 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
+            style={{ color: theme.toolbar.item }}
+            onClick={() => onReorder(action)}
+          >
+            <Icon className="size-3.5" />
+          </button>
+        ))}
+        <ToolbarDivider />
+        <button
+          type="button"
+          aria-label="复制"
+          title="复制"
+          className="grid size-7 shrink-0 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
+          style={{ color: theme.toolbar.item }}
+          onClick={onDuplicate}
+        >
+          <Copy className="size-3.5" />
+        </button>
+        <button
+          type="button"
+          aria-label="删除"
+          title="删除"
+          className="grid size-7 shrink-0 place-items-center rounded-lg transition hover:bg-black/5 dark:hover:bg-white/10"
+          style={{ color: theme.toolbar.item }}
+          onClick={onDelete}
+        >
+          <Trash2 className="size-3.5" />
+        </button>
+      </div>
     </div>
   )
 }
@@ -1274,7 +1367,7 @@ function ToolbarNumberInput({
   onCommit: (value: number) => void
 }): ReactElement {
   return (
-    <label className="flex items-center gap-1 text-[10px] opacity-70">
+    <label className="flex shrink-0 items-center gap-1 text-[10px] opacity-70">
       {label}
       <input
         type="number"
@@ -1298,16 +1391,14 @@ function ToolbarNumberInput({
 function ToolbarColorInput({
   label,
   value,
-  theme,
   onCommit
 }: {
   label: string
   value: string
-  theme: CanvasTheme
   onCommit: (hex: string) => void
 }): ReactElement {
   return (
-    <label className="flex items-center gap-1 text-[10px] opacity-70">
+    <label className="flex shrink-0 items-center gap-1 text-[10px] opacity-70">
       {label}
       <input
         type="color"
@@ -1315,8 +1406,7 @@ function ToolbarColorInput({
         title={label}
         value={toHexInputColor(value)}
         onChange={(event) => onCommit(event.target.value)}
-        className="h-6 w-9 cursor-pointer rounded-full border bg-transparent p-0.5"
-        style={{ borderColor: theme.toolbar.border }}
+        className="size-7 cursor-pointer rounded-full border-0 bg-transparent p-0"
       />
     </label>
   )

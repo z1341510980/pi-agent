@@ -6,10 +6,11 @@ import {
   createRectObject,
   createTextObject,
   parseDesignBoardDoc,
+  reorderDesignBoardObject,
   resolveDesignImageSource,
   DESIGN_IMAGE_PLACEHOLDER
 } from '../design-board-types'
-import type { DesignImageSource } from '../design-board-types'
+import type { DesignBoardObject, DesignImageSource } from '../design-board-types'
 import { findDesignBoardPreset, DESIGN_BOARD_PRESETS } from '../design-board-presets'
 
 describe('design board document', () => {
@@ -146,5 +147,54 @@ describe('design board presets', () => {
     expect(DESIGN_BOARD_PRESETS.length).toBeGreaterThanOrEqual(8)
     expect(findDesignBoardPreset('xhs-portrait')).toMatchObject({ width: 1080, height: 1440 })
     expect(findDesignBoardPreset('nope')).toBeUndefined()
+  })
+})
+
+describe('reorderDesignBoardObject', () => {
+  // objects 数组顺序即 z 序：后者在上
+  function makeObjects(): DesignBoardObject[] {
+    return [
+      createRectObject(0, 0, 10, 10),
+      createTextObject(10, 10, 100),
+      createImageObject({ kind: 'url', url: 'x.png' }, 20, 20, 30, 30)
+    ]
+  }
+  const ids = (objects: DesignBoardObject[]): string[] => objects.map((object) => object.id)
+
+  it('front moves the object to the end (top), back moves it to the start (bottom)', () => {
+    const [a, b, c] = makeObjects()
+    expect(ids(reorderDesignBoardObject([a, b, c], a.id, 'front'))).toEqual([b.id, c.id, a.id])
+    const [x, y, z] = makeObjects()
+    expect(ids(reorderDesignBoardObject([x, y, z], z.id, 'back'))).toEqual([z.id, x.id, y.id])
+  })
+
+  it('forward swaps with the next object, backward swaps with the previous one', () => {
+    const [a, b, c] = makeObjects()
+    expect(ids(reorderDesignBoardObject([a, b, c], a.id, 'forward'))).toEqual([b.id, a.id, c.id])
+    const [x, y, z] = makeObjects()
+    expect(ids(reorderDesignBoardObject([x, y, z], z.id, 'backward'))).toEqual([x.id, z.id, y.id])
+  })
+
+  it('returns the same array reference at z-order boundaries', () => {
+    const objects = makeObjects()
+    expect(reorderDesignBoardObject(objects, objects[2].id, 'forward')).toBe(objects)
+    expect(reorderDesignBoardObject(objects, objects[0].id, 'backward')).toBe(objects)
+    expect(reorderDesignBoardObject(objects, objects[2].id, 'front')).toBe(objects)
+    expect(reorderDesignBoardObject(objects, objects[0].id, 'back')).toBe(objects)
+  })
+
+  it('returns the original array when the id does not exist', () => {
+    const objects = makeObjects()
+    expect(reorderDesignBoardObject(objects, 'missing-id', 'front')).toBe(objects)
+    expect(reorderDesignBoardObject(objects, 'missing-id', 'forward')).toBe(objects)
+  })
+
+  it('does not mutate the input array or reorder object payloads', () => {
+    const objects = makeObjects()
+    const snapshot = JSON.stringify(objects)
+    const moved = reorderDesignBoardObject(objects, objects[0].id, 'front')
+    expect(JSON.stringify(objects)).toBe(snapshot)
+    expect(moved[2]).toBe(objects[0])
+    expect(moved.filter((object) => object === objects[0])).toHaveLength(1)
   })
 })

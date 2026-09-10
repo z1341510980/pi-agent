@@ -138,6 +138,31 @@ export function createImageObject(
   return { id: makeId(), kind: 'image', x, y, width, height, source, radius: 0 }
 }
 
+export type DesignBoardZOrderAction = 'front' | 'back' | 'forward' | 'backward'
+
+export function reorderDesignBoardObject(
+  objects: DesignBoardObject[],
+  id: string,
+  action: DesignBoardZOrderAction
+): DesignBoardObject[] {
+  const index = objects.findIndex((object) => object.id === id)
+  if (index === -1) return objects
+  const last = objects.length - 1
+  if ((action === 'front' || action === 'forward') && index === last) return objects
+  if ((action === 'back' || action === 'backward') && index === 0) return objects
+  const next = objects.slice()
+  if (action === 'front' || action === 'back') {
+    const [object] = next.splice(index, 1)
+    if (action === 'front') next.push(object)
+    else next.unshift(object)
+    return next
+  }
+  const target = action === 'forward' ? index + 1 : index - 1
+  next[index] = objects[target]
+  next[target] = objects[index]
+  return next
+}
+
 function parseBase(raw: Record<string, unknown>): DesignBoardBase | null {
   const x = clampNumber(toNumber(raw.x), -100000, 100000, 0)
   const y = clampNumber(toNumber(raw.y), -100000, 100000, 0)

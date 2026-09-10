@@ -281,6 +281,69 @@ describe('DesignBoardEditor', () => {
     expect(doc.objects).toHaveLength(2)
   })
 
+  it('context menu 置顶 moves the object to the end of the objects array', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    const first = createRectObject(10, 10, 100, 80)
+    const second = createRectObject(300, 10, 100, 80)
+    doc.objects.push(first, second)
+    const { onCommit, container } = setup({ node: { ...boardNode, metadata: { design: doc } } })
+    const objectEls = [...container.querySelectorAll('[data-design-board-object]')] as HTMLElement[]
+    fireEvent.contextMenu(objectEls[0])
+    const menu = container.querySelector('[data-design-board-context-menu]') as HTMLElement
+    fireEvent.click(within(menu).getByRole('button', { name: '置顶' }))
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const committed = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(committed.objects.map((object) => object.id)).toEqual([second.id, first.id])
+  })
+
+  it('属性工具栏包含层级四钮，上移一层后完成编辑提交顺序变化', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    const first = createRectObject(10, 10, 100, 80)
+    const second = createRectObject(300, 10, 100, 80)
+    doc.objects.push(first, second)
+    const { onCommit, container } = setup({ node: { ...boardNode, metadata: { design: doc } } })
+    const objectEls = [...container.querySelectorAll('[data-design-board-object]')] as HTMLElement[]
+    fireEvent.pointerDown(objectEls[0], { button: 0 })
+    const toolbar = container.querySelector('[data-design-board-property-toolbar]') as HTMLElement
+    for (const name of ['置顶', '置底', '上移一层', '下移一层']) {
+      expect(within(toolbar).getByRole('button', { name })).toBeTruthy()
+    }
+    fireEvent.click(within(toolbar).getByRole('button', { name: '上移一层' }))
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const committed = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(committed.objects.map((object) => object.id)).toEqual([second.id, first.id])
+  })
+
+  it('Ctrl+] 上移一层调整选中对象层级', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    const first = createRectObject(10, 10, 100, 80)
+    const second = createRectObject(300, 10, 100, 80)
+    const third = createRectObject(600, 10, 100, 80)
+    doc.objects.push(first, second, third)
+    const { onCommit, container } = setup({ node: { ...boardNode, metadata: { design: doc } } })
+    const objectEls = [...container.querySelectorAll('[data-design-board-object]')] as HTMLElement[]
+    fireEvent.pointerDown(objectEls[0], { button: 0 })
+    fireEvent.keyDown(window, { key: ']', ctrlKey: true })
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const committed = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(committed.objects.map((object) => object.id)).toEqual([second.id, first.id, third.id])
+  })
+
+  it('Ctrl+Shift+[ 置底调整选中对象层级', () => {
+    const doc = createDesignBoardDoc(1080, 1440)
+    const first = createRectObject(10, 10, 100, 80)
+    const second = createRectObject(300, 10, 100, 80)
+    const third = createRectObject(600, 10, 100, 80)
+    doc.objects.push(first, second, third)
+    const { onCommit, container } = setup({ node: { ...boardNode, metadata: { design: doc } } })
+    const objectEls = [...container.querySelectorAll('[data-design-board-object]')] as HTMLElement[]
+    fireEvent.pointerDown(objectEls[2], { button: 0 })
+    fireEvent.keyDown(window, { key: '[', ctrlKey: true, shiftKey: true })
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const committed = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(committed.objects.map((object) => object.id)).toEqual([third.id, first.id, second.id])
+  })
+
   it('closes context menu on Escape and outside pointerdown', () => {
     const { container } = setup()
     fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
