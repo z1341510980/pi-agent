@@ -220,7 +220,7 @@ export class CanvasAssetStore {
       // 按魔数确定真实格式后落成正式文件名（音视频产物信任声明的媒体类型）
       const bytes = readFileSync(partPath)
       const mime = assetMimeFromBytes(bytes, response.headers.get('content-type') ?? '')
-      if (mime === 'application/octet-stream') throw new Error('响应不是可识别的图片')
+      if (mime === 'application/octet-stream') throw new Error('响应不是可识别的媒体内容')
       const hash = createHash('sha256').update(bytes).digest('hex')
       const finalPath = join(this.assetsDir, `${id}-${hash.slice(0, 12)}${extensionForMime(mime)}`)
       renameSync(partPath, finalPath)

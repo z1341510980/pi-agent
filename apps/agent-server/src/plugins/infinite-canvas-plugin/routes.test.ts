@@ -300,6 +300,33 @@ describe('infinite canvas route errors', () => {
       })
     }
   })
+
+  it('returns a structured error when prompt source refresh fails', async () => {
+    const promptSources = {
+      refreshAll: async () => {
+        throw new Error('source fetch failed')
+      }
+    }
+    const route = createInfiniteCanvasRoutes(
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      promptSources as never
+    ).find((entry) => entry.method === 'POST' && entry.path === '/prompt-sources/refresh')!
+    const reply = replyMock()
+
+    await route.handler({ body: {}, traceId: 'trace-refresh' }, reply)
+
+    expect(reply.statusCode).toBe(502)
+    expect(reply.payload).toMatchObject({
+      ok: false,
+      error: { code: 'PROMPT_REFRESH_FAILED', message: 'source fetch failed' },
+      meta: { traceId: 'trace-refresh' }
+    })
+  })
 })
 
 describe('infinite canvas graph route node types', () => {

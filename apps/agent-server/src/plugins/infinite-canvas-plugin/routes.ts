@@ -265,7 +265,7 @@ export function createInfiniteCanvasRoutes(
     {
       // @deprecated 写回 image 默认 Provider（baseUrl/model/params 字段映射、
       // imageProtocol → adapter 映射、空 Key 保留旧值）；无默认行时创建首行并设默认。
-      // 阶段三清理本路由，新配置入口统一走 /api/media-providers。
+      // 阶段三清理本路由，新配置入口统一走 /api/plugins/infinite-canvas/media-providers。
       method: 'PUT',
       path: '/media-config',
       bodyLimit: 4096,
@@ -380,10 +380,15 @@ export function createInfiniteCanvasRoutes(
           const result = await promptSources.refreshAll()
           return success(result, request.traceId)
         } catch (error) {
-          return reply.code(502).send({
-            ok: false,
-            error: error instanceof Error ? error.message : String(error)
-          })
+          return reply
+            .code(502)
+            .send(
+              failure(
+                'PROMPT_REFRESH_FAILED',
+                error instanceof Error ? error.message : String(error),
+                request.traceId
+              )
+            )
         }
       }
     },
