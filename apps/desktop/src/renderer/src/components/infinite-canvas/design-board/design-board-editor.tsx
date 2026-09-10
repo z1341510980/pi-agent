@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react'
-import { Frame, Square, Type, X } from 'lucide-react'
+import { Frame, Redo2, Square, Type, Undo2, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useCanvasTheme } from '../canvas-theme'
@@ -37,6 +37,7 @@ const CLONE_OFFSET_PX = 24
 const MIN_FONT_SIZE = 8
 const MIN_TEXT_WIDTH = 24
 const WHEEL_ZOOM_SENSITIVITY = 0.006
+const ZOOM_STEP_MULTIPLIER = 1.1
 
 interface DragState {
   kind: 'move' | 'resize'
@@ -45,12 +46,26 @@ interface DragState {
   handle?: ResizeHandleId
   startPointer: { x: number; y: number }
   prevGuideX: number | null
+  prevGuideY: number | null
 }
 
 interface HistoryState {
   stack: string[]
   index: number
   applying: boolean
+}
+
+/** 缩放锚点：scene 为画板场景坐标，client 为屏幕坐标，缩放后保持二者重合。 */
+interface ZoomAnchor {
+  sceneX: number
+  sceneY: number
+  clientX: number
+  clientY: number
+}
+
+interface ContextMenuState {
+  x: number
+  y: number
 }
 
 export interface DesignBoardEditorProps {
@@ -83,15 +98,46 @@ export function DesignBoardEditor({
     x: null,
     y: null
   })
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const artboardRef = useRef<HTMLDivElement>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const historyRef = useRef<HistoryState>({ stack: [], index: -1, applying: false })
+  // wheel 事件可能快于重渲染到达：ref 镜像保证连续缩放从最新值复合
+  const zoomPercentRef = useRef(100)
 
   const scale = zoomPercent / 100
   const selectedObject = doc.objects.find((object) => object.id === selectedId) ?? null
   const hoveredObject = doc.objects.find((object) => object.id === hoveredId) ?? null
   const resources = useMemo(() => collectCanvasImageResources(nodes), [nodes])
+
+  // 统一缩放入口：写状态 + 同步 ref；带锚点时在 rAF（布局完成后）校正滚动，
+  // 使锚点场景坐标重绘后仍落在原 client 屏幕位置
+  const applyZoomPercent = useCallback((nextPercent: number, anchor?: ZoomAnchor): void => {
+    const clamped = Math.max(ZOOM_MIN_PCT, Math.min(ZOOM_MAX_PCT, nextPercent))
+    zoomPercentRef.current = clamped
+    setZoomPercent(clamped)
+    if (!anchor) return
+    const newScale = clamped / 100
+    requestAnimationFrame(() => {
+      const viewport = viewportRef.current
+      const artboard = artboardRef.current
+      if (!viewport || !artboard) return
+      const viewportRect = viewport.getBoundingClientRect()
+      const boardRect = artboard.getBoundingClientRect()
+      viewport.scrollLeft +=
+        boardRect.left -
+        viewportRect.left +
+        anchor.sceneX * newScale -
+        (anchor.clientX - viewportRect.left)
+      viewport.scrollTop +=
+        boardRect.top -
+        viewportRect.top +
+        anchor.sceneY * newScale -
+        (anchor.clientY - viewportRect.top)
+    })
+  }, [])
 
   const fitZoom = useCallback((): void => {
     const viewport = viewportRef.current
@@ -101,28 +147,61 @@ export function DesignBoardEditor({
     const percent = Math.floor(
       Math.min(availableWidth / doc.width, availableHeight / doc.height) * 100
     )
-    setZoomPercent(Math.max(ZOOM_MIN_PCT, Math.min(ZOOM_MAX_PCT, percent)))
-  }, [doc.width, doc.height])
+    applyZoomPercent(Math.max(ZOOM_MIN_PCT, Math.min(ZOOM_MAX_PCT, percent)))
+  }, [applyZoomPercent, doc.width, doc.height])
+
+  // 中心锚（画板中心 ↔ 视口中心）：滑杆与 +/- 步进按钮共用
+  const setZoomCentered = useCallback(
+    (nextPercent: number): void => {
+      const viewport = viewportRef.current
+      if (!viewport) {
+        applyZoomPercent(nextPercent)
+        return
+      }
+      const viewportRect = viewport.getBoundingClientRect()
+      applyZoomPercent(nextPercent, {
+        sceneX: doc.width / 2,
+        sceneY: doc.height / 2,
+        clientX: viewportRect.left + viewport.clientWidth / 2,
+        clientY: viewportRect.top + viewport.clientHeight / 2
+      })
+    },
+    [applyZoomPercent, doc.height, doc.width]
+  )
+
+  const zoomIn = useCallback((): void => {
+    setZoomCentered(zoomPercentRef.current * ZOOM_STEP_MULTIPLIER)
+  }, [setZoomCentered])
+
+  const zoomOut = useCallback((): void => {
+    setZoomCentered(zoomPercentRef.current / ZOOM_STEP_MULTIPLIER)
+  }, [setZoomCentered])
 
   useEffect(() => {
     fitZoom()
   }, [fitZoom])
 
-  // Ctrl+滚轮缩放需要 preventDefault：React onWheel 是被动监听，这里手动挂非被动监听
+  // Ctrl+滚轮缩放需要 preventDefault：React onWheel 是被动监听，这里手动挂非被动监听。
+  // 锚点缩放（avnac zoomAroundClientPoint）：先记录指针下的场景坐标，
+  // 缩放后在 rAF 内校正 viewport 滚动使该场景点保持在指针位置，避免大画板跳视口
   useEffect(() => {
     const viewport = viewportRef.current
     if (!viewport) return
     const handleWheel = (event: WheelEvent): void => {
       if (!event.ctrlKey) return
       event.preventDefault()
-      setZoomPercent((current) => {
-        const next = current * Math.exp(-event.deltaY * WHEEL_ZOOM_SENSITIVITY)
-        return Math.max(ZOOM_MIN_PCT, Math.min(ZOOM_MAX_PCT, next))
-      })
+      const artboard = artboardRef.current
+      if (!artboard) return
+      const boardRect = artboard.getBoundingClientRect()
+      const oldScale = Math.max(0.01, zoomPercentRef.current / 100)
+      const sceneX = (event.clientX - boardRect.left) / oldScale
+      const sceneY = (event.clientY - boardRect.top) / oldScale
+      const next = zoomPercentRef.current * Math.exp(-event.deltaY * WHEEL_ZOOM_SENSITIVITY)
+      applyZoomPercent(next, { sceneX, sceneY, clientX: event.clientX, clientY: event.clientY })
     }
     viewport.addEventListener('wheel', handleWheel, { passive: false })
     return () => viewport.removeEventListener('wheel', handleWheel)
-  }, [])
+  }, [applyZoomPercent])
 
   // 历史栈：140ms debounce + JSON 去重 + applying 守卫 + 上限 50
   useEffect(() => {
@@ -264,6 +343,7 @@ export function DesignBoardEditor({
   }
 
   const startDrag = (event: ReactPointerEvent, objectId: string, handle?: ResizeHandleId): void => {
+    if (event.button !== 0) return
     if (textEditingId && textEditingId !== objectId) commitTextDraft()
     const object = doc.objects.find((item) => item.id === objectId)
     if (!object) return
@@ -281,7 +361,8 @@ export function DesignBoardEditor({
       initial: { x: object.x, y: object.y, width: object.width, height: object.height },
       handle,
       startPointer: pointer,
-      prevGuideX: null
+      prevGuideX: null,
+      prevGuideY: null
     }
     setSelectedId(objectId)
   }
@@ -310,10 +391,18 @@ export function DesignBoardEditor({
           bottom: drag.initial.y + drag.initial.height + dy
         }
         const targets = doc.objects.filter((item) => item.id !== drag.objectId)
-        const snap = solveSnapDelta(bounds, targets, doc.width, doc.height, drag.prevGuideX)
+        const snap = solveSnapDelta(
+          bounds,
+          targets,
+          doc.width,
+          doc.height,
+          drag.prevGuideX,
+          drag.prevGuideY
+        )
         dx += snap.dx
         dy += snap.dy
         drag.prevGuideX = snap.guideX
+        drag.prevGuideY = snap.guideY
         setSnapGuides({ x: snap.guideX, y: snap.guideY })
         updateObject(drag.objectId, (object) => ({
           ...object,
@@ -325,8 +414,13 @@ export function DesignBoardEditor({
       if (drag.kind === 'resize' && drag.handle) {
         const object = doc.objects.find((item) => item.id === drag.objectId)
         if (!object) return
-        const keepRatio = object.kind === 'image'
-        const box = resizeBoxWithHandle(drag.initial, drag.handle, pointer, { keepRatio })
+        // 修饰键语义（avnac）：Alt = 中心缩放；image 角柄恒锁比例，
+        // rect 角柄默认锁、Shift 解锁；文本保持 factor 公式（keepRatio 恒 false）
+        const keepRatio = object.kind === 'image' || (object.kind === 'rect' && !event.shiftKey)
+        const box = resizeBoxWithHandle(drag.initial, drag.handle, pointer, {
+          keepRatio,
+          centered: event.altKey
+        })
         updateObject(drag.objectId, (current) => {
           if (current.kind === 'text') {
             const factor = Math.max(
@@ -390,6 +484,11 @@ export function DesignBoardEditor({
         duplicateSelected()
         return
       }
+      if (mod && event.key === '1') {
+        event.preventDefault()
+        fitZoom()
+        return
+      }
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault()
         deleteSelected()
@@ -409,12 +508,31 @@ export function DesignBoardEditor({
     commitTextDraft,
     deleteSelected,
     duplicateSelected,
+    fitZoom,
     redo,
     selectedId,
     textEditingId,
     undo,
     updateObject
   ])
+
+  // 右键菜单：菜单外 pointerdown / Escape 关闭（capture 阶段，检查菜单 ref）
+  useEffect(() => {
+    if (!contextMenu) return
+    const handlePointerDown = (event: PointerEvent): void => {
+      if (contextMenuRef.current?.contains(event.target as Node)) return
+      setContextMenu(null)
+    }
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setContextMenu(null)
+    }
+    window.addEventListener('pointerdown', handlePointerDown, true)
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown, true)
+      window.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [contextMenu])
 
   const finish = useCallback((): void => {
     const finalDoc = applyTextDraftToDoc(doc, textEditingId, textDraft)
@@ -444,9 +562,11 @@ export function DesignBoardEditor({
         </span>
         <div className="mx-2 h-6 w-px" style={{ background: theme.toolbar.border }} />
         <Button variant="ghost" size="sm" onClick={undo}>
+          <Undo2 className="mr-1 size-4" />
           撤销
         </Button>
         <Button variant="ghost" size="sm" onClick={redo}>
+          <Redo2 className="mr-1 size-4" />
           重做
         </Button>
         <div className="ml-auto flex items-center gap-2">
@@ -526,6 +646,7 @@ export function DesignBoardEditor({
         {/* 画板视口 */}
         <div
           ref={viewportRef}
+          data-design-board-viewport
           className="relative flex-1 overflow-auto overscroll-contain"
           style={{ background: theme.canvas.background }}
           onPointerDown={(event) => {
@@ -534,6 +655,7 @@ export function DesignBoardEditor({
             commitTextDraft()
             setSelectedId(null)
           }}
+          onContextMenu={(event) => event.preventDefault()}
         >
           <div className="grid min-h-full place-items-center p-12">
             <div
@@ -560,6 +682,13 @@ export function DesignBoardEditor({
                       height: object.height * scale
                     }}
                     onPointerDown={(event) => startDrag(event, object.id)}
+                    onContextMenu={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      if (textEditingId && textEditingId !== object.id) commitTextDraft()
+                      if (selectedId !== object.id) setSelectedId(object.id)
+                      setContextMenu({ x: event.clientX, y: event.clientY })
+                    }}
                     onMouseEnter={() => setHoveredId(object.id)}
                     onMouseLeave={() =>
                       setHoveredId((current) => (current === object.id ? null : current))
@@ -697,20 +826,64 @@ export function DesignBoardEditor({
           删除
         </Button>
         <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" size="sm" aria-label="缩小" title="缩小" onClick={zoomOut}>
+            −
+          </Button>
           <input
             type="range"
             min={ZOOM_MIN_PCT}
             max={ZOOM_MAX_PCT}
             value={zoomPercent}
-            onChange={(event) => setZoomPercent(Number(event.target.value))}
+            onChange={(event) => setZoomCentered(Number(event.target.value))}
             className="w-32"
             aria-label="缩放"
           />
+          <Button variant="outline" size="sm" aria-label="放大" title="放大" onClick={zoomIn}>
+            +
+          </Button>
+          <Button variant="outline" size="sm" onClick={fitZoom} title="适配 (Ctrl+1)">
+            适配
+          </Button>
           <span className="w-12 text-right text-xs tabular-nums opacity-70">
             {Math.round(zoomPercent)}%
           </span>
         </div>
       </div>
+      {/* 对象右键菜单：fixed 定位，pointerdown 菜单外/Escape 关闭 */}
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          data-design-board-context-menu
+          className="fixed z-[160] w-32 overflow-hidden rounded-md border shadow-lg"
+          style={{
+            left: contextMenu.x,
+            top: contextMenu.y,
+            borderColor: theme.toolbar.border,
+            background: theme.toolbar.panel
+          }}
+        >
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition hover:bg-black/5 dark:hover:bg-white/10"
+            onClick={() => {
+              duplicateSelected()
+              setContextMenu(null)
+            }}
+          >
+            复制
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition hover:bg-black/5 dark:hover:bg-white/10"
+            onClick={() => {
+              deleteSelected()
+              setContextMenu(null)
+            }}
+          >
+            删除
+          </button>
+        </div>
+      )}
     </div>
   )
 }

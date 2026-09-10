@@ -43,6 +43,7 @@ describe('snap', () => {
       [obj(300, 0, 100, 50)],
       1080,
       1440,
+      null,
       null
     )
     expect(result.dx).toBe(-3)
@@ -56,6 +57,7 @@ describe('snap', () => {
       [obj(0, 0, 100, 100)],
       1080,
       1440,
+      null,
       null
     )
     expect(far.dx).toBe(0)
@@ -64,6 +66,7 @@ describe('snap', () => {
       [],
       1080,
       1440,
+      null,
       null
     )
     expect(center.dx).toBe(-1)
@@ -76,6 +79,7 @@ describe('snap', () => {
       [obj(300, 0, 100, 100)],
       1080,
       1440,
+      null,
       null
     )
     const next = solveSnapDelta(
@@ -83,10 +87,45 @@ describe('snap', () => {
       [obj(300, 0, 100, 100)],
       1080,
       1440,
-      first.guideX
+      first.guideX,
+      null
     )
     expect(next.dx).toBe(0)
     expect(next.guideX).toBe(300)
+  })
+
+  it('keeps previous guide on y axis within sticky window', () => {
+    const first = solveSnapDelta(
+      { left: 0, top: 503, right: 100, bottom: 553 },
+      [obj(0, 500, 100, 50)],
+      1080,
+      1440,
+      null,
+      null
+    )
+    expect(first.dy).toBe(-3)
+    expect(first.guideY).toBe(500)
+    // 移到 501：无滞回时更近的 501.75 目标会赢，滞回应保持 500
+    const withoutSticky = solveSnapDelta(
+      { left: 0, top: 501, right: 100, bottom: 551 },
+      [obj(0, 500, 100, 50), obj(400, 501.75, 100, 50)],
+      1080,
+      1440,
+      null,
+      null
+    )
+    expect(withoutSticky.dy).toBe(0.75)
+    expect(withoutSticky.guideY).toBe(501.75)
+    const next = solveSnapDelta(
+      { left: 0, top: 501, right: 100, bottom: 551 },
+      [obj(0, 500, 100, 50), obj(400, 501.75, 100, 50)],
+      1080,
+      1440,
+      null,
+      first.guideY
+    )
+    expect(next.dy).toBe(-1)
+    expect(next.guideY).toBe(500)
   })
 })
 

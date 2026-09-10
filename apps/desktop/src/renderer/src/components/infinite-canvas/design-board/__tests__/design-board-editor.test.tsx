@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import type { CanvasNodeData } from '@/api/infinite-canvas-client'
 import { createDesignBoardDoc, type DesignBoardDoc } from '../design-board-types'
 import { DesignBoardEditor, type DesignBoardEditorProps } from '../design-board-editor'
@@ -217,5 +217,87 @@ describe('DesignBoardEditor', () => {
       kind: 'image',
       source: { kind: 'node-ref', nodeId: 'img1', index: 0 }
     })
+  })
+
+  it('zoom step buttons scale the zoom percent by 1.1 steps', () => {
+    setup()
+    const slider = screen.getByLabelText('缩放') as HTMLInputElement
+    const initial = Number(slider.value)
+    fireEvent.click(screen.getByRole('button', { name: '放大' }))
+    const zoomed = Number(slider.value)
+    expect(zoomed).toBeGreaterThan(initial)
+    fireEvent.click(screen.getByRole('button', { name: '缩小' }))
+    expect(Number(slider.value)).toBeLessThan(zoomed)
+    fireEvent.click(screen.getByRole('button', { name: '缩小' }))
+    expect(Number(slider.value)).toBeLessThan(initial)
+  })
+
+  it('适配 button restores the fit zoom on the slider', () => {
+    setup()
+    const slider = screen.getByLabelText('缩放') as HTMLInputElement
+    const fitValue = Number(slider.value)
+    fireEvent.change(slider, { target: { value: '200' } })
+    expect(Number(slider.value)).toBe(200)
+    fireEvent.click(screen.getByRole('button', { name: '适配' }))
+    expect(Number(slider.value)).toBe(fitValue)
+  })
+
+  it('Ctrl+1 triggers fit zoom', () => {
+    setup()
+    const slider = screen.getByLabelText('缩放') as HTMLInputElement
+    const fitValue = Number(slider.value)
+    fireEvent.change(slider, { target: { value: '200' } })
+    fireEvent.keyDown(window, { key: '1', ctrlKey: true })
+    expect(Number(slider.value)).toBe(fitValue)
+  })
+
+  it('opens context menu on object right-click, deletes and closes', () => {
+    const { onCommit, container } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    // 视口空白处按下取消选中，右键对象时应先切换回选中
+    fireEvent.pointerDown(container.querySelector('[data-design-board-viewport]') as HTMLElement)
+    expect(container.querySelectorAll('[data-design-board-handle]')).toHaveLength(0)
+    const objectEl = container.querySelector('[data-design-board-object]') as HTMLElement
+    fireEvent.contextMenu(objectEl)
+    const menu = container.querySelector('[data-design-board-context-menu]') as HTMLElement
+    expect(menu).toBeTruthy()
+    expect(container.querySelectorAll('[data-design-board-handle]')).toHaveLength(8)
+    fireEvent.click(within(menu).getByRole('button', { name: '删除' }))
+    expect(container.querySelector('[data-design-board-context-menu]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects).toHaveLength(0)
+  })
+
+  it('context menu 复制 duplicates the object', () => {
+    const { onCommit, container } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    const objectEl = container.querySelector('[data-design-board-object]') as HTMLElement
+    fireEvent.contextMenu(objectEl)
+    const menu = container.querySelector('[data-design-board-context-menu]') as HTMLElement
+    fireEvent.click(within(menu).getByRole('button', { name: '复制' }))
+    fireEvent.click(screen.getByRole('button', { name: '完成编辑' }))
+    const doc = onCommit.mock.calls[0][0] as DesignBoardDoc
+    expect(doc.objects).toHaveLength(2)
+  })
+
+  it('closes context menu on Escape and outside pointerdown', () => {
+    const { container } = setup()
+    fireEvent.click(screen.getByRole('button', { name: '添加矩形' }))
+    const objectEl = container.querySelector('[data-design-board-object]') as HTMLElement
+    fireEvent.contextMenu(objectEl)
+    expect(container.querySelector('[data-design-board-context-menu]')).toBeTruthy()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(container.querySelector('[data-design-board-context-menu]')).toBeNull()
+    fireEvent.contextMenu(objectEl)
+    fireEvent.pointerDown(container.querySelector('[data-design-board-viewport]') as HTMLElement)
+    expect(container.querySelector('[data-design-board-context-menu]')).toBeNull()
+  })
+
+  it('does not open context menu on blank viewport right-click', () => {
+    const { container } = setup()
+    const viewport = container.querySelector('[data-design-board-viewport]') as HTMLElement
+    fireEvent.contextMenu(viewport)
+    expect(container.querySelector('[data-design-board-context-menu]')).toBeNull()
   })
 })

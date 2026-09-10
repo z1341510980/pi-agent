@@ -105,7 +105,8 @@ export function solveSnapDelta(
   targets: DesignBoardObject[],
   boardWidth: number,
   boardHeight: number,
-  prevGuideX: number | null
+  prevGuideX: number | null,
+  prevGuideY: number | null
 ): SnapResult {
   const threshold = snapThresholdFor(boardWidth, boardHeight)
   const movingXs = [moving.left, (moving.left + moving.right) / 2, moving.right]
@@ -118,7 +119,7 @@ export function solveSnapDelta(
     targetYs.push(bounds.top, (bounds.top + bounds.bottom) / 2, bounds.bottom)
   }
   const bestX = bestSnapOnAxis(movingXs, targetXs, threshold, prevGuideX)
-  const bestY = bestSnapOnAxis(movingYs, targetYs, threshold, null)
+  const bestY = bestSnapOnAxis(movingYs, targetYs, threshold, prevGuideY)
   return {
     dx: bestX && Math.abs(bestX.delta) >= SNAP_DEADBAND ? bestX.delta : 0,
     dy: bestY && Math.abs(bestY.delta) >= SNAP_DEADBAND ? bestY.delta : 0,
