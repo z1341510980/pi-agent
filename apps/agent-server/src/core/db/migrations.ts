@@ -7,15 +7,16 @@
 
 import type Database from 'better-sqlite3'
 import type { MigrationDefinition } from '../plugin/plugin-types.js'
+import { normalizeMediaProtocol } from '../config/provider-config-store.js'
 
 /** 所有迁移定义 */
-const MIGRATIONS: { id: string; sql: string }[] = [
+export const MIGRATIONS: MigrationDefinition[] = [
   {
     id: '001_create_schema_migrations',
     sql: `CREATE TABLE IF NOT EXISTS schema_migrations (
       id          TEXT PRIMARY KEY,
       applied_at  INTEGER NOT NULL DEFAULT (unixepoch())
-    );`,
+    );`
   },
   {
     id: '002_create_agents',
@@ -31,12 +32,12 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
       updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
     );
-    CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);`,
+    CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);`
   },
   {
     // 为 agents 表补 temperature 列（兼容新旧库）
     id: '002b_add_agents_temperature',
-    sql: `ALTER TABLE agents ADD COLUMN temperature REAL;`,
+    sql: `ALTER TABLE agents ADD COLUMN temperature REAL;`
   },
   {
     id: '003_create_teams',
@@ -61,7 +62,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       PRIMARY KEY (team_id, agent_id),
       FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
       FOREIGN KEY (agent_id) REFERENCES agents(id)
-    );`,
+    );`
   },
   {
     id: '004_create_facts',
@@ -76,7 +77,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       access_count    INTEGER NOT NULL DEFAULT 0,
       last_accessed_at INTEGER NOT NULL DEFAULT 0
     );
-    CREATE INDEX IF NOT EXISTS idx_facts_last_accessed ON facts(last_accessed_at);`,
+    CREATE INDEX IF NOT EXISTS idx_facts_last_accessed ON facts(last_accessed_at);`
   },
   {
     id: '005_create_session_summaries',
@@ -87,7 +88,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       topics        TEXT NOT NULL DEFAULT '[]',
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL
-    );`,
+    );`
   },
   {
     id: '006_create_usage_records',
@@ -115,7 +116,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       monthly_budget_usd  REAL NOT NULL DEFAULT 0,
       alert_threshold     REAL NOT NULL DEFAULT 80
     );
-    INSERT OR IGNORE INTO usage_budget (id, monthly_budget_usd, alert_threshold) VALUES (1, 0, 80);`,
+    INSERT OR IGNORE INTO usage_budget (id, monthly_budget_usd, alert_threshold) VALUES (1, 0, 80);`
   },
   {
     id: '007_create_providers',
@@ -128,7 +129,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       auth_header INTEGER NOT NULL DEFAULT 1,
       models      TEXT NOT NULL DEFAULT '[]',
       updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
-    );`,
+    );`
   },
   {
     id: '008_create_proxy_config',
@@ -140,7 +141,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       username  TEXT NOT NULL DEFAULT '',
       password  TEXT NOT NULL DEFAULT ''
     );
-    INSERT OR IGNORE INTO proxy_config (id, mode) VALUES (1, 'system');`,
+    INSERT OR IGNORE INTO proxy_config (id, mode) VALUES (1, 'system');`
   },
   {
     id: '009_create_cron_jobs',
@@ -155,7 +156,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       run_count   INTEGER NOT NULL DEFAULT 0,
       created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
       updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
-    );`,
+    );`
   },
   {
     id: '010_create_evidence',
@@ -169,7 +170,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       is_error      INTEGER NOT NULL DEFAULT 0,
       timestamp     TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_evidence_thread ON evidence(thread_id);`,
+    CREATE INDEX IF NOT EXISTS idx_evidence_thread ON evidence(thread_id);`
   },
   {
     id: '011_create_session_files',
@@ -190,7 +191,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
     CREATE TABLE IF NOT EXISTS file_refcount (
       content_hash TEXT PRIMARY KEY,
       refcount     INTEGER NOT NULL DEFAULT 0
-    );`,
+    );`
   },
   {
     // 补充 cron_jobs 表缺失的字段，对齐 CronJob 接口
@@ -198,7 +199,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
     sql: `ALTER TABLE cron_jobs ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE cron_jobs ADD COLUMN last_result TEXT;
     ALTER TABLE cron_jobs ADD COLUMN timeout_ms INTEGER NOT NULL DEFAULT 300000;
-    ALTER TABLE cron_jobs ADD COLUMN last_error TEXT;`,
+    ALTER TABLE cron_jobs ADD COLUMN last_error TEXT;`
   },
   {
     // 通用 Agent 调用日志表（chat 底座能力，所有 Agent 调用统一记录）
@@ -226,7 +227,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
     );
     CREATE INDEX IF NOT EXISTS idx_agent_call_logs_agent ON agent_call_logs(agent_id);
     CREATE INDEX IF NOT EXISTS idx_agent_call_logs_thread ON agent_call_logs(thread_id);
-    CREATE INDEX IF NOT EXISTS idx_agent_call_logs_created ON agent_call_logs(created_at DESC);`,
+    CREATE INDEX IF NOT EXISTS idx_agent_call_logs_created ON agent_call_logs(created_at DESC);`
   },
   {
     // 通用应用设置表（key-value），用于存储默认 Provider 等全局偏好
@@ -234,7 +235,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
     sql: `CREATE TABLE IF NOT EXISTS app_settings (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
-    );`,
+    );`
   },
   {
     // 每个 thread 的思考强度（thinking level）独立存储，
@@ -244,7 +245,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       thread_id      TEXT PRIMARY KEY,
       thinking_level TEXT NOT NULL,
       updated_at     INTEGER NOT NULL DEFAULT (unixepoch())
-    );`,
+    );`
   },
   {
     // 会话身份索引 P0（方案 §9.4）：threadId → Pi session JSONL 路径 的持久化映射。
@@ -255,7 +256,7 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       thread_id    TEXT PRIMARY KEY,
       session_path TEXT NOT NULL,
       updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
-    );`,
+    );`
   },
   {
     // 图片 Provider 协议配置。默认保持 OpenAI Images 兼容协议；APIMart 等异步
@@ -264,9 +265,167 @@ const MIGRATIONS: { id: string; sql: string }[] = [
     sql: `ALTER TABLE providers ADD COLUMN media_protocol TEXT NOT NULL DEFAULT 'openai-images';
     ALTER TABLE providers ADD COLUMN media_model TEXT NOT NULL DEFAULT '';
     ALTER TABLE providers ADD COLUMN media_resolution TEXT NOT NULL DEFAULT '';
-    ALTER TABLE providers ADD COLUMN media_language TEXT NOT NULL DEFAULT 'en';`,
+    ALTER TABLE providers ADD COLUMN media_language TEXT NOT NULL DEFAULT 'en';`
   },
+  {
+    // 媒体生成 Provider 表（统一图片/音频/视频配置，spec §1）。
+    // 表属宿主级能力（Registry 在 core/media、REST 挂 /api/media-providers），
+    // 故放宿主迁移而非插件迁移：不依赖任何插件的加载状态。
+    // 存量导入放 afterApply（同一事务），见 importLegacyMediaProviders。
+    id: '017_create_media_providers',
+    sql: `CREATE TABLE IF NOT EXISTS media_providers (
+      id         TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      modality   TEXT NOT NULL,
+      adapter    TEXT NOT NULL,
+      base_url   TEXT NOT NULL DEFAULT '',
+      api_key    TEXT NOT NULL DEFAULT '',
+      model      TEXT NOT NULL DEFAULT '',
+      params     TEXT NOT NULL DEFAULT '{}',
+      enabled    INTEGER NOT NULL DEFAULT 1,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_media_providers_modality ON media_providers(modality);`,
+    afterApply: importLegacyMediaProviders
+  }
 ]
+
+function tableExists(db: Database.Database, name: string): boolean {
+  return Boolean(
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)
+  )
+}
+
+/** 把 params 键值写入对象，空值字段不写入。 */
+function putParam(params: Record<string, string>, key: string, value: unknown): void {
+  if (typeof value === 'string' && value !== '') params[key] = value
+}
+
+interface LegacyMediaProviderInput {
+  id: string
+  name: string
+  adapter: string
+  baseUrl: string
+  apiKey: string
+  model: string
+  params: Record<string, string>
+  isDefault: number
+}
+
+/**
+ * 存量媒体配置导入（幂等：INSERT 前查 id 存在则跳过）。
+ *
+ * 来源 A：infinite_canvas_media_settings 单行（baseUrl 与 apiKey 均非空才算已配置）
+ *   → image 默认 Provider，id 前缀 mig-canvas-。
+ * 来源 B：providers 表中真正配置过媒体列的行（media_protocol 有
+ *   NOT NULL DEFAULT 'openai-images'，恒非空；以 media_model <> '' 或
+ *   media_protocol = 'apimart' 作为显式配置信号，且 base_url/api_key 非空可用）
+ *   → id 前缀 mig-provider-；来源 A 未产生行时首条补默认。
+ *
+ * 注意时序：宿主迁移先于插件迁移执行，全新库此时画布设置表尚不存在
+ * （也没有任何可导入的存量），查 sqlite_master 兜底跳过。
+ */
+function importLegacyMediaProviders(db: Database.Database): void {
+  const stmtIdExists = db.prepare('SELECT 1 FROM media_providers WHERE id = ?')
+  const stmtInsert = db.prepare(`
+    INSERT INTO media_providers (
+      id, name, modality, adapter, base_url, api_key, model, params,
+      enabled, is_default, created_at, updated_at
+    )
+    VALUES (?, ?, 'image', ?, ?, ?, ?, ?, 1, ?, unixepoch(), unixepoch())
+  `)
+  const insertIfAbsent = (input: LegacyMediaProviderInput): void => {
+    if (stmtIdExists.get(input.id)) return
+    stmtInsert.run(
+      input.id,
+      input.name,
+      input.adapter,
+      input.baseUrl,
+      input.apiKey,
+      input.model,
+      JSON.stringify(input.params),
+      input.isDefault
+    )
+  }
+
+  // 来源 A：画布媒体设置（画布独立生图配置，与 LLM Provider 的 Key 分离）
+  if (tableExists(db, 'infinite_canvas_media_settings')) {
+    const canvas = db
+      .prepare(
+        `SELECT image_base_url, image_api_key, image_protocol, image_model,
+                image_size, image_resolution, image_language
+         FROM infinite_canvas_media_settings WHERE id = 'default'`
+      )
+      .get() as
+      | {
+          image_base_url: string
+          image_api_key: string
+          image_protocol: string
+          image_model: string
+          image_size: string
+          image_resolution: string
+          image_language: string
+        }
+      | undefined
+    if (canvas && canvas.image_base_url !== '' && canvas.image_api_key !== '') {
+      const params: Record<string, string> = {}
+      putParam(params, 'size', canvas.image_size)
+      putParam(params, 'resolution', canvas.image_resolution)
+      putParam(params, 'language', canvas.image_language)
+      insertIfAbsent({
+        id: 'mig-canvas-default',
+        name: '画布生图（迁移）',
+        adapter: normalizeMediaProtocol(canvas.image_protocol),
+        baseUrl: canvas.image_base_url,
+        apiKey: canvas.image_api_key,
+        model: canvas.image_model,
+        params,
+        isDefault: 1
+      })
+    }
+  }
+
+  // 来源 B：providers 表媒体列（providers 表没有 size 列，比例分辨率走 media_resolution）
+  if (tableExists(db, 'providers')) {
+    const legacyRows = db
+      .prepare(
+        `SELECT id, name, base_url, api_key, media_protocol, media_model,
+                media_resolution, media_language
+         FROM providers
+         WHERE base_url <> '' AND api_key <> ''
+           AND (media_model <> '' OR media_protocol = 'apimart')
+         ORDER BY updated_at, id`
+      )
+      .all() as Array<{
+      id: string
+      name: string
+      base_url: string
+      api_key: string
+      media_protocol: string
+      media_model: string
+      media_resolution: string
+      media_language: string
+    }>
+    const hasCanvasImport = Boolean(stmtIdExists.get('mig-canvas-default'))
+    legacyRows.forEach((row, index) => {
+      const params: Record<string, string> = {}
+      putParam(params, 'resolution', row.media_resolution)
+      putParam(params, 'language', row.media_language)
+      insertIfAbsent({
+        id: `mig-provider-${row.id}`,
+        name: `${row.name}（媒体）`,
+        adapter: normalizeMediaProtocol(row.media_protocol),
+        baseUrl: row.base_url,
+        apiKey: row.api_key,
+        model: row.media_model,
+        params,
+        isDefault: !hasCanvasImport && index === 0 ? 1 : 0
+      })
+    })
+  }
+}
 
 /** 执行所有待执行的迁移 */
 export function runMigrations(db: Database.Database): void {
@@ -274,7 +433,10 @@ export function runMigrations(db: Database.Database): void {
   db.exec(MIGRATIONS[0].sql)
 
   const applied = new Set(
-    db.prepare('SELECT id FROM schema_migrations').all().map((r: any) => r.id as string),
+    db
+      .prepare('SELECT id FROM schema_migrations')
+      .all()
+      .map((r: any) => r.id as string)
   )
 
   applyMigrations(db, MIGRATIONS, applied)
@@ -284,11 +446,16 @@ export function runMigrations(db: Database.Database): void {
 export function applyMigrations(
   db: Database.Database,
   migrations: readonly MigrationDefinition[],
-  knownApplied?: ReadonlySet<string>,
+  knownApplied?: ReadonlySet<string>
 ): void {
-  const applied = knownApplied ?? new Set(
-    db.prepare('SELECT id FROM schema_migrations').all().map((r: any) => r.id as string),
-  )
+  const applied =
+    knownApplied ??
+    new Set(
+      db
+        .prepare('SELECT id FROM schema_migrations')
+        .all()
+        .map((r: any) => r.id as string)
+    )
   for (const migration of migrations) {
     if (applied.has(migration.id)) continue
     db.transaction(() => {
