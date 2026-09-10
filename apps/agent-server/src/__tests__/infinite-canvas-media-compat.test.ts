@@ -277,6 +277,41 @@ describe('infinite canvas media × media provider registry', () => {
     expect(saved?.params).toEqual({ size: '1792x1024', resolution: '4k', language: 'ja' })
   })
 
+  it('PUT /media-config 不带 imageProtocol 时保留行内现协议', async () => {
+    clearImageProviders()
+    const apimart = app.mediaProviderStore.create({
+      name: 'APIMart 行',
+      modality: 'image',
+      adapter: 'apimart',
+      baseUrl: 'https://api.apimart.example',
+      apiKey: 'am-keep-1234',
+      model: 'gpt-image-2',
+      params: { size: '1024x1024' }
+    })
+    app.mediaProviderStore.setDefault(apimart.id)
+
+    // 旧客户端缺省 imageProtocol：仅回写显式字段，adapter 保持 apimart
+    const response = await app.inject({
+      method: 'PUT',
+      url: `${CANVAS_PREFIX}/media-config`,
+      body: {
+        imageBaseUrl: 'https://kept.example.com/v1',
+        imageModel: 'm-kept'
+      }
+    })
+    expect(response.statusCode).toBe(200)
+    expect(response.json().data).toMatchObject({
+      configured: true,
+      baseUrl: 'https://kept.example.com/v1',
+      model: 'm-kept',
+      imageProtocol: 'apimart'
+    })
+
+    const saved = app.mediaProviderStore.get(apimart.id)
+    expect(saved?.adapter).toBe('apimart')
+    expect(saved?.model).toBe('m-kept')
+  })
+
   it('PUT /media-config 在无默认行时创建首行并自动设为默认', async () => {
     clearImageProviders()
     const response = await app.inject({

@@ -162,7 +162,7 @@ describe('media provider route', () => {
     expect(paramsUpdate.json().data).toMatchObject({ params: { size: '512x512' }, enabled: false })
   })
 
-  it('PATCH 校验 adapter 归属；404 兜底', async () => {
+  it('PATCH 校验 adapter 归属（含仅改 modality 的组合校验）；404 兜底', async () => {
     const list = await app.inject({ method: 'GET', url: '/api/media-providers?modality=image' })
     const first = list.json().data.rows.find((r: { name: string }) => r.name === '生图 A（改）')
 
@@ -172,6 +172,17 @@ describe('media provider route', () => {
       body: { adapter: 'openai-audio' }
     })
     expect(badAdapter.statusCode).toBe(400)
+
+    // 仅改 modality 而 adapter 沿用旧值：audio + openai-images 属跨模态组合，400
+    const modalityOnly = await app.inject({
+      method: 'PATCH',
+      url: `/api/media-providers/${first.id}`,
+      body: { modality: 'audio' }
+    })
+    expect(modalityOnly.statusCode).toBe(400)
+    // 校验失败不落库：行保持 image + openai-images
+    const untouched = app.mediaProviderStore.get(first.id)
+    expect(untouched).toMatchObject({ modality: 'image', adapter: 'openai-images' })
 
     const missing = await app.inject({
       method: 'PATCH',

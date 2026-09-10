@@ -267,7 +267,8 @@ export function createInfiniteCanvasRoutes(
         const mediaProviders = getMediaProviders?.()
         if (!mediaProviders) return reply.code(503).send({ ok: false, error: '媒体配置服务未初始化' })
         const input = body(request)
-        const adapter = input.imageProtocol === 'apimart' ? 'apimart' : 'openai-images'
+        const protocol = optionalString(input.imageProtocol)
+        const adapter = protocol === 'apimart' ? 'apimart' : 'openai-images'
         // 提供的字段才写入 params，避免旧客户端缺省字段清空已配置参数
         const patchParams: Record<string, string> = {}
         const size = optionalString(input.imageSize)
@@ -282,13 +283,16 @@ export function createInfiniteCanvasRoutes(
           mediaProviders.update(current.id, {
             ...(optionalString(input.imageBaseUrl) !== undefined ? { baseUrl: optionalString(input.imageBaseUrl) } : {}),
             ...(optionalString(input.imageModel) !== undefined ? { model: optionalString(input.imageModel) } : {}),
-            adapter,
+            // 仅显式携带 imageProtocol 才写 adapter：缺省保留行内现协议，
+            // 避免旧客户端把 apimart 行静默改写为 openai-images
+            ...(protocol !== undefined ? { adapter } : {}),
             ...(Object.keys(patchParams).length ? { params: { ...current.params, ...patchParams } } : {}),
             // 空/缺省 Key 由 store.update 保留旧值
             ...(optionalString(input.imageApiKey) !== undefined ? { apiKey: optionalString(input.imageApiKey) } : {})
           })
         } else {
           // 旧弹窗「先配置再生图」流程在全新库上的兜底：创建首行并设为模态默认
+          // （无行可保留现协议，未携带 imageProtocol 时回退 openai-images）
           const created = mediaProviders.create({
             name: '画布媒体配置',
             modality: 'image',

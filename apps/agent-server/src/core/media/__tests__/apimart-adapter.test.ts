@@ -76,7 +76,7 @@ describe('apimart adapter', () => {
     }
   })
 
-  it('defaults the task language to en and omits size when none is configured', async () => {
+  it('defaults the task language to en and falls back to the protocol default 1:1 size', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     vi.useFakeTimers()
@@ -106,7 +106,8 @@ describe('apimart adapter', () => {
       )
       const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
       expect(body.model).toBe('gpt-image-2')
-      expect(body.size).toBeUndefined()
+      // 迁移前 facade 恒带 size：空值回协议默认 '1:1'
+      expect(body.size).toBe('1:1')
       expect(body.resolution).toBeUndefined()
     } finally {
       vi.useRealTimers()
@@ -142,8 +143,33 @@ describe('apimart adapter', () => {
         resolution: '4k',
         image_urls: ['data:image/png;base64,AA==', 'data:image/png;base64,Ag==']
       })
-      expect(body.size).toBeUndefined()
+      // 编辑路径同样恒带 size：空值回协议默认 '1:1'
+      expect(body.size).toBe('1:1')
       expect(body.response_format).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('editImage without an explicit size falls back to the provider param size via the alias table', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ data: [{ url: 'https://cdn.apimart.example/edit-size.png' }] })
+    )
+
+    try {
+      await expect(
+        adapter.editImage!(createContext({ params: { size: '1024x1536' } }), {
+          prompt: '按参考图重画',
+          image: 'data:image/png;base64,AA=='
+        })
+      ).resolves.toEqual({ images: ['https://cdn.apimart.example/edit-size.png'] })
+
+      const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+      // ctx.params.size 经 normalizeApimartSize 别名表归一（1024x1536 → 2:3）
+      expect(body.size).toBe('2:3')
+      expect(body.image_urls).toEqual(['data:image/png;base64,AA=='])
     } finally {
       vi.unstubAllGlobals()
     }

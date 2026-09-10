@@ -163,16 +163,16 @@ export const mediaProviderRoute: FastifyPluginAsync = async (app) => {
     if (!existing) {
       throw new AppError(ErrorCode.NOT_FOUND, `媒体 Provider "${id}" 不存在`, 404)
     }
-    // adapter 变更时按（变更后的）模态校验归属
-    if (input.adapter !== undefined) {
-      const targetModality = input.modality ?? existing.modality
-      if (!registry.listAdapters(targetModality).some((adapter) => adapter.id === input.adapter)) {
-        throw new AppError(
-          ErrorCode.VALIDATION_ERROR,
-          `适配器 "${input.adapter}" 不属于模态 "${targetModality}" 或未注册`,
-          400
-        )
-      }
+    // 按（变更后的）modality/adapter 组合校验归属：仅改 modality 而 adapter
+    // 沿用旧值时同样可能造出跨模态的永久不可解析行（如 audio + openai-images）
+    const targetModality = input.modality ?? existing.modality
+    const targetAdapter = input.adapter ?? existing.adapter
+    if (!registry.listAdapters(targetModality).some((adapter) => adapter.id === targetAdapter)) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        `适配器 "${targetAdapter}" 不属于模态 "${targetModality}" 或未注册`,
+        400
+      )
     }
 
     const updated = store.update(id, input)

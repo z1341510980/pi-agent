@@ -11,8 +11,8 @@
  *   上游归一；此处幂等，已含 /v1 的 URL 原样保留）。
  * - ctx.params.resolution/language 取代 ImageRequestContext.mediaResolution/
  *   mediaLanguage（由 Registry 从 media_providers 行解析）。
- * - size 无值时 payload 不携带该字段（formSchema 未声明 size 参数，
- *   旧 facade 的 '1:1' 兜底随旧双路一并移除，由服务端默认兜底）。
+ * - size 无值时兜底 '1:1'（迁移前 facade 恒带 size 的等价恢复，协议默认属
+ *   adapter 职责；画布 imageSize 经 normalizeApimartSize 别名表归一）。
  */
 
 import type { FastifyBaseLogger } from 'fastify'
@@ -291,8 +291,8 @@ export const apimartAdapter: MediaProviderAdapter = {
     return submitTaskGeneration(rt, {
       prompt: input.prompt,
       references: input.references,
-      // 与迁移前一致：调用方显式 size > Provider params.size；无值时不携带该字段
-      size: input.size || ctx.params.size,
+      // 与迁移前一致：调用方显式 size > Provider params.size > '1:1' 协议默认
+      size: normalizeApimartSize(input.size || ctx.params.size) ?? '1:1',
       count: input.count ?? 1,
       resolution: ctx.params.resolution,
       language: ctx.params.language?.trim() || 'en',
@@ -306,7 +306,8 @@ export const apimartAdapter: MediaProviderAdapter = {
     return apimartAdapter.generateImage!(ctx, {
       prompt: input.prompt,
       references: [input.image, ...(input.images ?? [])],
-      size: input.size,
+      // 与自身 generateImage 及 openai-images editImage 对齐：空 size 回退行内参数
+      size: input.size || ctx.params.size,
       count: 1,
       signal: input.signal,
       traceId: input.traceId
