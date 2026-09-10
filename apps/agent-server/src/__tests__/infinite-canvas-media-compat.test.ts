@@ -154,7 +154,8 @@ describe('infinite canvas media × media provider registry', () => {
       body: { mode: 'audio', prompt: '海浪声' }
     })
     expect(audio.statusCode).toBe(502)
-    expect(audio.json().error).toBe('音频尚未配置生成 Provider，请到 设置 → 媒体生成 配置')
+    expect(audio.json().error.message).toBe('音频尚未配置生成 Provider，请到 设置 → 媒体生成 配置')
+    expect(audio.json().error.code).toBe('MEDIA_GENERATION_FAILED')
 
     const video = await app.inject({
       method: 'POST',
@@ -162,7 +163,8 @@ describe('infinite canvas media × media provider registry', () => {
       body: { mode: 'video', prompt: '延时摄影' }
     })
     expect(video.statusCode).toBe(502)
-    expect(video.json().error).toBe('视频尚未配置生成 Provider，请到 设置 → 媒体生成 配置')
+    expect(video.json().error.message).toBe('视频尚未配置生成 Provider，请到 设置 → 媒体生成 配置')
+    expect(video.json().error.code).toBe('MEDIA_GENERATION_FAILED')
   })
 
   it('generate-media audio：openai-audio 产出的 data URL 经资产链路落盘', async () => {
@@ -332,7 +334,8 @@ describe('infinite canvas media × media provider registry', () => {
         body: { mode: 'video', prompt: '违规内容' }
       })
       expect(response.statusCode).toBe(502)
-      expect(response.json().error).toContain('内容审核未通过')
+      expect(response.json().error.message).toContain('内容审核未通过')
+      expect(response.json().error.code).toBe('MEDIA_GENERATION_FAILED')
     } finally {
       vi.unstubAllGlobals()
     }
@@ -359,7 +362,8 @@ describe('infinite canvas media × media provider registry', () => {
         body: { image: 'data:image/png;base64,AA==' }
       })
       expect(response.statusCode).toBe(502)
-      expect(response.json().error).toBe(ANALYZE_UNSUPPORTED)
+      expect(response.json().error.message).toBe(ANALYZE_UNSUPPORTED)
+      expect(response.json().error.code).toBe('REVERSE_PROMPT_FAILED')
       expect(fetchMock).not.toHaveBeenCalled()
     } finally {
       vi.unstubAllGlobals()

@@ -53,6 +53,15 @@ function routeFor(method: string, path: string): RouteDefinition {
     undefined,
     async () => {
       throw new Error('provider rejected the image')
+    },
+    async () => {
+      throw new Error('provider rejected the media')
+    },
+    async () => {
+      throw new Error('provider rejected the edit')
+    },
+    async () => {
+      throw new Error('provider rejected the reverse prompt')
     }
   ).find((route) => route.method === method && route.path === path)!
 }
@@ -247,6 +256,49 @@ describe('infinite canvas route errors', () => {
       error: { code: 'IMAGE_GENERATION_FAILED', message: 'provider rejected the image' },
       meta: { traceId: 'trace-image' }
     })
+  })
+
+  it('returns structured errors with codes for media, edit and reverse-prompt failures', async () => {
+    const cases: Array<{
+      path: string
+      body: Record<string, unknown>
+      code: string
+      message: string
+    }> = [
+      {
+        path: '/projects/:projectId/generate-media',
+        body: { mode: 'audio', prompt: 'a sound' },
+        code: 'MEDIA_GENERATION_FAILED',
+        message: 'provider rejected the media'
+      },
+      {
+        path: '/projects/:projectId/edit-image',
+        body: { prompt: 'a prompt', image: 'data:image/png;base64,AA==' },
+        code: 'IMAGE_EDIT_FAILED',
+        message: 'provider rejected the edit'
+      },
+      {
+        path: '/projects/:projectId/reverse-prompt',
+        body: { image: 'data:image/png;base64,AA==' },
+        code: 'REVERSE_PROMPT_FAILED',
+        message: 'provider rejected the reverse prompt'
+      }
+    ]
+
+    for (const { path, body, code, message } of cases) {
+      const reply = replyMock()
+      await routeFor('POST', path).handler(
+        { params: { projectId: 'project-1' }, body, traceId: 'trace-media' },
+        reply
+      )
+
+      expect(reply.statusCode).toBe(502)
+      expect(reply.payload).toMatchObject({
+        ok: false,
+        error: { code, message },
+        meta: { traceId: 'trace-media' }
+      })
+    }
   })
 })
 

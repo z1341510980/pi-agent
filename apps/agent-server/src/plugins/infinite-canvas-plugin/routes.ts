@@ -15,6 +15,10 @@ import {
   type CanvasGenerationContext
 } from './generation-context.js'
 
+// 错误响应约定：上游生成失败（502）统一走 failure(code)，客户端可按 code 分支处理；
+// 参数校验（400）/服务未就绪（503）/资源缺失（404）保持裸 {ok:false,error}，
+// 客户端 apiErrorDetails 会回退 code='API_ERROR'（proxy-image 的二进制代理 502 除外）。
+
 export type CanvasGenerateHandler = (input: {
   projectId: string
   nodeId?: string
@@ -645,7 +649,13 @@ export function createInfiniteCanvasRoutes(
         } catch (error) {
           return reply
             .code(502)
-            .send({ ok: false, error: error instanceof Error ? error.message : String(error) })
+            .send(
+              failure(
+                'MEDIA_GENERATION_FAILED',
+                error instanceof Error ? error.message : String(error),
+                request.traceId
+              )
+            )
         }
       }
     },
@@ -682,7 +692,13 @@ export function createInfiniteCanvasRoutes(
           request.log?.error?.(error)
           return reply
             .code(502)
-            .send({ ok: false, error: error instanceof Error ? error.message : String(error) })
+            .send(
+              failure(
+                'IMAGE_EDIT_FAILED',
+                error instanceof Error ? error.message : String(error),
+                request.traceId
+              )
+            )
         }
       }
     },
@@ -709,7 +725,13 @@ export function createInfiniteCanvasRoutes(
           request.log?.error?.(error)
           return reply
             .code(502)
-            .send({ ok: false, error: error instanceof Error ? error.message : String(error) })
+            .send(
+              failure(
+                'REVERSE_PROMPT_FAILED',
+                error instanceof Error ? error.message : String(error),
+                request.traceId
+              )
+            )
         }
       }
     },
