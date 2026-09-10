@@ -363,11 +363,11 @@ export const CanvasNode = memo(function CanvasNode({
       )
     switch (data.type) {
       case 'text': {
-        const lineHeight = Math.round(fontSize * 1.4)
         const shared = cn(
           // flex-1 + min-h-0：内容区在 flex 列里占满剩余高度，h-full 百分比链
           // 在 items-center 嵌套下会塌缩成单行；whitespace-pre-wrap 两种模式都要
           // （显示态之前漏了，换行被折叠）；data-canvas-no-zoom 防节点内滚动缩放画布。
+          // 行高不内联指定，跟随浏览器默认（此前 1.65 系数行距过大）。
           'block min-h-0 w-full flex-1 overflow-y-auto whitespace-pre-wrap break-words pl-4 pr-4 pt-0 pb-4 m-0 font-mono outline-none select-text appearance-none thin-scrollbar',
           isEditingContent ? 'resize-none bg-transparent border-none' : ''
         )
@@ -395,7 +395,7 @@ export const CanvasNode = memo(function CanvasNode({
             {isEditingContent ? (
               <textarea
                 className={shared}
-                style={{ fontSize, lineHeight, color: theme.node.text }}
+                style={{ fontSize, color: theme.node.text }}
                 value={content}
                 autoFocus
                 onChange={(event) => onContentChange(data.id, event.target.value)}
@@ -412,7 +412,7 @@ export const CanvasNode = memo(function CanvasNode({
               <div
                 className={cn(shared, 'cursor-text')}
                 data-canvas-no-zoom
-                style={{ fontSize, lineHeight, color: theme.node.text }}
+                style={{ fontSize, color: theme.node.text }}
                 onDoubleClick={() => setIsEditingContent(true)}
               >
                 {content || <span style={{ color: theme.node.placeholder }}>双击编辑文本</span>}
