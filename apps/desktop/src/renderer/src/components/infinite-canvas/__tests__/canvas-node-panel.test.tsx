@@ -163,13 +163,15 @@ describe('节点面板：比例选择器', () => {
 describe('节点模型选择', () => {
   function ModelHarness({
     initialMetadata,
+    nodeType,
     onConfigChange
   }: {
     initialMetadata: Record<string, unknown>
+    nodeType?: CanvasNodeData['type']
     onConfigChange?: (nodeId: string, patch: Record<string, unknown>) => void
   }): ReactElement {
     const [metadata, setMetadata] = useState<Record<string, unknown>>(initialMetadata)
-    const node: CanvasNodeData = { ...configNode(), metadata }
+    const node: CanvasNodeData = { ...configNode(), type: nodeType ?? 'config', metadata }
     return (
       <CanvasNodePanel
         {...baseProps(node)}
@@ -243,5 +245,12 @@ describe('节点模型选择', () => {
     // 先等拒绝被兜住（提示文案出现），再断言禁用，避免 options===null 时断言恒真
     await screen.findByText('未配置可用的 Provider')
     expect((screen.getByLabelText('模型') as HTMLSelectElement).disabled).toBe(true)
+  })
+
+  it('图片/视频/音频工作流节点（非 config）面板同样显示模型选择', async () => {
+    render(<ModelHarness initialMetadata={{ generationMode: 'image' }} nodeType="image" />)
+
+    await screen.findByText('ProviderA / img-a')
+    expect((screen.getByLabelText('模型') as HTMLSelectElement).disabled).toBe(false)
   })
 })

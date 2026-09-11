@@ -749,7 +749,7 @@ export function CanvasNodePanel({
           />
         </div>
       )}
-      {isConfig && mode !== 'text' && onConfigChange && (
+      {mode !== 'text' && onConfigChange && (
         <ModelPicker
           theme={theme}
           mode={mode}
