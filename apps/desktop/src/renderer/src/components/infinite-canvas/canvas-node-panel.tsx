@@ -440,12 +440,10 @@ function ModelPicker({
             {option.label}
           </option>
         ))}
-        {unavailable && (
-          <option value="" disabled>
-            未配置可用的 Provider
-          </option>
-        )}
       </select>
+      {unavailable && (
+        <span className="mt-1 block text-[10px] opacity-50">未配置可用的 Provider</span>
+      )}
     </label>
   )
 }

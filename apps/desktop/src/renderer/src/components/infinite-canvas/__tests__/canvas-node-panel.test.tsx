@@ -55,9 +55,12 @@ const mediaProviderRows = vi.hoisted(
     ] satisfies MediaProviderRow[]
 )
 
-vi.mock('@/api/media-provider-client', () => ({
+// 提升暴露 mock 函数：失败场景用 mockRejectedValueOnce 单次拒绝
+const mediaProviderApi = vi.hoisted(() => ({
   listMediaProviders: vi.fn(async () => mediaProviderRows)
 }))
+
+vi.mock('@/api/media-provider-client', () => mediaProviderApi)
 
 afterEach(cleanup)
 
@@ -231,5 +234,14 @@ describe('节点模型选择', () => {
     const select = screen.getByLabelText('模型') as HTMLSelectElement
     await waitFor(() => expect(select.disabled).toBe(true))
     expect(screen.queryByText('ProviderA / img-a')).toBeNull()
+  })
+
+  it('listMediaProviders 失败时下拉禁用并提示', async () => {
+    mediaProviderApi.listMediaProviders.mockRejectedValueOnce(new Error('boom'))
+    render(<ModelHarness initialMetadata={{ generationMode: 'image' }} />)
+
+    // 先等拒绝被兜住（提示文案出现），再断言禁用，避免 options===null 时断言恒真
+    await screen.findByText('未配置可用的 Provider')
+    expect((screen.getByLabelText('模型') as HTMLSelectElement).disabled).toBe(true)
   })
 })
