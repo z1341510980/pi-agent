@@ -4,8 +4,8 @@
  *
  * 覆盖：图片/视频/音频三模态 tab 渲染与切换懒加载、图片 Provider 卡片渲染
  * （名称/默认徽标/keyHint 掩码/额外模型 chips）、空态引导卡、formSchema 驱动的
- * 动态表单字段（openai-images ↔ apimart + textarea 类型）、模型列表公共字段
- * （params.models 提交规范化/编辑回显/清空清除）、设为默认调用客户端、
+ * 动态表单字段（openai-images ↔ apimart + textarea 类型）、模型列表动态添加行
+ * （params.models 提交规范化/星标设默认/编辑回显/删行清除）、设为默认调用客户端、
  * 反推提示词模型选择（回显/选择触发 PUT/清除/失败回退）。
  * （文字生成属宿主 LLM 体系，留在「模型与 Provider」页，不在本面板范围。）
  *
@@ -228,18 +228,29 @@ describe('媒体生成设置面板', () => {
     expect(mediaApi.listMediaProviders).toHaveBeenCalledTimes(2)
   })
 
-  it('提交新增表单携带规范化的 params.models（trim 各行/去空行/去重）', async () => {
+  it('模型列表动态添加行：星标联动默认模型，提交携带规范化 params.models', async () => {
     mediaApi.createMediaProvider.mockResolvedValue(DEFAULT_ROW)
     renderMediaSettings()
     openImageTab()
     fireEvent.click(await screen.findByRole('button', { name: '新增 Provider' }))
 
     fireEvent.change(await screen.findByLabelText('名称'), { target: { value: '多模型图库' } })
-    fireEvent.change(await screen.findByLabelText('模型列表（可选）'), {
-      target: {
-        value: ' minimax_h3_lightx2v \n\nminimax_h3_lightx2v_no_pic\nminimax_h3_lightx2v\n'
-      }
+    // 添加两行：首行带首尾空白（trim），次行与首行重复（去重保序）
+    fireEvent.click(screen.getByRole('button', { name: '添加模型' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加模型' }))
+    fireEvent.change(screen.getAllByPlaceholderText('模型 ID')[0], {
+      target: { value: ' minimax_h3_lightx2v ' }
     })
+    fireEvent.change(screen.getAllByPlaceholderText('模型 ID')[1], {
+      target: { value: 'minimax_h3_lightx2v' }
+    })
+
+    // 星标首行 → 与上方「模型」默认字段联动（trim 后回填）
+    fireEvent.click(screen.getAllByRole('button', { name: '设为默认' })[0])
+    expect((screen.getByLabelText('模型') as HTMLInputElement).value).toBe('minimax_h3_lightx2v')
+
+    // 清空默认模型字段 → 提交时回落到列表第一项（即星标项）
+    fireEvent.change(screen.getByLabelText('模型'), { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
 
     await waitFor(() => {
@@ -248,14 +259,15 @@ describe('媒体生成设置面板', () => {
           name: '多模型图库',
           modality: 'image',
           adapter: 'openai-images',
-          // 换行分隔规范化：trim 各行、去空行、去重（保序）
-          params: { models: 'minimax_h3_lightx2v\nminimax_h3_lightx2v_no_pic' }
+          model: 'minimax_h3_lightx2v',
+          // 规范化：trim 各项、去空、去重（保序）
+          params: { models: 'minimax_h3_lightx2v' }
         })
       )
     })
   })
 
-  it('编辑表单回显 params.models；清空后提交不再携带 models key', async () => {
+  it('编辑表单回显 params.models 为两行输入；删除行后提交不再携带 models key', async () => {
     mediaApi.listMediaProviders.mockResolvedValue([
       mediaRow({ params: { size: '1024x1024', models: 'm-a\nm-b' } })
     ])
@@ -263,10 +275,14 @@ describe('媒体生成设置面板', () => {
     openImageTab()
 
     fireEvent.click(await screen.findByRole('button', { name: '编辑 主图库' }))
-    const modelsTextarea = (await screen.findByLabelText('模型列表（可选）')) as HTMLTextAreaElement
-    expect(modelsTextarea.value).toBe('m-a\nm-b')
+    const modelInputs = (await screen.findAllByPlaceholderText('模型 ID')) as HTMLInputElement[]
+    expect(modelInputs).toHaveLength(2)
+    expect(modelInputs[0].value).toBe('m-a')
+    expect(modelInputs[1].value).toBe('m-b')
 
-    fireEvent.change(modelsTextarea, { target: { value: '' } })
+    // 逐行删除（每次重新查询首行，删除后其余行会重排）→ 清空后提交不带 models key
+    fireEvent.click(screen.getAllByRole('button', { name: '移除' })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: '移除' })[0])
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
 
     await waitFor(() => {

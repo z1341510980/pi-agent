@@ -7,8 +7,10 @@ import {
   EyeOffIcon,
   ImageIcon,
   PlusIcon,
+  StarIcon,
   TrashIcon,
-  VideoIcon
+  VideoIcon,
+  XIcon
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -77,21 +79,26 @@ const MODALITY_LABELS: Record<StoredMediaModality, string> = {
 /** 「模型列表」在 params 中的 key：换行分隔的模型 id 串（公共能力，所有模态可用）。 */
 const MODELS_PARAM_KEY = 'models'
 
-/**
- * 解析模型列表文本：按行拆分 → trim 各行 → 去空行 → 去重（保序）。
- * 画布生成节点的模型字段可按次覆盖这里的默认模型。
- */
-function parseModelsList(raw: string | undefined): string[] {
-  if (!raw) return []
+/** 模型列表提交规范化：trim 各项 → 去空 → 去重（保序）。 */
+function normalizeModelsList(list: string[]): string[] {
   const seen = new Set<string>()
   const models: string[] = []
-  for (const line of raw.split(/\r?\n/)) {
-    const model = line.trim()
+  for (const item of list) {
+    const model = item.trim()
     if (!model || seen.has(model)) continue
     seen.add(model)
     models.push(model)
   }
   return models
+}
+
+/**
+ * 解析模型列表文本（编辑回显用）：按行拆分后交给 normalizeModelsList 规范化。
+ * 画布生成节点的模型字段可按次覆盖这里的默认模型。
+ */
+function parseModelsList(raw: string | undefined): string[] {
+  if (!raw) return []
+  return normalizeModelsList(raw.split(/\r?\n/))
 }
 
 /** 新增/编辑表单的受控快照；打开时由调用方构造，Dialog 挂载即初始化 */
@@ -521,8 +528,10 @@ function MediaProviderFormDialog({
   const [apiKey, setApiKey] = useState(state.apiKey)
   const [model, setModel] = useState(state.model)
   const [params, setParams] = useState<Record<string, string>>(state.params)
-  // 模型列表 textarea（params.models，换行分隔）：编辑时由 params.models 拆行回显
-  const [modelsText, setModelsText] = useState(state.params[MODELS_PARAM_KEY] ?? '')
+  // 模型列表动态添加行（params.models）：编辑时由 params.models 拆行回显
+  const [models, setModels] = useState<string[]>(() =>
+    parseModelsList(state.params[MODELS_PARAM_KEY] ?? '')
+  )
   const [showKey, setShowKey] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -548,12 +557,14 @@ function MediaProviderFormDialog({
     setSaveError(null)
     try {
       // 参数里留空的字段不提交，避免空串覆盖 adapter 默认值；
-      // models 由 textarea 单独管理：剔除旧值后按规范化结果重写（空列表 → 不带该 key）
+      // models 由动态添加行单独管理：剔除旧值后按规范化结果重写（空列表 → 不带该 key）
       const cleanedParams = Object.fromEntries(
         Object.entries(params).filter(([key, value]) => key !== MODELS_PARAM_KEY && value !== '')
       )
-      const models = parseModelsList(modelsText)
-      if (models.length > 0) cleanedParams[MODELS_PARAM_KEY] = models.join('\n')
+      const normalizedModels = normalizeModelsList(models)
+      if (normalizedModels.length > 0) cleanedParams[MODELS_PARAM_KEY] = normalizedModels.join('\n')
+      // 默认模型留空且列表非空时回落到列表第一项
+      const resolvedModel = model.trim() || normalizedModels[0] || ''
       if (state.mode === 'create') {
         await createMediaProvider({
           name: name.trim(),
@@ -561,7 +572,7 @@ function MediaProviderFormDialog({
           adapter,
           baseUrl: baseUrl.trim(),
           apiKey,
-          model: model.trim(),
+          model: resolvedModel,
           params: cleanedParams
         })
       } else if (state.row) {
@@ -569,7 +580,7 @@ function MediaProviderFormDialog({
           name: name.trim(),
           adapter,
           baseUrl: baseUrl.trim(),
-          model: model.trim(),
+          model: resolvedModel,
           params: cleanedParams,
           // 空 Key 不发送：后端保留旧值（与「留空以保留当前 Key」占位一致）
           ...(apiKey ? { apiKey } : {})
@@ -674,18 +685,59 @@ function MediaProviderFormDialog({
             />
           </div>
 
-          {/* 模型列表（公共能力，所有模态生效）：换行分隔存 params.models，
-              画布生成节点的模型字段可按次覆盖默认模型 */}
+          {/* 模型列表（公共能力，所有模态生效）：动态添加行存 params.models，
+              画布生成节点的模型字段可按次覆盖默认模型；星标行与上方默认模型字段联动 */}
           <div className="grid gap-1.5">
-            <Label htmlFor="media-form-models">模型列表（可选）</Label>
-            <textarea
-              id="media-form-models"
-              rows={3}
-              placeholder="每行一个模型，留空表示只使用上方默认模型；画布生成节点的模型字段可按次覆盖"
-              className="w-full rounded-lg border border-input bg-transparent px-2 py-1 text-sm leading-[22px] text-foreground transition-colors outline-none placeholder:text-hint focus-visible:border-primary disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40"
-              value={modelsText}
-              onChange={(e) => setModelsText(e.target.value)}
-            />
+            <Label>模型列表（可选）</Label>
+            <div className="grid gap-1.5">
+              {models.map((value, idx) => {
+                const isDefaultModel = value.trim() !== '' && model.trim() === value.trim()
+                return (
+                  <div key={idx} className="flex items-center gap-1.5">
+                    <Input
+                      placeholder="模型 ID"
+                      value={value}
+                      onChange={(e) =>
+                        setModels((prev) => prev.map((m, i) => (i === idx ? e.target.value : m)))
+                      }
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={isDefaultModel ? '默认模型' : '设为默认'}
+                      title={isDefaultModel ? '默认模型' : '设为默认'}
+                      className={isDefaultModel ? 'text-primary' : 'text-muted-foreground'}
+                      onClick={() => {
+                        if (value.trim()) setModel(value.trim())
+                      }}
+                    >
+                      <StarIcon className={`size-3.5 ${isDefaultModel ? 'fill-current' : ''}`} />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="移除"
+                      title="移除"
+                      onClick={() => setModels((prev) => prev.filter((_, i) => i !== idx))}
+                    >
+                      <XIcon className="size-3.5" />
+                    </Button>
+                  </div>
+                )
+              })}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="justify-self-start"
+                onClick={() => setModels((prev) => [...prev, ''])}
+              >
+                <PlusIcon className="size-3.5" />
+                添加模型
+              </Button>
+            </div>
           </div>
 
           {/* adapter 特有参数：按 formSchema 动态渲染，值存 params[key] */}
