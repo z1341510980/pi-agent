@@ -53,11 +53,25 @@ export function SplitDialog({
       event.stopPropagation()
       capturePointer(event)
       dragRef.current = { axis, index, pointerId: event.pointerId }
+      // 兜底：指针捕获失败时防止幽灵拖动
+      const endDragFallback = (): void => {
+        if (!dragRef.current) return
+        dragRef.current = null
+        setDragInfo(null)
+      }
+      window.addEventListener('pointerup', endDragFallback, { once: true })
+      window.addEventListener('pointercancel', endDragFallback, { once: true })
     }
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLElement>): void => {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
+    const cuts = drag.axis === 'column' ? columnCuts : rowCuts
+    if (drag.index >= cuts.length) {
+      dragRef.current = null
+      setDragInfo(null)
+      return
+    }
     event.preventDefault()
     const pointer = percentFrom(event)
     const position = drag.axis === 'column' ? pointer.x : pointer.y
@@ -173,8 +187,20 @@ export function SplitDialog({
               className="pointer-events-none absolute z-10 whitespace-nowrap rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-white"
               style={
                 dragInfo.axis === 'column'
-                  ? { left: `${dragInfo.position}%`, top: 8 }
-                  : { top: `${dragInfo.position}%`, left: 8 }
+                  ? dragInfo.position > 70
+                    ? {
+                        left: `${dragInfo.position}%`,
+                        top: 8,
+                        transform: 'translateX(-100%)'
+                      }
+                    : { left: `${dragInfo.position}%`, top: 8 }
+                  : dragInfo.position > 70
+                    ? {
+                        top: `${dragInfo.position}%`,
+                        left: 8,
+                        transform: 'translateY(-100%)'
+                      }
+                    : { top: `${dragInfo.position}%`, left: 8 }
               }
             >
               {pieceLabel(dragInfo)}

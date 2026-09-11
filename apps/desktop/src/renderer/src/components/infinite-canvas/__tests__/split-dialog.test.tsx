@@ -155,4 +155,36 @@ describe('拆分对话框', () => {
       columnCuts: [50]
     })
   })
+
+  it('拖动列线后增加列数，保留已调位置并按最大空隙插入', () => {
+    const { onConfirm } = renderDialog()
+    drag(document.querySelector('[data-cut="column"][data-cut-index="0"]')!, [
+      { x: 240, y: 180 },
+      { x: 120, y: 180 }
+    ])
+    fireEvent.change(screen.getByLabelText('列数'), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建 6 个图片节点' }))
+    expect(onConfirm).toHaveBeenCalledWith({
+      rows: 2,
+      columns: 3,
+      rowCuts: [50],
+      columnCuts: [25, 62.5]
+    })
+  })
+
+  it('pointerId 不匹配的移动不会拖动切割线', () => {
+    const { onConfirm } = renderDialog()
+    const line = document.querySelector('[data-cut="column"][data-cut-index="0"]')!
+    fireEvent.pointerDown(line, { pointerId: 1, clientX: 240, clientY: 180 })
+    fireEvent.pointerMove(line, { pointerId: 2, clientX: 120, clientY: 180 })
+    expect(document.querySelector('[data-cut-label]')).toBeNull()
+    fireEvent.pointerUp(line, { pointerId: 2, clientX: 120, clientY: 180 })
+    fireEvent.click(screen.getByRole('button', { name: '创建 4 个图片节点' }))
+    expect(onConfirm).toHaveBeenCalledWith({
+      rows: 2,
+      columns: 2,
+      rowCuts: [50],
+      columnCuts: [50]
+    })
+  })
 })
