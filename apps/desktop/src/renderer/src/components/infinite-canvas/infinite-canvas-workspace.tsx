@@ -118,10 +118,7 @@ import {
   getDesignBoardThumbnail,
   invalidateDesignBoardThumbnail
 } from './design-board/design-board-thumbnail'
-import {
-  buildCanvasGenerationContext,
-  withHydratedImageReferences
-} from './generation-context'
+import { buildCanvasGenerationContext, withHydratedImageReferences } from './generation-context'
 import {
   buildBatchDownloadArchive,
   collectBatchDownloadItemsWithEmptyNodes,
@@ -534,8 +531,7 @@ export function InfiniteCanvasWorkspace({
         !shouldPersistGraph({
           localNodeCount: nodesRef.current.length,
           savedNodeCount: savedNodeCountRef.current,
-          allowEmpty:
-            historyRef.current.past.length > 0 || historyRef.current.future.length > 0
+          allowEmpty: historyRef.current.past.length > 0 || historyRef.current.future.length > 0
         })
       ) {
         setSaveError('画布内容未加载完整，已跳过本次保存以避免覆盖已保存的节点。')
@@ -735,9 +731,7 @@ export function InfiniteCanvasWorkspace({
       string,
       Array<{ nodeId: string; title: string; src: string; isSelf: boolean }>
     >()
-    const configLikeNodes = nodes.filter(
-      (node) => node.type === 'config' || node.type === 'image'
-    )
+    const configLikeNodes = nodes.filter((node) => node.type === 'config' || node.type === 'image')
     for (const node of configLikeNodes) {
       const built = buildCanvasGenerationContext(
         node.id,
@@ -1202,7 +1196,10 @@ export function InfiniteCanvasWorkspace({
     if (typeof content !== 'string' || !content) return
     void resolveDownloadBlob(content)
       .then((blob) =>
-        downloadUrl(withImageExtension(node.title || `canvas-${node.type}`, imageFileExtension(blob.type)), blob)
+        downloadUrl(
+          withImageExtension(node.title || `canvas-${node.type}`, imageFileExtension(blob.type)),
+          blob
+        )
       )
       .catch((reason) =>
         setSaveError(reason instanceof Error ? reason.message : '下载失败，请稍后重试')
@@ -1315,7 +1312,10 @@ export function InfiniteCanvasWorkspace({
 
   // 对齐参考 maskEditImageNode：先挂载 loading 子节点，编辑成功后回填内容。
   const maskEditImage = useCallback(
-    async (source: LocalNode, payload: { prompt: string; maskDataUrl: string; size?: string }): Promise<void> => {
+    async (
+      source: LocalNode,
+      payload: { prompt: string; maskDataUrl: string; size?: string }
+    ): Promise<void> => {
       const content = source.metadata?.content
       if (!project || typeof content !== 'string' || !content) return
       const child = createNodeData(
@@ -1347,7 +1347,9 @@ export function InfiniteCanvasWorkspace({
           mask: payload.maskDataUrl,
           model: typeof source.metadata?.model === 'string' ? source.metadata.model : undefined,
           // 原图真实尺寸优先：蒙版重绘结果不应比原图降档
-          size: payload.size ?? (typeof source.metadata?.size === 'string' ? source.metadata.size : undefined)
+          size:
+            payload.size ??
+            (typeof source.metadata?.size === 'string' ? source.metadata.size : undefined)
         })
         const image = proxyExternalImageUrl(result.images[0])
         if (!image) throw new Error('没有返回编辑结果')
@@ -1689,6 +1691,52 @@ export function InfiniteCanvasWorkspace({
     [project, pushHistory]
   )
 
+  // 面板「上传参考图」：复用 insertFile 的压缩/入库管线，新图片节点连线到源节点，天然进入 orderedReferences。
+  const addReferenceImages = useCallback(
+    async (nodeId: string, files: FileList): Promise<void> => {
+      const source = nodesRef.current.find((item) => item.id === nodeId)
+      if (!source) return
+      const images = [...files].filter((file) => file.type.startsWith('image/'))
+      if (!images.length) return
+      for (const [index, file] of images.entries()) {
+        const compressed = await compressImageDataUrl(await fileAsDataUrl(file))
+        const uploaded = project ? await uploadCanvasAsset(compressed, project.id) : null
+        const dataUrl = uploaded ?? compressed
+        const dimensions = await readMediaSize(dataUrl, 'image')
+        const ratio = Math.min(1, 640 / dimensions.width, 640 / dimensions.height)
+        pushHistory()
+        const node = createNodeData(
+          'image',
+          {
+            x: source.position.x - source.width / 2 - 40 - index * 40,
+            y: source.position.y - 40
+          },
+          {
+            content: dataUrl,
+            status: 'success',
+            naturalWidth: dimensions.width,
+            naturalHeight: dimensions.height,
+            mimeType: file.type,
+            bytes: file.size
+          }
+        )
+        node.title = '参考图'
+        node.width = Math.max(220, dimensions.width * ratio)
+        node.height = Math.max(160, dimensions.height * ratio)
+        setNodes((current) => [...current, node])
+        setConnections((current) => [
+          ...current,
+          {
+            id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            fromNodeId: node.id,
+            toNodeId: nodeId
+          }
+        ])
+      }
+    },
+    [project, pushHistory]
+  )
+
   const replaceMedia = useCallback(
     async (nodeId: string, file?: File): Promise<void> => {
       if (!file) return
@@ -1942,7 +1990,9 @@ export function InfiniteCanvasWorkspace({
     })
     await saveCanvasGraphBody(
       created.id,
-      JSON.stringify(graphPayload(cloneNodes(nodes), cloneConnections(connections), viewport, settings))
+      JSON.stringify(
+        graphPayload(cloneNodes(nodes), cloneConnections(connections), viewport, settings)
+      )
     )
     setProjects((current) => [created, ...current])
     await loadProject(created.id)
@@ -2604,6 +2654,7 @@ export function InfiniteCanvasWorkspace({
                   upstreamSummary={upstreamSummaries.get(panelNode.id)}
                   mentionReferences={upstreamMentions.get(panelNode.id)}
                   orderedReferences={orderedReferencesByNode.get(panelNode.id) ?? []}
+                  onAddReferenceImages={(id, files) => void addReferenceImages(id, files)}
                   onOpenPromptLibrary={() => setAssetLibraryState({ open: true, tab: 'prompts' })}
                 />
               )}

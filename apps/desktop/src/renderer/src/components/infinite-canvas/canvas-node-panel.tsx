@@ -2,10 +2,16 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import {
   ArrowUp,
   BookOpen,
+  BookmarkPlus,
+  Check,
   FileText,
   ImageIcon,
   Loader2,
+  Lock,
+  LockOpen,
+  Maximize2,
   Music2,
+  Plus,
   Square,
   Video,
   X
@@ -14,6 +20,24 @@ import {
 import type { CanvasNodeData } from '@/api/infinite-canvas-client'
 import { proxyExternalImageUrl } from '@/api/infinite-canvas-client'
 import { listMediaProviders, type MediaProviderRow } from '@/api/media-provider-client'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Segmented } from '@/components/ui/segmented'
+import { Switch } from '@/components/ui/switch'
+import { saveCanvasAsset } from './asset-library'
+import {
+  RATIO_PRESETS,
+  formatSizeValue,
+  parseSizeValue,
+  ratioLabelForSize,
+  scaleForTier,
+  snapshotLabel,
+  syncLinkedSize,
+  type QualityTier,
+  type ResolutionTier
+} from './canvas-node-panel/image-size-math'
 import type { CanvasTheme } from './canvas-theme'
 
 export interface UpstreamInputSummary {
@@ -55,114 +79,28 @@ export interface CanvasNodePanelProps {
   mentionReferences?: MentionReference[]
   /** 参考图顺序预览：与实际发给生成服务的顺序一致（第 1 张为编辑原图）。 */
   orderedReferences?: OrderedReference[]
+  /** 上传参考图：选择文件后由工作区压缩入库并建图片节点连线到当前节点。 */
+  onAddReferenceImages?: (nodeId: string, files: FileList) => void
   onOpenPromptLibrary?: () => void
 }
 
-const IMAGE_SIZES = ['auto', '1024x1024', '1152x896', '896x1152', '1536x1024', '1024x1536', '1536x864', '864x1536']
+const QUALITY_VALUES: QualityTier[] = ['auto', 'high', 'medium', 'low']
 
-/** 尺寸选项的展示元数据：比例标签 + 缩略框的渲染像素（保持真实长宽比）。 */
-const IMAGE_SIZE_META: Record<string, { ratio: string; box: { w: number; h: number } }> = {
-  '1024x1024': { ratio: '1:1', box: { w: 42, h: 42 } },
-  '1152x896': { ratio: '4:3', box: { w: 48, h: 37 } },
-  '896x1152': { ratio: '3:4', box: { w: 37, h: 48 } },
-  '1536x1024': { ratio: '3:2', box: { w: 50, h: 34 } },
-  '1024x1536': { ratio: '2:3', box: { w: 34, h: 50 } },
-  '1536x864': { ratio: '16:9', box: { w: 52, h: 30 } },
-  '864x1536': { ratio: '9:16', box: { w: 30, h: 52 } }
+function qualityValue(value: unknown): QualityTier {
+  return QUALITY_VALUES.includes(value as QualityTier) ? (value as QualityTier) : 'auto'
 }
 
-/** 比例选择器：按真实长宽比渲染缩略框，替代纯文本下拉。 */
-function SizePicker({
-  theme,
-  value,
-  onChange
-}: {
-  theme: CanvasTheme
-  value: string
-  onChange: (size: string) => void
-}): ReactElement {
-  const [open, setOpen] = useState(false)
-  const containerRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!open) return
-    const close = (event: PointerEvent): void => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node))
-        setOpen(false)
+/** 从 metadata.size 反推分辨率档：命中 1k/2k/4k 基准表返回档位，auto/自定义尺寸 → 'auto'。 */
+function resolutionTierForSize(size: unknown): ResolutionTier {
+  const parsed = parseSizeValue(size)
+  if (!parsed) return 'auto'
+  for (const tier of ['1k', '2k', '4k'] as const) {
+    for (const preset of RATIO_PRESETS) {
+      const scaled = scaleForTier(preset, tier)
+      if (scaled.width === parsed.width && scaled.height === parsed.height) return tier
     }
-    document.addEventListener('pointerdown', close, true)
-    return () => document.removeEventListener('pointerdown', close, true)
-  }, [open])
-
-  // 触发按钮保持一行放得下：可见文本只显示比例（或"自动"），完整值放 aria-label
-  const meta = IMAGE_SIZE_META[value]
-  const shortLabel = value === 'auto' ? '自动' : (meta?.ratio ?? value)
-  return (
-    <div ref={containerRef} className="relative">
-      <button
-        type="button"
-        aria-label={`尺寸 ${value === 'auto' ? '自动' : `${meta?.ratio ?? ''} ${value}`.trim()}`}
-        className="inline-flex h-8 items-center gap-1 rounded-full border px-2.5 text-xs"
-        style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="opacity-70">尺寸</span>
-        <span className="font-medium">{shortLabel}</span>
-      </button>
-      {open && (
-        <div
-          className="absolute bottom-full left-0 z-[90] mb-1.5 grid w-[300px] grid-cols-4 gap-2 rounded-xl border p-2.5 shadow-2xl"
-          style={{ background: theme.node.panel, borderColor: theme.node.stroke }}
-          data-canvas-no-zoom
-        >
-          <button
-            type="button"
-            className="col-span-4 flex items-center justify-center rounded-lg px-2 py-1.5 text-xs transition hover:bg-black/5 dark:hover:bg-white/10"
-            style={{ color: theme.node.text }}
-            onClick={() => {
-              onChange('auto')
-              setOpen(false)
-            }}
-          >
-            自动尺寸（跟随画布全局设置）
-          </button>
-          {IMAGE_SIZES.filter((size) => size !== 'auto').map((size) => {
-            const sizeMeta = IMAGE_SIZE_META[size]
-            const selected = value === size
-            return (
-              <button
-                key={size}
-                type="button"
-                className="flex flex-col items-center rounded-lg px-1 py-2 transition"
-                style={{
-                  background: selected ? theme.toolbar.activeBg : 'transparent',
-                  color: selected ? theme.toolbar.activeText : theme.node.text
-                }}
-                onClick={() => {
-                  onChange(size)
-                  setOpen(false)
-                }}
-              >
-                {/* 统一高度的框容器：不同比例的缩略框垂直居中，下方文字保持齐平 */}
-                <span className="flex h-[52px] items-center justify-center">
-                  <span
-                    className="block rounded border"
-                    style={{
-                      width: sizeMeta.box.w,
-                      height: sizeMeta.box.h,
-                      borderColor: selected ? 'currentColor' : theme.toolbar.border
-                    }}
-                    aria-hidden
-                  />
-                </span>
-                <span className="mt-1 text-[11px] font-medium leading-4">{sizeMeta.ratio}</span>
-                <span className="text-[10px] leading-4 opacity-60">{size}</span>
-              </button>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
+  }
+  return 'auto'
 }
 // 视频分辨率预设：横竖成对，覆盖 768P / 720P / 1080P 档；'auto' 跟随 Provider 默认。
 // 768P 是部分模型（如 minimax 视频）的输出上限档。
@@ -252,33 +190,6 @@ function ConfigSettingsRow({
 }): ReactElement {
   const metadata = node.metadata ?? {}
   const selectStyle = { borderColor: theme.toolbar.border, color: theme.node.text }
-  if (mode === 'image') {
-    const size = String(metadata.size || 'auto')
-    const count = Math.min(10, Math.max(1, Number(metadata.count) || 1))
-    return (
-      <>
-        <SizePicker
-          theme={theme}
-          value={size}
-          onChange={(next) => onConfigChange({ size: next })}
-        />
-        <label className="inline-flex items-center gap-1 text-xs opacity-70">
-          数量
-          <input
-            type="number"
-            min={1}
-            max={10}
-            value={count}
-            onChange={(event) =>
-              onConfigChange({ count: Math.min(10, Math.max(1, Number(event.target.value) || 1)) })
-            }
-            className="h-8 w-12 rounded-full border bg-transparent px-1.5 text-center text-xs outline-none"
-            style={selectStyle}
-          />
-        </label>
-      </>
-    )
-  }
   if (mode === 'video') {
     const size = String(metadata.size || 'auto')
     const seconds = Number(metadata.seconds) || 5
@@ -363,6 +274,412 @@ function ConfigSettingsRow({
     )
   }
   return <span className="text-xs opacity-50">文本模式使用画布 Agent 默认配置</span>
+}
+
+/** 图像设置弹窗内容：质量/分辨率/宽高比/尺寸/透明背景/张数，全部经 onConfigChange 写 metadata。 */
+function ImageSettingsPopover({
+  node,
+  theme,
+  onConfigChange
+}: {
+  node: CanvasNodeData
+  theme: CanvasTheme
+  onConfigChange: (patch: Record<string, unknown>) => void
+}): ReactElement {
+  const metadata = node.metadata ?? {}
+  const quality = qualityValue(metadata.quality)
+  const parsed = parseSizeValue(metadata.size)
+  const tier = resolutionTierForSize(metadata.size)
+  const base = parsed ?? { width: 1024, height: 1024 }
+  const count = Math.min(10, Math.max(1, Math.floor(Number(metadata.count)) || 1))
+  const transparent = metadata.background === 'transparent'
+  const selectedRatio = parsed ? ratioLabelForSize(parsed.width, parsed.height) : null
+  // 联动锁与 16 倍数对齐是纯 UI 状态；其余取值以父级 metadata 回显为准。
+  const [sizeLocked, setSizeLocked] = useState(true)
+  const [alignTo16, setAlignTo16] = useState(true)
+
+  const setTier = (value: ResolutionTier): void => {
+    if (value === 'auto') {
+      onConfigChange({ size: 'auto' })
+      return
+    }
+    const ratioBase = parsed ? { w: parsed.width, h: parsed.height } : { w: 1024, h: 1024 }
+    const scaled = scaleForTier(ratioBase, value)
+    onConfigChange({ size: formatSizeValue(scaled.width, scaled.height) })
+  }
+
+  const setRatio = (presetId: string): void => {
+    if (presetId === 'auto') {
+      onConfigChange({ size: 'auto' })
+      return
+    }
+    const preset = RATIO_PRESETS.find((item) => item.id === presetId)
+    if (!preset) return
+    // size 为自动时按 1k 基准回填；否则沿用当前分辨率档缩放。
+    const scaled = scaleForTier(preset, tier === 'auto' ? '1k' : tier)
+    onConfigChange({ size: formatSizeValue(scaled.width, scaled.height) })
+  }
+
+  const setSize = (edited: 'width' | 'height', value: number): void => {
+    const next = syncLinkedSize(base, edited, value, sizeLocked, alignTo16)
+    onConfigChange({ size: formatSizeValue(next.width, next.height) })
+  }
+
+  const inputStyle = { borderColor: theme.toolbar.border, color: theme.node.text }
+  return (
+    <div className="flex flex-col gap-3 text-xs">
+      <section className="flex flex-col gap-1.5">
+        <p className="text-[11px] font-medium opacity-60">质量</p>
+        <Segmented
+          ariaLabel="生成质量"
+          size="sm"
+          className="self-start"
+          value={quality}
+          onChange={(value) => onConfigChange({ quality: value })}
+          options={[
+            { value: 'auto', label: '自动' },
+            { value: 'high', label: '高' },
+            { value: 'medium', label: '中' },
+            { value: 'low', label: '低' }
+          ]}
+        />
+      </section>
+      <section className="flex flex-col gap-1.5">
+        <p className="text-[11px] font-medium opacity-60">分辨率</p>
+        <Segmented
+          ariaLabel="分辨率档位"
+          size="sm"
+          className="self-start"
+          value={tier}
+          onChange={setTier}
+          options={[
+            { value: 'auto', label: '自动' },
+            { value: '1k', label: '1k' },
+            { value: '2k', label: '2k' },
+            { value: '4k', label: '4k' }
+          ]}
+        />
+      </section>
+      <section className="flex flex-col gap-1.5">
+        <p className="text-[11px] font-medium opacity-60">宽高比</p>
+        <div className="grid grid-cols-5 gap-1.5">
+          <button
+            type="button"
+            className="flex flex-col items-center rounded-lg px-1 py-1.5 transition"
+            style={{
+              background: !parsed ? theme.toolbar.activeBg : 'transparent',
+              color: !parsed ? theme.toolbar.activeText : theme.node.text
+            }}
+            onClick={() => setRatio('auto')}
+          >
+            <span className="flex h-7 items-center justify-center">
+              <span
+                className="block size-3.5 rounded-sm border border-dashed"
+                style={{ borderColor: 'currentColor' }}
+                aria-hidden
+              />
+            </span>
+            <span className="text-[10px] font-medium leading-3.5">自动</span>
+          </button>
+          {RATIO_PRESETS.map((preset) => {
+            const selected = selectedRatio === preset.label
+            const aspect = preset.w / preset.h
+            const boxWidth = aspect >= 1 ? 22 : 22 * aspect
+            const boxHeight = aspect >= 1 ? 22 / aspect : 22
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                className="flex flex-col items-center rounded-lg px-1 py-1.5 transition"
+                style={{
+                  background: selected ? theme.toolbar.activeBg : 'transparent',
+                  color: selected ? theme.toolbar.activeText : theme.node.text
+                }}
+                onClick={() => setRatio(preset.id)}
+              >
+                <span className="flex h-7 items-center justify-center">
+                  <span
+                    className="block rounded-sm border"
+                    style={{
+                      width: boxWidth,
+                      height: boxHeight,
+                      borderColor: selected ? 'currentColor' : theme.toolbar.border
+                    }}
+                    aria-hidden
+                  />
+                </span>
+                <span className="text-[10px] font-medium leading-3.5">{preset.label}</span>
+              </button>
+            )
+          })}
+        </div>
+      </section>
+      <section className="flex flex-col gap-1.5">
+        <p className="text-[11px] font-medium opacity-60">尺寸</p>
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="number"
+            aria-label="宽度"
+            min={16}
+            step={16}
+            value={base.width}
+            onChange={(event) => setSize('width', Number(event.target.value))}
+            className="h-7 min-w-0 flex-1 text-xs"
+            style={inputStyle}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={sizeLocked ? '解除宽高联动' : '锁定宽高联动'}
+            title={sizeLocked ? '解除联动' : '联动宽高'}
+            style={{ color: theme.node.text }}
+            onClick={() => setSizeLocked((current) => !current)}
+          >
+            {sizeLocked ? <Lock className="size-3.5" /> : <LockOpen className="size-3.5" />}
+          </Button>
+          <Input
+            type="number"
+            aria-label="高度"
+            min={16}
+            step={16}
+            value={base.height}
+            onChange={(event) => setSize('height', Number(event.target.value))}
+            className="h-7 min-w-0 flex-1 text-xs"
+            style={inputStyle}
+          />
+        </div>
+        <label className="flex items-center gap-1.5 text-[11px] opacity-70">
+          <Switch
+            checked={alignTo16}
+            aria-label="16 倍数对齐"
+            onCheckedChange={(checked) => setAlignTo16(checked)}
+          />
+          16 倍数对齐
+        </label>
+      </section>
+      <section className="flex items-center justify-between gap-2">
+        <div className="flex flex-col">
+          <p className="text-[11px] font-medium opacity-60">透明背景</p>
+          <p className="text-[10px] opacity-45">仅部分模型支持</p>
+        </div>
+        <Switch
+          checked={transparent}
+          aria-label="透明背景"
+          onCheckedChange={(checked) =>
+            onConfigChange({ background: checked ? 'transparent' : undefined })
+          }
+        />
+      </section>
+      <section className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-medium opacity-60">生成张数</p>
+        <Input
+          type="number"
+          aria-label="生成张数"
+          min={1}
+          max={10}
+          value={count}
+          onChange={(event) =>
+            onConfigChange({
+              count: Math.min(10, Math.max(1, Math.floor(Number(event.target.value)) || 1))
+            })
+          }
+          className="h-7 w-16 text-center text-xs"
+          style={inputStyle}
+        />
+      </section>
+    </div>
+  )
+}
+
+/**
+ * 图像模式底部快捷栏：模型 + 参数快照 pill（图像设置 Popover）+ 展开 + 存模板 + 圆形发送按钮。
+ * video/audio/text 模式不使用此组件，保持原 ConfigSettingsRow 布局。
+ */
+function ImageQuickBar({
+  node,
+  theme,
+  mode,
+  prompt,
+  isRunning,
+  canGenerate,
+  className,
+  leading,
+  onPromptChange,
+  onGenerate,
+  onStop,
+  onConfigChange
+}: {
+  node: CanvasNodeData
+  theme: CanvasTheme
+  mode: string
+  prompt: string
+  isRunning: boolean
+  canGenerate: boolean
+  className?: string
+  leading?: ReactElement
+  onPromptChange: (value: string) => void
+  onGenerate: () => void
+  onStop: () => void
+  onConfigChange: (patch: Record<string, unknown>) => void
+}): ReactElement {
+  const [expanded, setExpanded] = useState(false)
+  const [savedTemplate, setSavedTemplate] = useState(false)
+  const savedTimerRef = useRef<number | null>(null)
+  useEffect(() => {
+    return () => {
+      if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current)
+    }
+  }, [])
+
+  const metadata = node.metadata ?? {}
+  const count = Math.min(10, Math.max(1, Math.floor(Number(metadata.count)) || 1))
+  const quality = qualityValue(metadata.quality)
+  const trimmed = prompt.trim()
+
+  const handleSaveTemplate = (): void => {
+    if (!trimmed) return
+    saveCanvasAsset({ kind: 'text', title: trimmed.slice(0, 20) || '提示词模板', content: trimmed })
+    setSavedTemplate(true)
+    if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current)
+    savedTimerRef.current = window.setTimeout(() => setSavedTemplate(false), 800)
+  }
+
+  const handleGenerate = (): void => {
+    if (isRunning || !canGenerate) return
+    onGenerate()
+    setExpanded(false)
+  }
+
+  return (
+    <div className={`flex min-w-0 flex-1 flex-wrap items-center gap-2 ${className ?? ''}`}>
+      {leading}
+      <ModelPicker
+        theme={theme}
+        mode={mode}
+        providerId={typeof metadata.providerId === 'string' ? metadata.providerId : undefined}
+        model={typeof metadata.model === 'string' ? metadata.model : undefined}
+        onChange={onConfigChange}
+      />
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            title="图像设置"
+            className="border px-2.5 text-xs"
+            style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
+          >
+            {snapshotLabel(metadata.size, count, quality)}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          side="top"
+          align="end"
+          className="w-[340px]"
+          style={{
+            background: theme.node.panel,
+            borderColor: theme.node.stroke,
+            color: theme.node.text
+          }}
+          data-canvas-no-zoom
+          onWheel={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <ImageSettingsPopover node={node} theme={theme} onConfigChange={onConfigChange} />
+        </PopoverContent>
+      </Popover>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        title="展开编辑提示词"
+        style={{ color: theme.node.text }}
+        onClick={() => setExpanded(true)}
+      >
+        <Maximize2 className="size-3.5" />
+      </Button>
+      <Dialog open={expanded} onOpenChange={setExpanded}>
+        <DialogContent
+          className="w-[720px] sm:max-w-[720px]"
+          style={{
+            background: theme.node.panel,
+            borderColor: theme.node.stroke,
+            color: theme.node.text
+          }}
+          data-canvas-no-zoom
+          onWheel={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <DialogTitle className="text-sm font-semibold">编辑提示词</DialogTitle>
+          <textarea
+            aria-label="提示词全文"
+            value={prompt}
+            onChange={(event) => onPromptChange(event.target.value)}
+            onKeyDown={(event) => {
+              event.stopPropagation()
+              if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                event.preventDefault()
+                handleGenerate()
+              }
+            }}
+            className="thin-scrollbar min-h-64 w-full resize-y rounded-xl border bg-transparent p-3 text-sm leading-6 outline-none"
+            style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
+            placeholder="描述要生成的图片内容"
+          />
+          <DialogFooter className="items-center gap-3">
+            <span className="text-[10px] opacity-45">
+              Ctrl/Cmd + Enter 生成；编辑实时生效，关闭不丢失。
+            </span>
+            <Button
+              type="button"
+              className="h-8 rounded-full px-4 text-xs"
+              disabled={!canGenerate || isRunning}
+              style={{
+                background: theme.toolbar.activeBg,
+                color: theme.toolbar.activeText
+              }}
+              onClick={handleGenerate}
+            >
+              生成
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        title="存为提示词模板"
+        disabled={!trimmed}
+        style={{ color: theme.node.text }}
+        onClick={handleSaveTemplate}
+      >
+        {savedTemplate ? <Check className="size-3.5" /> : <BookmarkPlus className="size-3.5" />}
+      </Button>
+      <Button
+        type="button"
+        disabled={!isRunning && !canGenerate}
+        className={isRunning ? 'h-9 gap-1 rounded-full px-3 text-xs' : 'size-9 rounded-full p-0'}
+        style={{
+          background: isRunning ? '#b91c1c' : theme.toolbar.activeBg,
+          color: isRunning ? '#fff' : theme.toolbar.activeText
+        }}
+        title={isRunning ? '停止' : '生成'}
+        onClick={() => (isRunning ? onStop() : handleGenerate())}
+      >
+        {isRunning ? (
+          <>
+            <Loader2 className="size-3.5 animate-spin" />
+            <Square className="size-3 fill-current" />
+            停止
+          </>
+        ) : (
+          <ArrowUp className="size-4" />
+        )}
+      </Button>
+    </div>
+  )
 }
 
 /** 节点级模型选项：一个已启用 Provider 下的一段候选模型。 */
@@ -469,6 +786,7 @@ export function CanvasNodePanel({
   upstreamSummary,
   mentionReferences,
   orderedReferences = [],
+  onAddReferenceImages,
   onOpenPromptLibrary
 }: CanvasNodePanelProps): ReactElement {
   const isConfig = node.type === 'config'
@@ -575,6 +893,33 @@ export function CanvasNodePanel({
     ? '连线传入上游内容，选择模式与参数后生成'
     : '可使用已连接的上游节点作为上下文'
 
+  const modeSelect = (
+    <select
+      value={mode}
+      onChange={(event) => updateMode(event.target.value)}
+      className="h-8 min-w-28 rounded-full border bg-transparent px-3 text-xs outline-none"
+      style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
+    >
+      <option value="text">文本 Agent</option>
+      <option value="image">图片工作流</option>
+      <option value="video">视频工作流</option>
+      <option value="audio">音频工作流</option>
+    </select>
+  )
+
+  const imageQuickBarProps = {
+    node,
+    theme,
+    mode,
+    prompt,
+    isRunning,
+    canGenerate,
+    onPromptChange: updatePrompt,
+    onGenerate: () => onGenerate(node.id, prompt.trim(), mode),
+    onStop: () => onStop(node.id),
+    onConfigChange: changeConfig
+  }
+
   return (
     <div
       data-canvas-no-zoom
@@ -639,30 +984,54 @@ export function CanvasNodePanel({
       {mode === 'image' && (
         <div className="mt-2">
           <p className="mb-1 text-[10px] font-medium opacity-55">参考图（按发送顺序）</p>
-          {orderedReferences.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {orderedReferences.map((reference, index) => (
-                <figure key={reference.nodeId} className="w-16">
-                  <img
-                    src={proxyExternalImageUrl(reference.src)}
-                    alt={reference.title}
-                    className="h-12 w-16 rounded-lg border object-cover"
-                    style={{ borderColor: reference.isSelf ? theme.toolbar.activeBg : theme.toolbar.border }}
-                  />
-                  <figcaption className="mt-0.5 truncate text-[10px] opacity-60">
-                    {reference.isSelf ? '第1张 · 原图' : `参考图${index + 1}`}
-                  </figcaption>
-                  <p className="truncate text-[10px] opacity-45" title={reference.title}>
-                    {reference.title}
-                  </p>
-                </figure>
-              ))}
-            </div>
-          ) : node.type === 'image' ? (
-            <p className="text-[10px] opacity-50">将以本节点图片作为第 1 张原图发送。</p>
-          ) : (
-            <p className="text-[10px] opacity-50">未连接图片参考，将按纯文字生成。</p>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {orderedReferences.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {orderedReferences.map((reference, index) => (
+                  <figure key={reference.nodeId} className="w-16">
+                    <img
+                      src={proxyExternalImageUrl(reference.src)}
+                      alt={reference.title}
+                      className="h-12 w-16 rounded-lg border object-cover"
+                      style={{
+                        borderColor: reference.isSelf
+                          ? theme.toolbar.activeBg
+                          : theme.toolbar.border
+                      }}
+                    />
+                    <figcaption className="mt-0.5 truncate text-[10px] opacity-60">
+                      {reference.isSelf ? '第1张 · 原图' : `参考图${index + 1}`}
+                    </figcaption>
+                    <p className="truncate text-[10px] opacity-45" title={reference.title}>
+                      {reference.title}
+                    </p>
+                  </figure>
+                ))}
+              </div>
+            ) : node.type === 'image' ? (
+              <p className="text-[10px] opacity-50">将以本节点图片作为第 1 张原图发送。</p>
+            ) : (
+              <p className="text-[10px] opacity-50">未连接图片参考，将按纯文字生成。</p>
+            )}
+            <label
+              className="inline-flex size-12 cursor-pointer items-center justify-center rounded-full border border-dashed opacity-70 transition hover:opacity-100"
+              style={{ borderColor: theme.toolbar.border }}
+              title="上传参考图"
+            >
+              <Plus className="size-4" />
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  const files = event.target.files
+                  if (files && files.length > 0) onAddReferenceImages?.(node.id, files)
+                  event.target.value = ''
+                }}
+              />
+            </label>
+          </div>
         </div>
       )}
       <div className="relative">
@@ -696,7 +1065,7 @@ export function CanvasNodePanel({
           placeholder={
             isConfig
               ? mode === 'image'
-                ? '描述要生成的图片…（输入 @ 引用上游，也可只依赖上游输入）'
+                ? '描述要生成的图片内容'
                 : '输入提示词或任务…（输入 @ 可引用上游节点）'
               : node.type === 'text' && node.metadata?.content
                 ? '描述你想如何改写这段文本…'
@@ -750,7 +1119,7 @@ export function CanvasNodePanel({
           </button>
         </div>
       )}
-      {!isConfig && mode !== 'text' && onConfigChange && (
+      {!isConfig && mode !== 'text' && mode !== 'image' && onConfigChange && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <ConfigSettingsRow
             node={node}
@@ -761,54 +1130,57 @@ export function CanvasNodePanel({
           <ModelPicker {...modelPickerProps} onChange={changeConfig} />
         </div>
       )}
-      <div className="mt-2 flex items-center justify-between gap-2">
-        {isConfig ? (
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-            <ConfigSettingsRow
-              node={node}
-              theme={theme}
-              mode={mode}
-              onConfigChange={changeConfig}
-            />
-            {mode !== 'text' && <ModelPicker {...modelPickerProps} onChange={changeConfig} />}
-          </div>
-        ) : (
-          <select
-            value={mode}
-            onChange={(event) => updateMode(event.target.value)}
-            className="h-8 min-w-28 rounded-full border bg-transparent px-3 text-xs outline-none"
-            style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
-          >
-            <option value="text">文本 Agent</option>
-            <option value="image">图片工作流</option>
-            <option value="video">视频工作流</option>
-            <option value="audio">音频工作流</option>
-          </select>
-        )}
-        <button
-          type="button"
-          disabled={!isRunning && !canGenerate}
-          className="inline-flex h-9 min-w-20 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-medium transition disabled:pointer-events-none disabled:opacity-35"
-          style={{
-            background: isRunning ? '#b91c1c' : theme.toolbar.activeBg,
-            color: isRunning ? '#fff' : theme.toolbar.activeText
-          }}
-          onClick={() => (isRunning ? onStop(node.id) : onGenerate(node.id, prompt.trim(), mode))}
-        >
-          {isRunning ? (
-            <>
-              <Loader2 className="size-3.5 animate-spin" />
-              <Square className="size-3 fill-current" />
-              停止
-            </>
+      {isConfig && mode === 'image' ? (
+        <ImageQuickBar {...imageQuickBarProps} className="mt-2" />
+      ) : (
+        <div className="mt-2 flex items-center justify-between gap-2">
+          {isConfig ? (
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <ConfigSettingsRow
+                node={node}
+                theme={theme}
+                mode={mode}
+                onConfigChange={changeConfig}
+              />
+              {mode !== 'text' && <ModelPicker {...modelPickerProps} onChange={changeConfig} />}
+            </div>
+          ) : mode === 'image' && onConfigChange ? (
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              {modeSelect}
+              <ImageQuickBar {...imageQuickBarProps} />
+            </div>
           ) : (
-            <>
-              <ArrowUp className="size-4" />
-              生成
-            </>
+            modeSelect
           )}
-        </button>
-      </div>
+          {!(mode === 'image' && (isConfig || Boolean(onConfigChange))) && (
+            <button
+              type="button"
+              disabled={!isRunning && !canGenerate}
+              className="inline-flex h-9 min-w-20 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-medium transition disabled:pointer-events-none disabled:opacity-35"
+              style={{
+                background: isRunning ? '#b91c1c' : theme.toolbar.activeBg,
+                color: isRunning ? '#fff' : theme.toolbar.activeText
+              }}
+              onClick={() =>
+                isRunning ? onStop(node.id) : onGenerate(node.id, prompt.trim(), mode)
+              }
+            >
+              {isRunning ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" />
+                  <Square className="size-3 fill-current" />
+                  停止
+                </>
+              ) : (
+                <>
+                  <ArrowUp className="size-4" />
+                  生成
+                </>
+              )}
+            </button>
+          )}
+        </div>
+      )}
       <p className="mt-2 text-[10px] opacity-45">
         {isConfig
           ? 'Ctrl/Cmd + Enter 生成；无提示词时将直接汇总上游输入交给 Agent。'

@@ -62,11 +62,39 @@ const mediaProviderApi = vi.hoisted(() => ({
 
 vi.mock('@/api/media-provider-client', () => mediaProviderApi)
 
+// 存模板：mock 资产库，断言 saveCanvasAsset 收到提示词内容
+const assetLibrary = vi.hoisted(() => ({
+  saveCanvasAsset: vi.fn((asset: { kind: 'text'; title: string; content: string }) => ({
+    id: 'asset-1',
+    kind: asset.kind,
+    title: asset.title,
+    content: asset.content,
+    createdAt: 0
+  }))
+}))
+
+vi.mock('../asset-library', () => assetLibrary)
+
 afterEach(cleanup)
 
 const theme = {
-  node: { panel: '#fff', fill: '#eee', text: '#111', muted: '#666', stroke: '#ddd', placeholder: '#999' },
-  toolbar: { panel: '#fff', border: '#ddd', border2: '#ccc', item: '#333', itemHover: '#eee', activeBg: '#111', activeText: '#fff' },
+  node: {
+    panel: '#fff',
+    fill: '#eee',
+    text: '#111',
+    muted: '#666',
+    stroke: '#ddd',
+    placeholder: '#999'
+  },
+  toolbar: {
+    panel: '#fff',
+    border: '#ddd',
+    border2: '#ccc',
+    item: '#333',
+    itemHover: '#eee',
+    activeBg: '#111',
+    activeText: '#fff'
+  },
   canvas: { background: '#fafafa' },
   connection: { default: '#ccc', label: '#666' }
 } as unknown as CanvasTheme
@@ -132,31 +160,143 @@ describe('节点面板：参考图顺序预览', () => {
   })
 })
 
-describe('节点面板：比例选择器', () => {
-  it('弹出按真实长宽比渲染的比例选项并可选择', () => {
-    function Harness(): ReactElement {
-      const [metadata, setMetadata] = useState<Record<string, unknown>>({ generationMode: 'image' })
-      const node: CanvasNodeData = { ...configNode(), metadata }
-      return (
-        <CanvasNodePanel
-          {...baseProps(node)}
-          orderedReferences={[]}
-          onConfigChange={(_id, patch) => setMetadata((current) => ({ ...current, ...patch }))}
-        />
-      )
-    }
+describe('节点面板：图像设置弹窗（替代原比例选择器）', () => {
+  function Harness({
+    initialMetadata,
+    onPatch
+  }: {
+    initialMetadata?: Record<string, unknown>
+    onPatch?: (patch: Record<string, unknown>) => void
+  }): ReactElement {
+    const [metadata, setMetadata] = useState<Record<string, unknown>>({
+      generationMode: 'image',
+      ...initialMetadata
+    })
+    const node: CanvasNodeData = { ...configNode(), metadata }
+    return (
+      <CanvasNodePanel
+        {...baseProps(node)}
+        orderedReferences={[]}
+        onConfigChange={(_id, patch) => {
+          onPatch?.(patch)
+          setMetadata((current) => ({ ...current, ...patch }))
+        }}
+      />
+    )
+  }
+
+  it('快照 pill 文本随 size/quality/count 变化', () => {
+    const { unmount } = render(
+      <CanvasNodePanel
+        {...baseProps({ ...configNode(), metadata: { generationMode: 'image', count: 3 } })}
+      />
+    )
+    expect(screen.getByText('自动·3张')).toBeTruthy()
+    unmount()
+
+    render(
+      <CanvasNodePanel
+        {...baseProps({
+          ...configNode(),
+          metadata: { generationMode: 'image', size: '1536x864', count: 2 }
+        })}
+      />
+    )
+    expect(screen.getByText('16:9·2张')).toBeTruthy()
+    unmount()
+
+    render(
+      <CanvasNodePanel
+        {...baseProps({
+          ...configNode(),
+          metadata: { generationMode: 'image', size: '1536x864', count: 2, quality: 'high' }
+        })}
+      />
+    )
+    expect(screen.getByText('高·16:9·2张')).toBeTruthy()
+  })
+
+  it('弹出宽高比 tile 并可选择，选择后快照更新', async () => {
     render(<Harness />)
 
-    const trigger = screen.getByRole('button', { name: /尺寸 自动/ })
-    fireEvent.click(trigger)
-
+    fireEvent.click(screen.getByText('自动·1张'))
+    expect(await screen.findByText('质量')).toBeTruthy()
     expect(screen.getByText('1:1')).toBeTruthy()
     expect(screen.getByText('16:9')).toBeTruthy()
     expect(screen.getByText('9:16')).toBeTruthy()
-    expect(screen.getByText('1024x1024')).toBeTruthy()
+    expect((screen.getByLabelText('宽度') as HTMLInputElement).value).toBe('1024')
 
     fireEvent.click(screen.getByText('16:9'))
-    expect(screen.getByRole('button', { name: /尺寸 16:9 1536x864/ })).toBeTruthy()
+    expect(screen.getByText('16:9·1张')).toBeTruthy()
+  })
+
+  it('点 21:9 tile 后选分辨率 2k → 按比例基准缩放写 size', async () => {
+    const patches: Array<Record<string, unknown>> = []
+    render(<Harness onPatch={(patch) => patches.push(patch)} />)
+
+    fireEvent.click(screen.getByText('自动·1张'))
+    expect(await screen.findByText('质量')).toBeTruthy()
+    fireEvent.click(screen.getByText('21:9'))
+    fireEvent.click(screen.getByText('2k'))
+
+    expect(patches.at(-1)).toEqual({ size: '3584x1536' })
+  })
+
+  it('质量/透明背景/张数写入对应 metadata（张数钳 1-10）', async () => {
+    const patches: Array<Record<string, unknown>> = []
+    render(<Harness onPatch={(patch) => patches.push(patch)} />)
+
+    fireEvent.click(screen.getByText('自动·1张'))
+    fireEvent.click(await screen.findByText('高'))
+    expect(patches.at(-1)).toEqual({ quality: 'high' })
+
+    fireEvent.click(screen.getByRole('switch', { name: '透明背景' }))
+    expect(patches.at(-1)).toEqual({ background: 'transparent' })
+
+    const countInput = screen.getByLabelText('生成张数') as HTMLInputElement
+    fireEvent.change(countInput, { target: { value: '12' } })
+    expect(patches.at(-1)).toEqual({ count: 10 })
+  })
+})
+
+describe('节点面板：图像快捷栏', () => {
+  it('展开图标打开 Dialog，编辑提示词回调 onPromptChange', async () => {
+    const onPromptChange = vi.fn()
+    render(<CanvasNodePanel {...baseProps(configNode())} onPromptChange={onPromptChange} />)
+
+    fireEvent.click(screen.getByTitle('展开编辑提示词'))
+    const dialogTextarea = (await screen.findByLabelText('提示词全文')) as HTMLTextAreaElement
+    expect(dialogTextarea.value).toBe('测试')
+    fireEvent.change(dialogTextarea, { target: { value: '新的提示词' } })
+
+    expect(onPromptChange).toHaveBeenCalledWith('cfg-1', '新的提示词')
+  })
+
+  it('存模板按钮调用 saveCanvasAsset 保存当前提示词', () => {
+    assetLibrary.saveCanvasAsset.mockClear()
+    render(<CanvasNodePanel {...baseProps(configNode())} />)
+
+    fireEvent.click(screen.getByTitle('存为提示词模板'))
+
+    expect(assetLibrary.saveCanvasAsset).toHaveBeenCalledTimes(1)
+    const arg = assetLibrary.saveCanvasAsset.mock.calls[0][0]
+    expect(arg.content).toBe('测试')
+    expect(arg.kind).toBe('text')
+  })
+
+  it('参考图上传按钮把选中文件交给 onAddReferenceImages', () => {
+    const onAddReferenceImages = vi.fn()
+    const { container } = render(
+      <CanvasNodePanel {...baseProps(configNode())} onAddReferenceImages={onAddReferenceImages} />
+    )
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['x'], 'a.png', { type: 'image/png' })
+    fireEvent.change(input, { target: { files: [file] } })
+
+    expect(onAddReferenceImages).toHaveBeenCalledTimes(1)
+    expect(onAddReferenceImages.mock.calls[0][0]).toBe('cfg-1')
+    expect(onAddReferenceImages.mock.calls[0][1][0]).toBe(file)
   })
 })
 
