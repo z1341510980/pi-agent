@@ -48,6 +48,24 @@ export function defaultImageModelForBaseUrl(baseUrl: string): string {
 }
 
 /**
+ * quality 参数白名单归一：小写化后仅放行 high/medium/low；
+ * 'auto' 与未设置/非法值一律返回 undefined（请求体不带 quality 键，走上游默认）。
+ */
+export function openAiQualityParam(quality?: string): { quality: string } | undefined {
+  const value = quality?.trim().toLowerCase()
+  return value === 'high' || value === 'medium' || value === 'low' ? { quality: value } : undefined
+}
+
+/**
+ * background 参数白名单归一：仅放行 transparent/opaque；
+ * 未设置/非法值返回 undefined（请求体不带 background 键）。
+ */
+export function openAiBackgroundParam(background?: string): { background: string } | undefined {
+  const value = background?.trim().toLowerCase()
+  return value === 'transparent' || value === 'opaque' ? { background: value } : undefined
+}
+
+/**
  * 只有这些状态码能证明该 Provider 没有 multipart 编辑端点，才允许改走 JSON 端点。
  *
  * 超时/网络错误一律不算：多数平台的图生图本来就要几十秒，把超时当"端点不存在"
@@ -107,6 +125,8 @@ function pollSource(rt: AdapterRuntime): ImageJobPollSource {
 interface JsonGenerationInput {
   prompt: string
   size?: string
+  quality?: string
+  background?: string
   count: number
   /** 仅在 referencesInJson 时随 JSON 的 image_urls 提交 */
   references?: string[]
@@ -143,7 +163,7 @@ async function submitJsonGeneration(
 
   const guard = withAbortGuard(input.signal, IMAGE_JOB_TIMEOUT_MS)
   try {
-    const n = Math.min(4, Math.max(1, input.count))
+    const n = Math.min(10, Math.max(1, input.count))
     const body = {
       model: rt.model,
       prompt: input.prompt,
@@ -151,6 +171,8 @@ async function submitJsonGeneration(
       ...(normalizeOpenAiCompatibleSize(input.size)
         ? { size: normalizeOpenAiCompatibleSize(input.size) }
         : {}),
+      ...openAiQualityParam(input.quality),
+      ...openAiBackgroundParam(input.background),
       response_format: 'url',
       ...(input.referencesInJson && input.references?.length
         ? { image_urls: input.references }
@@ -260,6 +282,8 @@ interface EditFlowInput {
   images?: string[]
   mask?: string
   size?: string
+  quality?: string
+  background?: string
   signal?: AbortSignal
   traceId?: string
 }
@@ -278,6 +302,8 @@ async function editImageFlow(rt: AdapterRuntime, input: EditFlowInput): Promise<
       prompt: input.prompt,
       references: [input.image, ...(input.images ?? [])].filter(Boolean),
       size: input.size,
+      quality: input.quality,
+      background: input.background,
       count: 1,
       signal: input.signal,
       traceId: input.traceId,
@@ -329,6 +355,10 @@ async function editImageFlow(rt: AdapterRuntime, input: EditFlowInput): Promise<
       form.append('n', '1')
       form.append('response_format', 'url')
       if (size) form.append('size', size)
+      const quality = openAiQualityParam(input.quality)
+      if (quality) form.append('quality', quality.quality)
+      const background = openAiBackgroundParam(input.background)
+      if (background) form.append('background', background.background)
       return fetch(`${rt.baseUrl}/images/edits`, {
         method: 'POST',
         headers: rt.headers,
@@ -357,6 +387,8 @@ async function editImageFlow(rt: AdapterRuntime, input: EditFlowInput): Promise<
           image: sourceImages.length === 1 ? sourceImages[0] : sourceImages,
           n: 1,
           ...(size ? { size } : {}),
+          ...openAiQualityParam(input.quality),
+          ...openAiBackgroundParam(input.background),
           response_format: 'url',
           ...(input.mask ? { mask: input.mask } : {})
         }),
@@ -399,6 +431,8 @@ async function editImageFlow(rt: AdapterRuntime, input: EditFlowInput): Promise<
         prompt: input.prompt,
         references: sourceImages,
         size: input.size,
+        quality: input.quality,
+        background: input.background,
         count: 1,
         signal: input.signal,
         traceId: input.traceId,
@@ -523,6 +557,8 @@ export const openaiImagesAdapter: MediaProviderAdapter = {
         image,
         images,
         size,
+        quality: input.quality,
+        background: input.background,
         signal: input.signal,
         traceId: input.traceId
       })
@@ -530,6 +566,8 @@ export const openaiImagesAdapter: MediaProviderAdapter = {
     return submitJsonGeneration(rt, {
       prompt: input.prompt,
       size,
+      quality: input.quality,
+      background: input.background,
       count,
       signal: input.signal,
       traceId: input.traceId
@@ -543,6 +581,8 @@ export const openaiImagesAdapter: MediaProviderAdapter = {
       images: input.images,
       mask: input.mask,
       size: input.size || ctx.params.size,
+      quality: input.quality,
+      background: input.background,
       signal: input.signal,
       traceId: input.traceId
     })

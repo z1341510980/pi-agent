@@ -134,6 +134,38 @@ describe('media generator facade (registry-backed)', () => {
     }
   })
 
+  it('forwards quality/background and a 1-10 count into the adapter request payload', async () => {
+    const row = createImageProvider({
+      name: '参数透传',
+      baseUrl: 'https://passthrough.example.com/v1',
+      apiKey: 'sk-passthrough',
+      model: 'gpt-image-1'
+    })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ data: [{ url: 'https://cdn.passthrough.example.com/a.png' }] })
+    )
+    try {
+      await expect(
+        generator.generateImage({
+          prompt: 'a lighthouse',
+          providerId: row.id,
+          quality: 'high',
+          background: 'transparent',
+          count: 10
+        })
+      ).resolves.toEqual({ images: ['https://cdn.passthrough.example.com/a.png'] })
+      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toMatchObject({
+        quality: 'high',
+        background: 'transparent',
+        n: 10
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('routes analyzeImage through the host text bridge chat endpoint', async () => {
     const bridge = vi.fn(async (providerId?: string) => ({
       providerId: providerId ?? 'llm-default',

@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { MediaModalityContext } from '../adapter.js'
-import { defaultImageModelForBaseUrl, openaiImagesAdapter } from '../adapters/openai-images.js'
+import {
+  defaultImageModelForBaseUrl,
+  openaiImagesAdapter,
+  openAiBackgroundParam,
+  openAiQualityParam
+} from '../adapters/openai-images.js'
 import { normalizeImageBaseUrl } from '../shared.js'
 
 /**
@@ -324,6 +329,116 @@ describe('openai-images adapter', () => {
     }
   })
 
+  it('passes quality/background and a 1-10 count into the JSON generation body', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ data: [{ url: 'https://cdn.example.com/qb-1.png' }] })
+    )
+    try {
+      await expect(
+        adapter.generateImage!(
+          createContext({ providerId: 'qb-json', baseUrl: 'https://qb.example.com/v1', model: 'gpt-image-1' }),
+          { prompt: 'a lighthouse', quality: 'high', background: 'transparent', count: 5 }
+        )
+      ).resolves.toEqual({ images: ['https://cdn.example.com/qb-1.png'] })
+      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toMatchObject({
+        quality: 'high',
+        background: 'transparent',
+        n: 5
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('omits quality when it is auto and background when unset', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ data: [{ url: 'https://cdn.example.com/qb-2.png' }] })
+    )
+    try {
+      await expect(
+        adapter.generateImage!(
+          createContext({ providerId: 'qb-omit', baseUrl: 'https://qb.example.com/v1', model: 'gpt-image-1' }),
+          { prompt: 'a lighthouse', quality: 'auto', count: 1 }
+        )
+      ).resolves.toEqual({ images: ['https://cdn.example.com/qb-2.png'] })
+      const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+      expect(body).not.toHaveProperty('quality')
+      expect(body).not.toHaveProperty('background')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('clamps count to 10 and forces n=1 on xKiro', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example.com/c10.png' }] }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example.com/c99.png' }] }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.xkiro.com/x.png' }] }))
+
+    try {
+      await expect(
+        adapter.generateImage!(
+          createContext({ providerId: 'qb-clamp-10', baseUrl: 'https://clamp.example.com/v1', model: 'gpt-image-1' }),
+          { prompt: 'p', count: 10 }
+        )
+      ).resolves.toEqual({ images: ['https://cdn.example.com/c10.png'] })
+      await expect(
+        adapter.generateImage!(
+          createContext({ providerId: 'qb-clamp-99', baseUrl: 'https://clamp.example.com/v1', model: 'gpt-image-1' }),
+          { prompt: 'p', count: 99 }
+        )
+      ).resolves.toEqual({ images: ['https://cdn.example.com/c99.png'] })
+      await expect(
+        adapter.generateImage!(
+          createContext({ providerId: 'qb-xkiro', baseUrl: 'https://api.xkiro.com/v1', model: 'gpt-image' }),
+          { prompt: 'p', count: 10 }
+        )
+      ).resolves.toEqual({ images: ['https://cdn.xkiro.com/x.png'] })
+
+      const bodies = fetchMock.mock.calls.map((call) =>
+        JSON.parse(String((call[1] as RequestInit).body))
+      )
+      expect(bodies.map((body: { n: number }) => body.n)).toEqual([10, 10, 1])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps quality and background into the multipart /images/edits form fields', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: { message: 'Image must be a multipart file' }, code: 'invalid_image' }, 400))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example.com/mp-qb.png' }] }))
+
+    try {
+      await expect(
+        adapter.generateImage!(
+          createContext({ providerId: 'qb-multipart', baseUrl: 'https://qb-mp.example.com/v1', model: 'gpt-image-1' }),
+          {
+            prompt: 'transparent version',
+            references: ['data:image/png;base64,AA=='],
+            quality: 'high',
+            background: 'transparent'
+          }
+        )
+      ).resolves.toEqual({ images: ['https://cdn.example.com/mp-qb.png'] })
+
+      const form = (fetchMock.mock.calls[1][1] as RequestInit).body as FormData
+      expect(form).toBeInstanceOf(FormData)
+      expect(form.get('quality')).toBe('high')
+      expect(form.get('background')).toBe('transparent')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('declares image capabilities and the adapter-specific size form schema', () => {
     expect(adapter.id).toBe('openai-images')
     expect(adapter.label).toBe('OpenAI Images 兼容')
@@ -343,5 +458,28 @@ describe('openai-images adapter', () => {
         ]
       }
     ])
+  })
+})
+
+describe('openAiQualityParam / openAiBackgroundParam', () => {
+  it('normalizes casing and whitelists quality values (auto omits the key)', () => {
+    expect(openAiQualityParam('high')).toEqual({ quality: 'high' })
+    expect(openAiQualityParam('  HIGH ')).toEqual({ quality: 'high' })
+    expect(openAiQualityParam('Medium')).toEqual({ quality: 'medium' })
+    expect(openAiQualityParam('low')).toEqual({ quality: 'low' })
+    expect(openAiQualityParam('auto')).toBeUndefined()
+    expect(openAiQualityParam('Auto')).toBeUndefined()
+    expect(openAiQualityParam('ultra')).toBeUndefined()
+    expect(openAiQualityParam('')).toBeUndefined()
+    expect(openAiQualityParam(undefined)).toBeUndefined()
+  })
+
+  it('whitelists background values and drops everything else', () => {
+    expect(openAiBackgroundParam('transparent')).toEqual({ background: 'transparent' })
+    expect(openAiBackgroundParam(' Transparent ')).toEqual({ background: 'transparent' })
+    expect(openAiBackgroundParam('opaque')).toEqual({ background: 'opaque' })
+    expect(openAiBackgroundParam('alpha')).toBeUndefined()
+    expect(openAiBackgroundParam('')).toBeUndefined()
+    expect(openAiBackgroundParam(undefined)).toBeUndefined()
   })
 })

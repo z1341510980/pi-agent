@@ -133,6 +133,8 @@ export function createInfiniteCanvasPlugin(): Plugin {
         references?: string[]
         model?: string
         size?: string
+        quality?: string
+        background?: string
         count?: number
         traceId?: string
         signal?: AbortSignal
@@ -148,6 +150,8 @@ export function createInfiniteCanvasPlugin(): Plugin {
           references,
           model: input.model,
           size: input.size,
+          quality: input.quality,
+          background: input.background,
           count: input.count,
           traceId: input.traceId,
           signal: input.signal

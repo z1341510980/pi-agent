@@ -2147,7 +2147,9 @@ export function InfiniteCanvasWorkspace({
                   quality: typeof meta.quality === 'string' ? meta.quality : undefined,
                   background: typeof meta.background === 'string' ? meta.background : undefined,
                   count:
-                    Number(meta.count) > 0 ? Math.min(4, Math.floor(Number(meta.count))) : undefined
+                    Number(meta.count) > 0
+                      ? Math.min(10, Math.floor(Number(meta.count)))
+                      : undefined
                 },
                 { signal: controller.signal }
               )

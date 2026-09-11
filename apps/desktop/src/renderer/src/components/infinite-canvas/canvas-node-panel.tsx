@@ -254,7 +254,7 @@ function ConfigSettingsRow({
   const selectStyle = { borderColor: theme.toolbar.border, color: theme.node.text }
   if (mode === 'image') {
     const size = String(metadata.size || 'auto')
-    const count = Math.min(4, Math.max(1, Number(metadata.count) || 1))
+    const count = Math.min(10, Math.max(1, Number(metadata.count) || 1))
     return (
       <>
         <SizePicker
@@ -267,10 +267,10 @@ function ConfigSettingsRow({
           <input
             type="number"
             min={1}
-            max={4}
+            max={10}
             value={count}
             onChange={(event) =>
-              onConfigChange({ count: Math.min(4, Math.max(1, Number(event.target.value) || 1)) })
+              onConfigChange({ count: Math.min(10, Math.max(1, Number(event.target.value) || 1)) })
             }
             className="h-8 w-12 rounded-full border bg-transparent px-1.5 text-center text-xs outline-none"
             style={selectStyle}

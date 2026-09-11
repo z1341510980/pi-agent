@@ -32,6 +32,10 @@ export interface MediaGenerator {
     references?: string[]
     model?: string
     size?: string
+    /** 画面质量档：auto/high/medium/low（openai-images adapter 白名单归一）。 */
+    quality?: string
+    /** 背景透明：transparent/opaque。 */
+    background?: string
     count?: number
     traceId?: string
     signal?: AbortSignal
@@ -232,7 +236,18 @@ export function createMediaGenerator(
   }
 
   return {
-    async generateImage({ providerId, prompt, references, model, size, count, traceId, signal }) {
+    async generateImage({
+      providerId,
+      prompt,
+      references,
+      model,
+      size,
+      quality,
+      background,
+      count,
+      traceId,
+      signal
+    }) {
       await assertProviderSelection(registry, 'image', providerId, model)
       const { adapter, ctx } = await resolveImage(providerId, model)
       if (!adapter.generateImage) {
@@ -242,6 +257,8 @@ export function createMediaGenerator(
         prompt,
         references,
         size,
+        quality,
+        background,
         count: count ?? 1,
         traceId,
         signal

@@ -73,6 +73,10 @@ export interface MediaGenerationInput {
   references?: string[]
   model?: string
   size?: string
+  /** 画面质量档：auto/high/medium/low（adapter 按白名单归一，auto/非法值不透传）。 */
+  quality?: string
+  /** 背景透明：transparent/opaque（adapter 按白名单归一，非法值不透传）。 */
+  background?: string
   count?: number
   traceId?: string
   signal?: AbortSignal
