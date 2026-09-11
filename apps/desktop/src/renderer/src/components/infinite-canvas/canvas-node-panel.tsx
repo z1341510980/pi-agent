@@ -416,7 +416,7 @@ function ModelPicker({
   const value = providerId && model ? `${providerId}:${model}` : ''
   const unavailable = options !== null && options.length === 0
   return (
-    <label className="mt-2 block text-xs">
+    <label className="inline-flex min-w-0 flex-1 items-center gap-1 text-xs opacity-70">
       模型
       <select
         value={value}
@@ -431,19 +431,22 @@ function ModelPicker({
           const separator = next.indexOf(':')
           onChange({ providerId: next.slice(0, separator), model: next.slice(separator + 1) })
         }}
-        className="mt-1 h-8 w-full rounded-lg border bg-transparent px-2 outline-none"
+        className="h-8 min-w-0 flex-1 rounded-full border bg-transparent px-2 text-xs outline-none"
         style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
       >
-        <option value="">跟随全局默认</option>
+        <option value="">
+          {options === null
+            ? '加载模型中…'
+            : unavailable
+              ? '未配置可用的 Provider'
+              : '跟随全局默认'}
+        </option>
         {(options ?? []).map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
           </option>
         ))}
       </select>
-      {unavailable && (
-        <span className="mt-1 block text-[10px] opacity-50">未配置可用的 Provider</span>
-      )}
     </label>
   )
 }
@@ -550,6 +553,14 @@ export function CanvasNodePanel({
 
   const changeConfig = (patch: Record<string, unknown>): void => {
     onConfigChange?.(node.id, patch)
+  }
+
+  const modelPickerProps = {
+    theme,
+    mode,
+    providerId:
+      typeof node.metadata?.providerId === 'string' ? node.metadata.providerId : undefined,
+    model: typeof node.metadata?.model === 'string' ? node.metadata.model : undefined
   }
 
   const summary = upstreamSummary ?? { textCount: 0, imageCount: 0, videoCount: 0, audioCount: 0 }
@@ -740,35 +751,26 @@ export function CanvasNodePanel({
         </div>
       )}
       {!isConfig && mode !== 'text' && onConfigChange && (
-        <div className="mt-2 flex items-center gap-2">
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <ConfigSettingsRow
             node={node}
             theme={theme}
             mode={mode}
             onConfigChange={(patch) => onConfigChange(node.id, patch)}
           />
+          <ModelPicker {...modelPickerProps} onChange={changeConfig} />
         </div>
-      )}
-      {mode !== 'text' && onConfigChange && (
-        <ModelPicker
-          theme={theme}
-          mode={mode}
-          providerId={
-            typeof node.metadata?.providerId === 'string' ? node.metadata.providerId : undefined
-          }
-          model={typeof node.metadata?.model === 'string' ? node.metadata.model : undefined}
-          onChange={(patch) => onConfigChange(node.id, patch)}
-        />
       )}
       <div className="mt-2 flex items-center justify-between gap-2">
         {isConfig ? (
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <ConfigSettingsRow
               node={node}
               theme={theme}
               mode={mode}
               onConfigChange={changeConfig}
             />
+            {mode !== 'text' && <ModelPicker {...modelPickerProps} onChange={changeConfig} />}
           </div>
         ) : (
           <select
