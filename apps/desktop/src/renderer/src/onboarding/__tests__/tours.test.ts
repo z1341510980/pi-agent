@@ -2,7 +2,14 @@ import { describe, it, expect } from 'vitest'
 import { tours } from '../tours'
 
 describe('tours 配置完整性', () => {
-  const tourIds = ['home-tour', 'novel-tour', 'chat-tour', 'settings-tour', 'shortcuts-tour'] as const
+  const tourIds = [
+    'home-tour',
+    'novel-tour',
+    'chat-tour',
+    'settings-tour',
+    'shortcuts-tour',
+    'canvas-tour'
+  ] as const
 
   for (const id of tourIds) {
     describe(`${id}`, () => {

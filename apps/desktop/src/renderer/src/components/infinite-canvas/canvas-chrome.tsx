@@ -55,6 +55,7 @@ function DockButton({
   active = false,
   danger = false,
   disabled = false,
+  dataTour,
   onClick
 }: {
   icon: ReactNode
@@ -62,6 +63,8 @@ function DockButton({
   active?: boolean
   danger?: boolean
   disabled?: boolean
+  /** 新手引导锚点：渲染为 data-tour 属性 */
+  dataTour?: string
   onClick: () => void
 }): React.ReactElement {
   const theme = useCanvasTheme()
@@ -71,6 +74,7 @@ function DockButton({
       title={label}
       aria-label={label}
       disabled={disabled}
+      {...(dataTour ? { 'data-tour': dataTour } : {})}
       onClick={onClick}
       className={cn(
         'grid size-8 shrink-0 place-items-center rounded-lg transition',
@@ -187,6 +191,7 @@ export function CanvasToolbar({
           icon={<MousePointer2 />}
           label="选择工具"
           active={canvasTool === 'select'}
+          dataTour="canvas-tool-select"
           onClick={() => onCanvasToolChange('select')}
         />
         <DockButton
@@ -204,7 +209,12 @@ export function CanvasToolbar({
           onClick={onRedo}
         />
         <ToolbarDivider />
-        <DockButton icon={<Type />} label="文本节点" onClick={onAddText} />
+        <DockButton
+          icon={<Type />}
+          label="文本节点"
+          dataTour="canvas-node-text"
+          onClick={onAddText}
+        />
         <DockButton icon={<ImageIcon />} label="图片节点" onClick={onAddImage} />
         <DockButton icon={<Video />} label="视频节点" onClick={onAddVideo} />
         <DockButton icon={<Music2 />} label="音频节点" onClick={onAddAudio} />
@@ -252,7 +262,12 @@ export function CanvasToolbar({
           )}
         </div>
         <ToolbarDivider />
-        <DockButton icon={<Upload />} label="导入图片 / 视频 / 音频" onClick={onUpload} />
+        <DockButton
+          icon={<Upload />}
+          label="导入图片 / 视频 / 音频"
+          dataTour="canvas-upload"
+          onClick={onUpload}
+        />
         <div className="relative">
           <DockButton
             icon={<Square />}
@@ -315,7 +330,12 @@ export function CanvasToolbar({
           )}
         </div>
         {onOpenMediaSettings && (
-          <DockButton icon={<Settings2 />} label="媒体生成配置" onClick={onOpenMediaSettings} />
+          <DockButton
+            icon={<Settings2 />}
+            label="媒体生成配置"
+            dataTour="canvas-media-settings"
+            onClick={onOpenMediaSettings}
+          />
         )}
         {onOpenMediaLogs && (
           <DockButton icon={<List />} label="生成日志" onClick={onOpenMediaLogs} />
@@ -628,6 +648,7 @@ export function CanvasZoomControls({
   return (
     <div
       className="absolute bottom-5 left-5 z-50"
+      data-tour="canvas-zoom"
       onMouseDown={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
     >

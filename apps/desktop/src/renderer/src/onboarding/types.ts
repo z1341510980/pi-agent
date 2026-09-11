@@ -6,7 +6,7 @@ export interface TourStep {
   /** 可选快捷键展示（用于 shortcuts-tour），传入会以 <kbd> 渲染 */
   shortcut?: string
   side?: 'top' | 'bottom' | 'left' | 'right' | 'over' | 'auto'
-  view?: 'home' | 'chat' | 'novel' | 'settings'
+  view?: 'home' | 'chat' | 'novel' | 'settings' | 'canvas'
   onNext?: () => void
   onPrev?: () => void
 }
@@ -18,7 +18,13 @@ export interface Tour {
   onComplete?: () => void
 }
 
-export type TourId = 'home-tour' | 'novel-tour' | 'chat-tour' | 'settings-tour' | 'shortcuts-tour'
+export type TourId =
+  | 'home-tour'
+  | 'novel-tour'
+  | 'chat-tour'
+  | 'settings-tour'
+  | 'shortcuts-tour'
+  | 'canvas-tour'
 
 export interface OnboardingPersistedState {
   completedVersion: string | null

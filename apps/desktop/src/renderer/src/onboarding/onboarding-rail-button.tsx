@@ -1,11 +1,11 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { GraduationCap, Home, MessageSquare, BookOpen, Settings, Keyboard, RotateCcw, Check } from 'lucide-react'
+import { GraduationCap, Home, MessageSquare, BookOpen, Settings, Keyboard, RotateCcw, Check, Frame } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useOnboardingStore } from './onboarding-store'
 import type { TourId } from './types'
 
-type AppView = 'home' | 'chat' | 'novel' | 'settings'
+type AppView = 'home' | 'chat' | 'novel' | 'settings' | 'plugin:infinite-canvas'
 
 interface MenuItem {
   tourId: TourId
@@ -50,6 +50,13 @@ const MENU_ITEMS: MenuItem[] = [
     description: '8 个高频快捷键速记',
     icon: Keyboard,
     view: 'home',
+  },
+  {
+    tourId: 'canvas-tour',
+    label: '无限画布',
+    description: '8 步上手节点、设计画板与媒体生成',
+    icon: Frame,
+    view: 'plugin:infinite-canvas',
   },
 ]
 

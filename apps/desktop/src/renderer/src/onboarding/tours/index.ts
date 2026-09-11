@@ -4,6 +4,7 @@ import { novelTour } from './novel-tour'
 import { chatTour } from './chat-tour'
 import { settingsTour } from './settings-tour'
 import { shortcutsTour } from './shortcuts-tour'
+import { canvasTour } from './canvas-tour'
 
 export const tours: Record<TourId, Tour> = {
   'home-tour': homeTour,
@@ -11,4 +12,5 @@ export const tours: Record<TourId, Tour> = {
   'chat-tour': chatTour,
   'settings-tour': settingsTour,
   'shortcuts-tour': shortcutsTour,
+  'canvas-tour': canvasTour,
 }

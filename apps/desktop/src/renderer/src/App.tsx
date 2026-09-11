@@ -85,7 +85,9 @@ export default function App(): ReactElement {
     if (view === 'settings') setSettingsSeed(null)
   }, [view])
 
-  const onboardingSetView = (next: 'home' | 'chat' | 'novel' | 'settings'): void => {
+  const onboardingSetView = (
+    next: 'home' | 'chat' | 'novel' | 'settings' | 'plugin:infinite-canvas'
+  ): void => {
     navigate(next === 'novel' ? 'plugin:novel' : next)
   }
 
