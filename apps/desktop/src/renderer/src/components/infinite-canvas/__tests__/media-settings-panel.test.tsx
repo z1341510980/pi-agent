@@ -3,9 +3,10 @@
  * （自宿主 settings/__tests__/media-settings.test.tsx 迁入）
  *
  * 覆盖：图片/视频/音频三模态 tab 渲染与切换懒加载、图片 Provider 卡片渲染
- * （名称/默认徽标/keyHint 掩码）、空态引导卡、formSchema 驱动的动态表单字段
- * （openai-images ↔ apimart）、设为默认调用客户端、反推提示词模型选择
- * （回显/选择触发 PUT/清除/失败回退）。
+ * （名称/默认徽标/keyHint 掩码/额外模型 chips）、空态引导卡、formSchema 驱动的
+ * 动态表单字段（openai-images ↔ apimart + textarea 类型）、模型列表公共字段
+ * （params.models 提交规范化/编辑回显/清空清除）、设为默认调用客户端、
+ * 反推提示词模型选择（回显/选择触发 PUT/清除/失败回退）。
  * （文字生成属宿主 LLM 体系，留在「模型与 Provider」页，不在本面板范围。）
  *
  * mock 策略：媒体客户端整体替换（@/api/media-provider-client）。
@@ -225,6 +226,119 @@ describe('媒体生成设置面板', () => {
       expect(screen.queryByLabelText('名称')).toBeNull()
     })
     expect(mediaApi.listMediaProviders).toHaveBeenCalledTimes(2)
+  })
+
+  it('提交新增表单携带规范化的 params.models（trim 各行/去空行/去重）', async () => {
+    mediaApi.createMediaProvider.mockResolvedValue(DEFAULT_ROW)
+    renderMediaSettings()
+    openImageTab()
+    fireEvent.click(await screen.findByRole('button', { name: '新增 Provider' }))
+
+    fireEvent.change(await screen.findByLabelText('名称'), { target: { value: '多模型图库' } })
+    fireEvent.change(await screen.findByLabelText('模型列表（可选）'), {
+      target: {
+        value: ' minimax_h3_lightx2v \n\nminimax_h3_lightx2v_no_pic\nminimax_h3_lightx2v\n'
+      }
+    })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => {
+      expect(mediaApi.createMediaProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: '多模型图库',
+          modality: 'image',
+          adapter: 'openai-images',
+          // 换行分隔规范化：trim 各行、去空行、去重（保序）
+          params: { models: 'minimax_h3_lightx2v\nminimax_h3_lightx2v_no_pic' }
+        })
+      )
+    })
+  })
+
+  it('编辑表单回显 params.models；清空后提交不再携带 models key', async () => {
+    mediaApi.listMediaProviders.mockResolvedValue([
+      mediaRow({ params: { size: '1024x1024', models: 'm-a\nm-b' } })
+    ])
+    renderMediaSettings()
+    openImageTab()
+
+    fireEvent.click(await screen.findByRole('button', { name: '编辑 主图库' }))
+    const modelsTextarea = (await screen.findByLabelText('模型列表（可选）')) as HTMLTextAreaElement
+    expect(modelsTextarea.value).toBe('m-a\nm-b')
+
+    fireEvent.change(modelsTextarea, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => {
+      expect(mediaApi.updateMediaProvider).toHaveBeenCalledWith(
+        'mp-1',
+        expect.objectContaining({
+          // 空列表 → 不携带 models key，旧值被清除
+          params: { size: '1024x1024' }
+        })
+      )
+    })
+  })
+
+  it('卡片在默认模型下方渲染额外模型 chips（过滤同默认项，最多 3 个 + N）', async () => {
+    mediaApi.listMediaProviders.mockResolvedValue([
+      mediaRow({
+        model: 'gpt-image',
+        params: { size: '1024x1024', models: 'gpt-image\nm1\n m2 \nm1\nm3\nm4\nm5' }
+      })
+    ])
+    renderMediaSettings()
+    openImageTab()
+
+    expect(await screen.findByText('主图库')).toBeTruthy()
+    expect(screen.getByText('m1')).toBeTruthy()
+    expect(screen.getByText('m2')).toBeTruthy()
+    expect(screen.getByText('m3')).toBeTruthy()
+    expect(screen.getByText('+2')).toBeTruthy()
+    // 与默认模型相同的项与去重后的重复项不出现
+    expect(screen.queryByText('gpt-image')).toBeNull()
+    expect(screen.queryByText('m4')).toBeNull()
+  })
+
+  it('formSchema 的 textarea 类型字段按多行输入渲染（rows=3）并随表单提交', async () => {
+    mediaApi.listMediaAdapters.mockResolvedValue({
+      adapters: [
+        {
+          id: 'textarea-adapter',
+          label: '多行字段适配器',
+          modality: 'image',
+          capabilities: { generate: true },
+          formSchema: [
+            {
+              key: 'prompt_suffix',
+              label: '提示词后缀',
+              type: 'textarea',
+              placeholder: '每行一条'
+            }
+          ]
+        }
+      ]
+    })
+    renderMediaSettings()
+    openImageTab()
+    fireEvent.click(await screen.findByRole('button', { name: '新增 Provider' }))
+
+    const suffixField = (await screen.findByLabelText('提示词后缀')) as HTMLTextAreaElement
+    expect(suffixField.tagName).toBe('TEXTAREA')
+    expect(suffixField.getAttribute('rows')).toBe('3')
+
+    fireEvent.change(await screen.findByLabelText('名称'), { target: { value: '多行图库' } })
+    fireEvent.change(suffixField, { target: { value: '高清\n赛博朋克' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => {
+      expect(mediaApi.createMediaProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: '多行图库',
+          params: { prompt_suffix: '高清\n赛博朋克' }
+        })
+      )
+    })
   })
 
   it('点击设为默认调用 setMediaProviderDefault 并刷新列表', async () => {

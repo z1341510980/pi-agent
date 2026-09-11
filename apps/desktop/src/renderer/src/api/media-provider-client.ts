@@ -25,7 +25,7 @@ export type StoredMediaModality = Exclude<MediaModality, 'text'>
 export interface MediaAdapterFormField {
   key: string
   label: string
-  type: 'text' | 'select' | 'number'
+  type: 'text' | 'select' | 'number' | 'textarea'
   options?: Array<{ value: string; label: string }>
   placeholder?: string
   required?: boolean

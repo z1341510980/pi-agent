@@ -74,6 +74,26 @@ const MODALITY_LABELS: Record<StoredMediaModality, string> = {
   audio: '音频'
 }
 
+/** 「模型列表」在 params 中的 key：换行分隔的模型 id 串（公共能力，所有模态可用）。 */
+const MODELS_PARAM_KEY = 'models'
+
+/**
+ * 解析模型列表文本：按行拆分 → trim 各行 → 去空行 → 去重（保序）。
+ * 画布生成节点的模型字段可按次覆盖这里的默认模型。
+ */
+function parseModelsList(raw: string | undefined): string[] {
+  if (!raw) return []
+  const seen = new Set<string>()
+  const models: string[] = []
+  for (const line of raw.split(/\r?\n/)) {
+    const model = line.trim()
+    if (!model || seen.has(model)) continue
+    seen.add(model)
+    models.push(model)
+  }
+  return models
+}
+
 /** 新增/编辑表单的受控快照；打开时由调用方构造，Dialog 挂载即初始化 */
 interface MediaProviderFormState {
   mode: 'create' | 'edit'
@@ -407,6 +427,13 @@ function MediaProviderCard({
   onEdit,
   onDelete
 }: MediaProviderCardProps): ReactElement {
+  // 额外模型 chips：与默认模型相同的项过滤，最多展示 3 个，余量折叠为「+N」
+  const extraModels = parseModelsList(row.params[MODELS_PARAM_KEY]).filter(
+    (model) => model !== row.model
+  )
+  const visibleModels = extraModels.slice(0, 3)
+  const hiddenModelCount = extraModels.length - visibleModels.length
+
   return (
     <div className="bg-surface-2 border border-border rounded-lg p-3 flex items-center gap-3">
       <div className="size-8 rounded-md bg-surface-3 flex items-center justify-center text-sm font-[780] shrink-0">
@@ -430,6 +457,25 @@ function MediaProviderCard({
           {adapterLabel}
           {row.model ? ` · ${row.model}` : ''}
         </div>
+        {visibleModels.length > 0 && (
+          <div
+            className="flex flex-wrap items-center gap-1 pt-0.5"
+            aria-label={`${row.name} 额外模型`}
+          >
+            {visibleModels.map((model) => (
+              <Badge
+                key={model}
+                variant="outline"
+                className="max-w-44 truncate px-1 py-0 text-[9px] font-normal"
+              >
+                {model}
+              </Badge>
+            ))}
+            {hiddenModelCount > 0 && (
+              <span className="text-[10px] text-hint">+{hiddenModelCount}</span>
+            )}
+          </div>
+        )}
         <div className="text-xs text-hint truncate">Key：{row.keyHint || '未设置'}</div>
       </div>
       {!row.isDefault && (
@@ -475,6 +521,8 @@ function MediaProviderFormDialog({
   const [apiKey, setApiKey] = useState(state.apiKey)
   const [model, setModel] = useState(state.model)
   const [params, setParams] = useState<Record<string, string>>(state.params)
+  // 模型列表 textarea（params.models，换行分隔）：编辑时由 params.models 拆行回显
+  const [modelsText, setModelsText] = useState(state.params[MODELS_PARAM_KEY] ?? '')
   const [showKey, setShowKey] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -499,10 +547,13 @@ function MediaProviderFormDialog({
     setSaving(true)
     setSaveError(null)
     try {
-      // 参数里留空的字段不提交，避免空串覆盖 adapter 默认值
+      // 参数里留空的字段不提交，避免空串覆盖 adapter 默认值；
+      // models 由 textarea 单独管理：剔除旧值后按规范化结果重写（空列表 → 不带该 key）
       const cleanedParams = Object.fromEntries(
-        Object.entries(params).filter(([, value]) => value !== '')
+        Object.entries(params).filter(([key, value]) => key !== MODELS_PARAM_KEY && value !== '')
       )
+      const models = parseModelsList(modelsText)
+      if (models.length > 0) cleanedParams[MODELS_PARAM_KEY] = models.join('\n')
       if (state.mode === 'create') {
         await createMediaProvider({
           name: name.trim(),
@@ -623,6 +674,20 @@ function MediaProviderFormDialog({
             />
           </div>
 
+          {/* 模型列表（公共能力，所有模态生效）：换行分隔存 params.models，
+              画布生成节点的模型字段可按次覆盖默认模型 */}
+          <div className="grid gap-1.5">
+            <Label htmlFor="media-form-models">模型列表（可选）</Label>
+            <textarea
+              id="media-form-models"
+              rows={3}
+              placeholder="每行一个模型，留空表示只使用上方默认模型；画布生成节点的模型字段可按次覆盖"
+              className="w-full rounded-lg border border-input bg-transparent px-2 py-1 text-sm leading-[22px] text-foreground transition-colors outline-none placeholder:text-hint focus-visible:border-primary disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40"
+              value={modelsText}
+              onChange={(e) => setModelsText(e.target.value)}
+            />
+          </div>
+
           {/* adapter 特有参数：按 formSchema 动态渲染，值存 params[key] */}
           {selectedAdapter?.formSchema.map((field) => (
             <div key={field.key} className="grid gap-1.5">
@@ -643,6 +708,15 @@ function MediaProviderFormDialog({
                     ))}
                   </SelectContent>
                 </Select>
+              ) : field.type === 'textarea' ? (
+                <textarea
+                  id={`media-form-param-${field.key}`}
+                  rows={3}
+                  placeholder={field.placeholder}
+                  className="w-full rounded-lg border border-input bg-transparent px-2 py-1 text-sm leading-[22px] text-foreground transition-colors outline-none placeholder:text-hint focus-visible:border-primary disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40"
+                  value={params[field.key] ?? ''}
+                  onChange={(e) => setParam(field.key, e.target.value)}
+                />
               ) : (
                 <Input
                   id={`media-form-param-${field.key}`}
