@@ -29,6 +29,7 @@ import { Switch } from '@/components/ui/switch'
 import { saveCanvasAsset } from './asset-library'
 import {
   RATIO_PRESETS,
+  applyResolutionTier,
   formatSizeValue,
   parseSizeValue,
   ratioLabelForSize,
@@ -299,13 +300,8 @@ function ImageSettingsPopover({
   const [alignTo16, setAlignTo16] = useState(true)
 
   const setTier = (value: ResolutionTier): void => {
-    if (value === 'auto') {
-      onConfigChange({ size: 'auto' })
-      return
-    }
-    const ratioBase = parsed ? { w: parsed.width, h: parsed.height } : { w: 1024, h: 1024 }
-    const scaled = scaleForTier(ratioBase, value)
-    onConfigChange({ size: formatSizeValue(scaled.width, scaled.height) })
+    // 以当前比例的 1k 基准缩放（幂等），避免从已缩放的尺寸上叠加。
+    onConfigChange({ size: applyResolutionTier(metadata.size, value) })
   }
 
   const setRatio = (presetId: string): void => {

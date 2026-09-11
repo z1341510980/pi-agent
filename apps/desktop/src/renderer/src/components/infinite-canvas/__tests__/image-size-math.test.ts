@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   RATIO_PRESETS,
   align16,
+  applyResolutionTier,
   formatSizeValue,
   parseSizeValue,
   ratioLabelForSize,
@@ -101,6 +102,28 @@ describe('ratioLabelForSize', () => {
   it('超出容差或非法尺寸返回 null', () => {
     expect(ratioLabelForSize(1000, 700)).toBeNull()
     expect(ratioLabelForSize(0, 864)).toBeNull()
+  })
+})
+
+describe('applyResolutionTier', () => {
+  it('size auto/非法时按 1:1 的 1k 基准缩放', () => {
+    expect(applyResolutionTier('auto', '4k')).toBe('4096x4096')
+    expect(applyResolutionTier(undefined, '2k')).toBe('2048x2048')
+  })
+
+  it('按比例的 1k 基准缩放：21:9 @2k 点 4k → 7168x3072（不叠加）', () => {
+    expect(applyResolutionTier('3584x1536', '4k')).toBe('7168x3072')
+    expect(applyResolutionTier('1792x768', '2k')).toBe('3584x1536')
+  })
+
+  it("重复点击当前档位幂等；选 auto 回退 'auto'", () => {
+    expect(applyResolutionTier('3584x1536', '2k')).toBe('3584x1536')
+    expect(applyResolutionTier('1536x864', '1k')).toBe('1536x864')
+    expect(applyResolutionTier('1536x864', 'auto')).toBe('auto')
+  })
+
+  it('无匹配比例的自定义尺寸仍按当前 W/H 缩放', () => {
+    expect(applyResolutionTier('1000x700', '2k')).toBe('2000x1408')
   })
 })
 

@@ -242,6 +242,32 @@ describe('节点面板：图像设置弹窗（替代原比例选择器）', () =
     expect(patches.at(-1)).toEqual({ size: '3584x1536' })
   })
 
+  it('分辨率档以比例 1k 基准缩放：21:9 @2k 重选当前档幂等、点 4k 得 7168x3072', async () => {
+    const patches: Array<Record<string, unknown>> = []
+    render(
+      <Harness initialMetadata={{ size: '3584x1536' }} onPatch={(patch) => patches.push(patch)} />
+    )
+
+    fireEvent.click(screen.getByText('21:9·1张'))
+    expect(await screen.findByText('质量')).toBeTruthy()
+    fireEvent.click(screen.getByText('2k'))
+    expect(patches.at(-1)).toEqual({ size: '3584x1536' })
+
+    fireEvent.click(screen.getByText('4k'))
+    expect(patches.at(-1)).toEqual({ size: '7168x3072' })
+  })
+
+  it('size auto 时点分辨率 4k → 1:1 基准得 4096x4096', async () => {
+    const patches: Array<Record<string, unknown>> = []
+    render(<Harness onPatch={(patch) => patches.push(patch)} />)
+
+    fireEvent.click(screen.getByText('自动·1张'))
+    expect(await screen.findByText('质量')).toBeTruthy()
+    fireEvent.click(screen.getByText('4k'))
+
+    expect(patches.at(-1)).toEqual({ size: '4096x4096' })
+  })
+
   it('质量/透明背景/张数写入对应 metadata（张数钳 1-10）', async () => {
     const patches: Array<Record<string, unknown>> = []
     render(<Harness onPatch={(patch) => patches.push(patch)} />)

@@ -84,3 +84,18 @@ export function snapshotLabel(size: unknown, count: number, quality: QualityTier
   const clamped = Math.min(10, Math.max(1, Math.floor(count) || 1))
   return `${qualityPrefix}${sizeLabel}·${clamped}张`
 }
+
+/** 分辨率档切换：先按当前比例解析 1k 基准（未匹配回退当前 W/H，再退 1024 基准），再 ×1/×2/×4（幂等，不叠加）。 */
+export function applyResolutionTier(size: unknown, tier: ResolutionTier): string {
+  if (tier === 'auto') return 'auto'
+  const parsed = parseSizeValue(size)
+  if (!parsed) {
+    const scaled = scaleForTier({ w: 1024, h: 1024 }, tier)
+    return formatSizeValue(scaled.width, scaled.height)
+  }
+  const label = ratioLabelForSize(parsed.width, parsed.height)
+  const preset = label ? RATIO_PRESETS.find((item) => item.label === label) : null
+  const ratioBase = preset ? { w: preset.w, h: preset.h } : { w: parsed.width, h: parsed.height }
+  const scaled = scaleForTier(ratioBase, tier)
+  return formatSizeValue(scaled.width, scaled.height)
+}
