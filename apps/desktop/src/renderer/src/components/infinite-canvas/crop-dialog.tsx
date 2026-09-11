@@ -36,10 +36,12 @@ const MIN_DRAG_CROP_PERCENT = 3
 
 type LoupeState = { displayX: number; displayY: number; percentX: number; percentY: number }
 
-type DragState =
+type DragMode =
   | { mode: 'move'; grabOffset: { x: number; y: number } }
-  | { mode: 'resize'; handle: CropHandle }
+  | { mode: 'resize'; handle: CropHandle; initial: CropRect }
   | { mode: 'draw'; anchor: { x: number; y: number }; previous: CropRect }
+
+type DragState = DragMode & { pointerId: number }
 
 export function CropDialog({
   theme,
@@ -70,16 +72,32 @@ export function CropDialog({
     )
   }
 
-  const beginDrag = (event: ReactPointerEvent<HTMLElement>, drag: DragState): void => {
+  const beginDrag = (event: ReactPointerEvent<HTMLElement>, drag: DragMode): void => {
     event.preventDefault()
     event.stopPropagation()
     capturePointer(event)
-    dragRef.current = drag
+    dragRef.current = { ...drag, pointerId: event.pointerId }
+    // 兜底：pointer capture 失败时，避免拖拽状态卡死在窗口层
+    const endDragFallback = (): void => {
+      if (!dragRef.current) return
+      dragRef.current = null
+      setLoupe(null)
+    }
+    window.addEventListener('pointerup', endDragFallback, { once: true })
+    window.addEventListener('pointercancel', endDragFallback, { once: true })
+  }
+
+  const finishDraw = (pointer: { x: number; y: number }): CropRect => {
+    const drag = dragRef.current
+    if (!drag || drag.mode !== 'draw') return crop
+    const next = dragCropRect(drag.anchor, pointer)
+    if (ratio !== null && naturalSize) return applyCropRatio(next, ratio, naturalSize)
+    return next
   }
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLElement>): void => {
     const drag = dragRef.current
-    if (!drag) return
+    if (!drag || drag.pointerId !== event.pointerId) return
     event.preventDefault()
     const pointer = percentFrom(event)
     if (drag.mode === 'move') {
@@ -87,8 +105,8 @@ export function CropDialog({
       return
     }
     if (drag.mode === 'resize') {
-      setCrop((current) =>
-        resizeCropRect(current, drag.handle, pointer, {
+      setCrop(
+        resizeCropRect(drag.initial, drag.handle, pointer, {
           ratio,
           natural: naturalSize ?? { width: 1, height: 1 }
         })
@@ -102,15 +120,15 @@ export function CropDialog({
       })
       return
     }
-    setCrop(dragCropRect(drag.anchor, pointer))
+    setCrop(finishDraw(pointer))
   }
 
   const handlePointerEnd = (event: ReactPointerEvent<HTMLElement>): void => {
     const drag = dragRef.current
-    if (!drag) return
+    if (!drag || drag.pointerId !== event.pointerId) return
     event.preventDefault()
     if (drag.mode === 'draw') {
-      const next = dragCropRect(drag.anchor, percentFrom(event))
+      const next = finishDraw(percentFrom(event))
       setCrop(
         next.width < MIN_DRAG_CROP_PERCENT || next.height < MIN_DRAG_CROP_PERCENT
           ? drag.previous
@@ -136,7 +154,7 @@ export function CropDialog({
   const startResize =
     (handle: CropHandle) =>
     (event: ReactPointerEvent<HTMLElement>): void => {
-      beginDrag(event, { mode: 'resize', handle })
+      beginDrag(event, { mode: 'resize', handle, initial: crop })
     }
 
   const selectRatio = (value: number | null): void => {
@@ -324,7 +342,7 @@ function CropLoupe({
           width: LOUPE_SIZE,
           height: LOUPE_SIZE,
           borderColor: theme.node.activeStroke,
-          backgroundImage: `url(${source})`,
+          backgroundImage: `url("${source}")`,
           backgroundSize: `${naturalSize.width * LOUPE_ZOOM}px ${naturalSize.height * LOUPE_ZOOM}px`,
           backgroundPosition: `${LOUPE_SIZE / 2 - naturalX * LOUPE_ZOOM}px ${
             LOUPE_SIZE / 2 - naturalY * LOUPE_ZOOM

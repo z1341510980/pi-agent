@@ -155,4 +155,41 @@ describe('裁剪对话框', () => {
     fireEvent.click(screen.getByRole('button', { name: '创建裁剪结果' }))
     expect(onConfirm).toHaveBeenCalledWith({ x: 20, y: 0, width: 50, height: 50 })
   })
+
+  it('1:1 比例下空白处拖出新框也保持比例', () => {
+    const { onConfirm } = renderDialog()
+    setField('宽', '50')
+    setField('高', '50')
+    fireEvent.click(screen.getByRole('button', { name: '1:1' }))
+    drag(document.querySelector('[data-crop-overlay]')!, [
+      { x: 240, y: 306 },
+      { x: 336, y: 342 }
+    ])
+    fireEvent.click(screen.getByRole('button', { name: '创建裁剪结果' }))
+    expect(onConfirm).toHaveBeenCalledWith({ x: 56.25, y: 85, width: 7.5, height: 10 })
+  })
+
+  it('切回自由比例后可任意缩放', () => {
+    const { onConfirm } = renderDialog()
+    fireEvent.click(screen.getByRole('button', { name: '1:1' }))
+    fireEvent.click(screen.getByRole('button', { name: '自由' }))
+    drag(document.querySelector('[data-crop-handle="se"]')!, [
+      { x: 480, y: 360 },
+      { x: 240, y: 180 }
+    ])
+    fireEvent.click(screen.getByRole('button', { name: '创建裁剪结果' }))
+    // 1:1 后裁剪框为 {12.5,0,75,100}，切回自由不清空选区；se 拖到 (50,50)% 以对角 (12.5,0) 锚定
+    expect(onConfirm).toHaveBeenCalledWith({ x: 12.5, y: 0, width: 37.5, height: 50 })
+  })
+
+  it('pointercancel 结束拖动并隐藏放大镜', () => {
+    renderDialog()
+    const handle = document.querySelector('[data-crop-handle="se"]')!
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 480, clientY: 360 })
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 240, clientY: 180 })
+    expect(document.querySelector('[data-crop-loupe]')).not.toBeNull()
+    fireEvent.pointerCancel(handle, { pointerId: 1, clientX: 240, clientY: 180 })
+    expect(document.querySelector('[data-crop-loupe]')).toBeNull()
+    expect(document.querySelector('[data-crop-loupe-label]')).toBeNull()
+  })
 })
