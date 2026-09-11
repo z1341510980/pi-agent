@@ -5,19 +5,11 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactElement
 } from 'react'
-import {
-  Brush,
-  Eraser,
-  Grid2x2,
-  Maximize2,
-  Redo2,
-  RotateCcw,
-  Undo2,
-  WandSparkles
-} from 'lucide-react'
+import { Brush, Eraser, Maximize2, Redo2, RotateCcw, Undo2, WandSparkles } from 'lucide-react'
 
 import type { CanvasTheme } from './canvas-theme'
-import { DialogAction, MediaDialogShell, NumberField } from './media-dialog-shell'
+import { DialogAction, MediaDialogShell } from './media-dialog-shell'
+import { piecePixelBounds, seedCuts } from './crop-split-interaction'
 import { toEditableImageUrl } from '@/lib/download'
 
 export interface MaskEditPayload {
@@ -360,43 +352,7 @@ export function MaskEditDialog({
 
 export { CropDialog } from './crop-dialog'
 
-export function SplitDialog({
-  theme,
-  source,
-  onClose,
-  onConfirm
-}: {
-  theme: CanvasTheme
-  source: string
-  onClose: () => void
-  onConfirm: (params: { rows: number; columns: number }) => void
-}): ReactElement {
-  const [rows, setRows] = useState(2)
-  const [columns, setColumns] = useState(2)
-  return (
-    <MediaDialogShell
-      theme={theme}
-      title="拆分图片"
-      icon={<Grid2x2 className="size-4" />}
-      onClose={onClose}
-    >
-      <img
-        src={source}
-        alt="待拆分图片"
-        className="max-h-[50vh] w-full rounded-xl object-contain"
-      />
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-        <NumberField label="行数" value={rows} min={1} max={6} onChange={setRows} />
-        <NumberField label="列数" value={columns} min={1} max={6} onChange={setColumns} />
-      </div>
-      <DialogAction
-        theme={theme}
-        label={`创建 ${rows * columns} 个图片节点`}
-        onClick={() => onConfirm({ rows, columns })}
-      />
-    </MediaDialogShell>
-  )
-}
+export { SplitDialog } from './split-dialog'
 
 export function UpscaleDialog({
   theme,
@@ -457,25 +413,34 @@ export function cropDataUrl(
 
 export function splitDataUrls(
   source: string,
-  params: { rows: number; columns: number }
+  params: { rows: number; columns: number; rowCuts?: number[]; columnCuts?: number[] }
 ): Promise<string[]> {
   return toEditableImageUrl(source).then((editable) =>
     new Promise<string[]>((resolve, reject) => {
       const image = new Image()
       image.onload = () => {
-        const width = image.naturalWidth / params.columns
-        const height = image.naturalHeight / params.rows
+        const xBounds = piecePixelBounds(
+          params.columnCuts ?? seedCuts(params.columns),
+          image.naturalWidth
+        )
+        const yBounds = piecePixelBounds(
+          params.rowCuts ?? seedCuts(params.rows),
+          image.naturalHeight
+        )
         const results: string[] = []
-        for (let row = 0; row < params.rows; row += 1)
-          for (let column = 0; column < params.columns; column += 1) {
+        for (let row = 0; row + 1 < yBounds.length; row += 1) {
+          for (let column = 0; column + 1 < xBounds.length; column += 1) {
+            const width = xBounds[column + 1] - xBounds[column]
+            const height = yBounds[row + 1] - yBounds[row]
             const canvas = document.createElement('canvas')
-            canvas.width = width
-            canvas.height = height
+            canvas.width = Math.max(1, width)
+            canvas.height = Math.max(1, height)
             canvas
               .getContext('2d')
-              ?.drawImage(image, column * width, row * height, width, height, 0, 0, width, height)
+              ?.drawImage(image, xBounds[column], yBounds[row], width, height, 0, 0, width, height)
             results.push(canvas.toDataURL('image/png'))
           }
+        }
         resolve(results)
       }
       image.onerror = () => reject(new Error('图片读取失败'))

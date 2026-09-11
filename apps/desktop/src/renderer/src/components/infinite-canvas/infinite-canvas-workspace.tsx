@@ -1290,7 +1290,10 @@ export function InfiniteCanvasWorkspace({
   )
 
   const splitImage = useCallback(
-    async (source: LocalNode, params: { rows: number; columns: number }): Promise<void> => {
+    async (
+      source: LocalNode,
+      params: { rows: number; columns: number; rowCuts: number[]; columnCuts: number[] }
+    ): Promise<void> => {
       if (!source.metadata?.content) return
       const pieces = await splitDataUrls(source.metadata.content, params)
       for (const [index, piece] of pieces.entries())
