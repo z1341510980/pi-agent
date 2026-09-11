@@ -163,8 +163,18 @@ function SizePicker({
     </div>
   )
 }
-const VIDEO_SIZES = ['auto', '1280x720', '1920x1080']
-const VIDEO_SECONDS = [5, 10]
+// 视频分辨率预设：横竖成对，覆盖 768P / 720P / 1080P 档；'auto' 跟随 Provider 默认。
+// 768P 是部分模型（如 minimax 视频）的输出上限档。
+const VIDEO_SIZES = [
+  'auto',
+  '1360x768',
+  '768x1360',
+  '1280x720',
+  '720x1280',
+  '1920x1080',
+  '1080x1920'
+] as const
+const VIDEO_SECONDS = [5, 10, 15]
 const AUDIO_FORMATS = ['mp3', 'wav']
 
 function ModeSegmented({
@@ -280,11 +290,18 @@ function ConfigSettingsRow({
           style={selectStyle}
           aria-label="视频分辨率"
         >
-          {VIDEO_SIZES.map((value) => (
-            <option key={value} value={value}>
-              {value === 'auto' ? '自动分辨率' : value}
-            </option>
-          ))}
+          {VIDEO_SIZES.map((value) => {
+            const [width, height] = value.split('x').map(Number)
+            const label =
+              value === 'auto'
+                ? '自动分辨率'
+                : `${width}×${height}（${width >= height ? '横版' : '竖版'}）`
+            return (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            )
+          })}
         </select>
         <label className="inline-flex items-center gap-1 text-xs opacity-70">
           时长
