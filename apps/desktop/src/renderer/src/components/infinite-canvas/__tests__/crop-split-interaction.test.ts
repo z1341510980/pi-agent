@@ -36,48 +36,91 @@ describe('crop rect helpers', () => {
   })
 
   it('resizes freely from the se handle with the nw corner anchored', () => {
-    const next = resizeCropRect({ x: 0, y: 0, width: 100, height: 100 }, 'se', { x: 50, y: 40 }, {
-      ratio: null,
-      natural: square
-    })
+    const next = resizeCropRect(
+      { x: 0, y: 0, width: 100, height: 100 },
+      'se',
+      { x: 50, y: 40 },
+      {
+        ratio: null,
+        natural: square
+      }
+    )
     expect(next).toEqual({ x: 0, y: 0, width: 50, height: 40 })
   })
 
   it('resizes from the nw handle with the se corner anchored', () => {
-    const next = resizeCropRect({ x: 10, y: 10, width: 40, height: 40 }, 'nw', { x: 30, y: 20 }, {
-      ratio: null,
-      natural: square
-    })
+    const next = resizeCropRect(
+      { x: 10, y: 10, width: 40, height: 40 },
+      'nw',
+      { x: 30, y: 20 },
+      {
+        ratio: null,
+        natural: square
+      }
+    )
     expect(next).toEqual({ x: 30, y: 20, width: 20, height: 30 })
   })
 
   it('keeps a 1:1 ratio on corner handles by expanding the smaller axis', () => {
-    const next = resizeCropRect({ x: 0, y: 0, width: 20, height: 20 }, 'se', { x: 50, y: 40 }, {
-      ratio: 1,
-      natural: square
-    })
+    const next = resizeCropRect(
+      { x: 0, y: 0, width: 20, height: 20 },
+      'se',
+      { x: 50, y: 40 },
+      {
+        ratio: 1,
+        natural: square
+      }
+    )
     expect(next).toEqual({ x: 0, y: 0, width: 50, height: 50 })
   })
 
   it('keeps ratio on edge handles and centers the other axis', () => {
-    const next = resizeCropRect({ x: 0, y: 0, width: 100, height: 100 }, 'e', { x: 50, y: 50 }, {
-      ratio: 1,
-      natural: wide
-    })
-    // ratioPercent = 1 * 600 / 800 = 0.75 -> width 50 -> height 66.67
+    const next = resizeCropRect(
+      { x: 0, y: 0, width: 100, height: 100 },
+      'e',
+      { x: 50, y: 50 },
+      {
+        ratio: 1,
+        natural: wide
+      }
+    )
+    // ratioPercent = 1 × 600 / 800 = 0.75 → 宽 50 → 高 66.67
     expect(next).toEqual({ x: 0, y: 16.67, width: 50, height: 66.67 })
   })
 
+  it('keeps ratio on the ne corner with a non-square natural', () => {
+    const next = resizeCropRect(
+      { x: 0, y: 0, width: 20, height: 20 },
+      'ne',
+      { x: 80, y: 10 },
+      {
+        ratio: 1,
+        natural: wide
+      }
+    )
+    // ratioPercent = 0.75 → 角点拖出超界，钳制回图内（钳制优先于比例）
+    expect(next).toEqual({ x: 0, y: 0, width: 80, height: 100 })
+  })
+
   it('clamps the resized rect into the image bounds', () => {
-    const next = resizeCropRect({ x: 0, y: 0, width: 100, height: 100 }, 'se', { x: 150, y: 150 }, {
-      ratio: null,
-      natural: square
-    })
+    const next = resizeCropRect(
+      { x: 0, y: 0, width: 100, height: 100 },
+      'se',
+      { x: 150, y: 150 },
+      {
+        ratio: null,
+        natural: square
+      }
+    )
     expect(next).toEqual({ x: 0, y: 0, width: 100, height: 100 })
   })
 
   it('moves the rect and clamps it into bounds', () => {
-    const next = moveCropRect({ x: 0, y: 0, width: 40, height: 40 }, { x: 90, y: 90 }, { x: 20, y: 20 })
+    const next = moveCropRect(
+      { x: 0, y: 0, width: 40, height: 40 },
+      { x: 90, y: 90 },
+      { x: 20, y: 20 }
+    )
     expect(next).toEqual({ x: 60, y: 60, width: 40, height: 40 })
   })
 
@@ -98,7 +141,7 @@ describe('crop rect helpers', () => {
 
   it('reshapes the rect to a ratio around its center', () => {
     const next = applyCropRatio({ x: 0, y: 0, width: 100, height: 100 }, 1, wide)
-    // ratioPercent = 0.75 -> full height 100 -> width 75, centered
+    // ratioPercent = 0.75 → 高度撑满 100 → 宽 75，居中
     expect(next).toEqual({ x: 12.5, y: 0, width: 75, height: 100 })
   })
 })

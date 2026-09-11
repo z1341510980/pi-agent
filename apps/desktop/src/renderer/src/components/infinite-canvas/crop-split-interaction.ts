@@ -34,7 +34,8 @@ export function resizeCropRect(
   if (controlsX) width = Math.abs(pointer.x - anchorX)
   if (controlsY) height = Math.abs(pointer.y - anchorY)
   if (options.ratio !== null) {
-    const ratioPercent = (options.ratio * options.natural.height) / options.natural.width
+    const safeWidth = Math.max(1, options.natural.width)
+    const ratioPercent = (options.ratio * options.natural.height) / safeWidth
     if (controlsX && controlsY) {
       if (width > height * ratioPercent) height = width / ratioPercent
       else width = height * ratioPercent
@@ -85,7 +86,8 @@ export function applyCropRatio(
   ratio: number,
   natural: { width: number; height: number }
 ): CropRect {
-  const ratioPercent = (ratio * natural.height) / natural.width
+  const safeWidth = Math.max(1, natural.width)
+  const ratioPercent = (ratio * natural.height) / safeWidth
   const centerX = rect.x + rect.width / 2
   const centerY = rect.y + rect.height / 2
   let width = rect.width
@@ -112,7 +114,8 @@ export function normalizeCuts(values: number[]): number[] {
 }
 
 export function addCut(cuts: number[]): number[] {
-  const boundaries = cutBoundaries(cuts)
+  const sorted = normalizeCuts(cuts)
+  const boundaries = cutBoundaries(sorted)
   let bestIndex = 0
   let bestGap = -1
   for (let index = 0; index < boundaries.length - 1; index += 1) {
@@ -122,7 +125,7 @@ export function addCut(cuts: number[]): number[] {
       bestIndex = index
     }
   }
-  return normalizeCuts([...cuts, round2((boundaries[bestIndex] + boundaries[bestIndex + 1]) / 2)])
+  return normalizeCuts([...sorted, round2((boundaries[bestIndex] + boundaries[bestIndex + 1]) / 2)])
 }
 
 export function removeCut(cuts: number[]): number[] {
