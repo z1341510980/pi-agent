@@ -1,4 +1,4 @@
-﻿import { afterAll, describe, expect, it, vi } from 'vitest'
+﻿import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { createMediaGenerator } from '../generator.js'
 import { MediaProviderStore } from '../media-provider-store.js'
@@ -73,23 +73,17 @@ describe('media generator facade (registry-backed)', () => {
     }
   })
 
-  it('falls back to the modality default when providerId is missing or unknown', async () => {
+  it('falls back to the modality default when providerId is missing', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.def.example.com/1.png' }] }))
-      .mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.def.example.com/2.png' }] }))
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ data: [{ url: 'https://cdn.def.example.com/1.png' }] })
+    )
     try {
       await expect(generator.generateImage({ prompt: 'a' })).resolves.toEqual({
         images: ['https://cdn.def.example.com/1.png']
       })
-      await expect(
-        generator.generateImage({ prompt: 'a', providerId: 'no-such-provider' })
-      ).resolves.toEqual({
-        images: ['https://cdn.def.example.com/2.png']
-      })
       expect(fetchMock.mock.calls[0][0]).toBe('https://def.example.com/v1/images/generations')
-      expect(fetchMock.mock.calls[1][0]).toBe('https://def.example.com/v1/images/generations')
       expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).model).toBe(
         'm-def'
       )
@@ -400,6 +394,142 @@ describe('analyzeImage analyzeModel 偏好优先级', () => {
       const { bridgeProviderId, requestModel } = await runAnalyze(invalid)
       expect(bridgeProviderId).toBe(undefined)
       expect(requestModel).toBe('vision-model')
+    }
+  })
+})
+
+describe('节点显式模型选择校验', () => {
+  const db = new Database(':memory:')
+  applyPluginMediaMigration(db)
+  const mediaStore = new MediaProviderStore(db)
+  afterAll(() => db.close())
+
+  afterEach(() => {
+    db.exec('DELETE FROM infinite_canvas_media_providers')
+  })
+
+  const jsonResponse = (body: unknown, status = 200): Response =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+
+  const createImageProvider = (
+    overrides: Partial<Parameters<typeof mediaStore.create>[0]> = {}
+  ): MediaProviderRow =>
+    mediaStore.create({
+      name: '生图 Provider',
+      modality: 'image',
+      adapter: 'openai-images',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'sk-test',
+      model: 'gpt-image-1',
+      ...overrides
+    })
+
+  const stubFetch = (): ReturnType<typeof vi.fn> => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('generateImage 显式 providerId 已不存在时拒绝且不发起请求', async () => {
+    const generator = createMediaGenerator(createMediaProviderRegistry(mediaStore))
+    const fetchMock = stubFetch()
+    try {
+      await expect(
+        generator.generateImage({ prompt: 'a lighthouse', providerId: 'no-such-provider' })
+      ).rejects.toThrow('已被删除或停用')
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('generateImage 显式 providerId 已停用时拒绝且不发起请求', async () => {
+    const row = createImageProvider({ name: '已停用 Provider' })
+    mediaStore.update(row.id, { enabled: false })
+    const generator = createMediaGenerator(createMediaProviderRegistry(mediaStore))
+    const fetchMock = stubFetch()
+    try {
+      await expect(
+        generator.generateImage({ prompt: 'a lighthouse', providerId: row.id })
+      ).rejects.toThrow('已被删除或停用')
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('generateImage 显式 model 已不在 Provider 候选内时拒绝且不发起请求', async () => {
+    createImageProvider({
+      name: '候选收缩 Provider',
+      model: 'img-a',
+      params: { models: 'img-b\ncustom-x' }
+    })
+    const generator = createMediaGenerator(createMediaProviderRegistry(mediaStore))
+    const fetchMock = stubFetch()
+    try {
+      await expect(
+        generator.generateImage({
+          prompt: 'a lighthouse',
+          providerId: mediaStore.list('image')[0]!.id,
+          model: 'gone-model'
+        })
+      ).rejects.toThrow('已从 Provider')
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('generateImage 显式 model 命中 params.models 候选时放行并透传请求体', async () => {
+    const row = createImageProvider({
+      name: '候选命中 Provider',
+      model: 'img-a',
+      params: { models: 'img-b\ncustom-x' }
+    })
+    const generator = createMediaGenerator(createMediaProviderRegistry(mediaStore))
+    const fetchMock = stubFetch()
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ data: [{ url: 'https://cdn.example.com/a.png' }] })
+    )
+    try {
+      await expect(
+        generator.generateImage({
+          prompt: 'a lighthouse',
+          providerId: row.id,
+          model: 'custom-x'
+        })
+      ).resolves.toEqual({ images: ['https://cdn.example.com/a.png'] })
+      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).model).toBe(
+        'custom-x'
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('generateAudio 显式 providerId 已不存在时拒绝且不发起请求', async () => {
+    const generator = createMediaGenerator(createMediaProviderRegistry(mediaStore))
+    const fetchMock = stubFetch()
+    try {
+      await expect(
+        generator.generateAudio({ prompt: '一段风声', providerId: 'no-such-provider' })
+      ).rejects.toThrow('已被删除或停用')
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('generateVideo 显式 providerId 已不存在时拒绝且不发起请求', async () => {
+    const generator = createMediaGenerator(createMediaProviderRegistry(mediaStore))
+    const fetchMock = stubFetch()
+    try {
+      await expect(
+        generator.generateVideo({ prompt: '一段海浪', providerId: 'no-such-provider' })
+      ).rejects.toThrow('已被删除或停用')
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
     }
   })
 })

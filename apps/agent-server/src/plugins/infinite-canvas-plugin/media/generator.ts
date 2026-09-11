@@ -20,7 +20,7 @@
 
 import type { FastifyBaseLogger } from 'fastify'
 import { TEXT_PROVIDER_UNCONFIGURED_MESSAGE, type MediaProviderRegistry } from './registry.js'
-import type { MediaModalityContext, MediaProviderAdapter } from './adapter.js'
+import type { MediaModalityContext, MediaProviderAdapter, MediaProviderRow } from './adapter.js'
 import { MEDIA_PREF_ANALYZE_MODEL } from './media-prefs-store.js'
 import { normalizeImageBaseUrl, withAbortGuard } from './shared.js'
 
@@ -174,6 +174,40 @@ async function analyzeWithChat(
   }
 }
 
+const GENERATION_MODALITY_LABELS: Record<'image' | 'audio' | 'video', string> = {
+  image: '图片',
+  audio: '音频',
+  video: '视频'
+}
+
+/** Provider 候选模型：行默认 model + params.models（换行分隔），去重去空。 */
+export function providerCandidateModels(row: MediaProviderRow): string[] {
+  const extra = typeof row.params?.models === 'string' ? row.params.models.split(/\r?\n/) : []
+  return [...new Set([row.model, ...extra].map((model) => model.trim()).filter(Boolean))]
+}
+
+/**
+ * 节点显式选择校验：providerId 存在时必须命中可用 Provider（不回退默认），
+ * 所选 model 必须仍在该 Provider 候选列表内 —— 失效即报错，阻止发起上游请求。
+ */
+async function assertProviderSelection(
+  registry: MediaProviderRegistry,
+  modality: 'image' | 'audio' | 'video',
+  providerId: string | undefined,
+  model: string | undefined
+): Promise<void> {
+  if (!providerId) return
+  const row = registry.findEnabledRow(modality, providerId)
+  if (!row) {
+    throw new Error(
+      `所选「${GENERATION_MODALITY_LABELS[modality]}」模型的 Provider 已被删除或停用，请在节点面板重新选择`
+    )
+  }
+  if (model && !providerCandidateModels(row).includes(model)) {
+    throw new Error(`所选模型 ${model} 已从 Provider「${row.name}」移除，请在节点面板重新选择`)
+  }
+}
+
 export function createMediaGenerator(
   registry: MediaProviderRegistry,
   options?: MediaGeneratorOptions
@@ -199,6 +233,7 @@ export function createMediaGenerator(
 
   return {
     async generateImage({ providerId, prompt, references, model, size, count, traceId, signal }) {
+      await assertProviderSelection(registry, 'image', providerId, model)
       const { adapter, ctx } = await resolveImage(providerId, model)
       if (!adapter.generateImage) {
         throw new Error(`媒体适配器 "${adapter.id}" 未实现图片生成`)
@@ -213,6 +248,7 @@ export function createMediaGenerator(
       })
     },
     async editImage({ providerId, prompt, image, images, mask, model, size, traceId, signal }) {
+      await assertProviderSelection(registry, 'image', providerId, model)
       const { adapter, ctx } = await resolveImage(providerId, model)
       if (!adapter.editImage) {
         throw new Error(`媒体适配器 "${adapter.id}" 未实现图片编辑`)
@@ -252,6 +288,7 @@ export function createMediaGenerator(
       return analyzeWithChat(ctx, { image, instruction, signal })
     },
     async generateAudio(input) {
+      await assertProviderSelection(registry, 'audio', input.providerId, input.model)
       const { adapter, ctx } = await registry.resolve('audio', { providerId: input.providerId })
       if (!adapter.generateAudio) {
         throw new Error(`媒体适配器 "${adapter.id}" 未实现音频生成`)
@@ -259,6 +296,7 @@ export function createMediaGenerator(
       return adapter.generateAudio(ctx, input)
     },
     async generateVideo(input) {
+      await assertProviderSelection(registry, 'video', input.providerId, input.model)
       const { adapter, ctx } = await registry.resolve('video', { providerId: input.providerId })
       if (!adapter.generateVideo) {
         throw new Error(`媒体适配器 "${adapter.id}" 未实现视频生成`)

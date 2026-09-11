@@ -67,9 +67,7 @@ const MODALITY_LABELS: Record<MediaModality, string> = {
 }
 
 function unconfiguredProviderError(modality: MediaModality): Error {
-  return new Error(
-    `${MODALITY_LABELS[modality]}尚未配置生成 Provider，请到 设置 → 媒体生成 配置`
-  )
+  return new Error(`${MODALITY_LABELS[modality]}尚未配置生成 Provider，请到 设置 → 媒体生成 配置`)
 }
 
 function contextFromRow(row: MediaProviderRow, logger?: FastifyBaseLogger): MediaModalityContext {
@@ -138,6 +136,16 @@ export class MediaProviderRegistry {
       if (row && row.modality === modality && row.enabled) return row
     }
     return this.store.resolveDefault(modality)
+  }
+
+  /** 显式选择的只读查询：仅当 providerId 存在、模态匹配且启用时返回行（不回退默认）。 */
+  findEnabledRow(
+    modality: Exclude<MediaModality, 'text'>,
+    providerId: string
+  ): MediaProviderRow | null {
+    const row = this.store.get(providerId)
+    if (row && row.modality === modality && row.enabled) return row
+    return null
   }
 }
 
