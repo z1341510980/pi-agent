@@ -7,7 +7,6 @@ import {
 } from 'react'
 import {
   Brush,
-  Crop,
   Eraser,
   Grid2x2,
   Maximize2,
@@ -359,56 +358,7 @@ export function MaskEditDialog({
   )
 }
 
-export function CropDialog({
-  theme,
-  source,
-  onClose,
-  onConfirm
-}: {
-  theme: CanvasTheme
-  source: string
-  onClose: () => void
-  onConfirm: (crop: { x: number; y: number; width: number; height: number }) => void
-}): ReactElement {
-  const [crop, setCrop] = useState({ x: 0, y: 0, width: 100, height: 100 })
-  return (
-    <MediaDialogShell
-      theme={theme}
-      title="裁剪图片"
-      icon={<Crop className="size-4" />}
-      onClose={onClose}
-    >
-      <img
-        src={source}
-        alt="待裁剪图片"
-        className="max-h-[50vh] w-full rounded-xl object-contain"
-      />
-      <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
-        <NumberField
-          label="X"
-          value={crop.x}
-          onChange={(value) => setCrop({ ...crop, x: value })}
-        />
-        <NumberField
-          label="Y"
-          value={crop.y}
-          onChange={(value) => setCrop({ ...crop, y: value })}
-        />
-        <NumberField
-          label="宽"
-          value={crop.width}
-          onChange={(value) => setCrop({ ...crop, width: value })}
-        />
-        <NumberField
-          label="高"
-          value={crop.height}
-          onChange={(value) => setCrop({ ...crop, height: value })}
-        />
-      </div>
-      <DialogAction theme={theme} label="创建裁剪结果" onClick={() => onConfirm(crop)} />
-    </MediaDialogShell>
-  )
-}
+export { CropDialog } from './crop-dialog'
 
 export function SplitDialog({
   theme,
