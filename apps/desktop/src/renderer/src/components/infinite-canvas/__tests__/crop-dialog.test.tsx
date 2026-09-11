@@ -173,13 +173,13 @@ describe('裁剪对话框', () => {
     const { onConfirm } = renderDialog()
     fireEvent.click(screen.getByRole('button', { name: '1:1' }))
     fireEvent.click(screen.getByRole('button', { name: '自由' }))
-    drag(document.querySelector('[data-crop-handle="se"]')!, [
-      { x: 480, y: 360 },
+    drag(document.querySelector('[data-crop-handle="e"]')!, [
+      { x: 420, y: 180 },
       { x: 240, y: 180 }
     ])
     fireEvent.click(screen.getByRole('button', { name: '创建裁剪结果' }))
-    // 1:1 后裁剪框为 {12.5,0,75,100}，切回自由不清空选区；se 拖到 (50,50)% 以对角 (12.5,0) 锚定
-    expect(onConfirm).toHaveBeenCalledWith({ x: 12.5, y: 0, width: 37.5, height: 50 })
+    // 解锁后 e 手柄只改宽度：宽 37.5，高保持 100；若比例卡住则会得到高 50 且 y=25
+    expect(onConfirm).toHaveBeenCalledWith({ x: 12.5, y: 0, width: 37.5, height: 100 })
   })
 
   it('pointercancel 结束拖动并隐藏放大镜', () => {
