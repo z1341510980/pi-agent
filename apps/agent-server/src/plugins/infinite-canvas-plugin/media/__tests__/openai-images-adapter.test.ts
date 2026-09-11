@@ -38,7 +38,9 @@ describe('openai-images adapter', () => {
     vi.stubGlobal('fetch', fetchMock)
     vi.useFakeTimers()
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ id: 'job-1', object: 'image.generation.job', status: 'processing' }, 202))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: 'job-1', object: 'image.generation.job', status: 'processing' }, 202)
+      )
       .mockResolvedValueOnce(
         jsonResponse({
           id: 'job-1',
@@ -76,7 +78,13 @@ describe('openai-images adapter', () => {
     vi.useFakeTimers()
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ id: 'reference-job', status: 'processing' }, 202))
-      .mockResolvedValueOnce(jsonResponse({ id: 'reference-job', status: 'succeeded', data: [{ url: 'https://cdn.xkiro.com/reference-result.png' }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 'reference-job',
+          status: 'succeeded',
+          data: [{ url: 'https://cdn.xkiro.com/reference-result.png' }]
+        })
+      )
 
     try {
       const resultPromise = adapter.generateImage!(
@@ -93,7 +101,9 @@ describe('openai-images adapter', () => {
         }
       )
       await vi.advanceTimersByTimeAsync(2_000)
-      await expect(resultPromise).resolves.toEqual({ images: ['https://cdn.xkiro.com/reference-result.png'] })
+      await expect(resultPromise).resolves.toEqual({
+        images: ['https://cdn.xkiro.com/reference-result.png']
+      })
       expect(fetchMock.mock.calls[0][0]).toBe('https://api.xkiro.com/v1/images/edits')
       const request = fetchMock.mock.calls[0][1] as RequestInit
       expect((request.headers as Record<string, string>)['Content-Type']).toBe('application/json')
@@ -117,13 +127,23 @@ describe('openai-images adapter', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ error: { message: 'Image must be a multipart file' }, code: 'invalid_image' }, 400))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: { message: 'Image must be a multipart file' }, code: 'invalid_image' },
+          400
+        )
+      )
       .mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.openai.com/edited.png' }] }))
 
     try {
       await expect(
         adapter.editImage!(
-          createContext({ providerId: 'openai', baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-test', model: 'gpt-image-1' }),
+          createContext({
+            providerId: 'openai',
+            baseUrl: 'https://api.openai.com/v1',
+            apiKey: 'sk-test',
+            model: 'gpt-image-1'
+          }),
           {
             prompt: 'make the sky a sunset',
             image: 'data:image/png;base64,AA==',
@@ -153,11 +173,22 @@ describe('openai-images adapter', () => {
     vi.useFakeTimers()
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ id: 'edit-1', status: 'processing' }, 202))
-      .mockResolvedValueOnce(jsonResponse({ id: 'edit-1', status: 'succeeded', data: [{ url: 'https://cdn.xkiro.com/edited.png' }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 'edit-1',
+          status: 'succeeded',
+          data: [{ url: 'https://cdn.xkiro.com/edited.png' }]
+        })
+      )
 
     try {
       const resultPromise = adapter.editImage!(
-        createContext({ providerId: 'xkiro', baseUrl: 'https://api.xkiro.com/v1', apiKey: 'xk-test-key', model: 'gpt-image' }),
+        createContext({
+          providerId: 'xkiro',
+          baseUrl: 'https://api.xkiro.com/v1',
+          apiKey: 'xk-test-key',
+          model: 'gpt-image'
+        }),
         {
           prompt: 'make the sky a sunset',
           image: 'data:image/png;base64,AA==',
@@ -186,16 +217,22 @@ describe('openai-images adapter', () => {
   it('remembers multipart-only providers and skips the doomed JSON attempt next time', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const ok = (): Response =>
-      jsonResponse({ data: [{ url: 'https://cdn.example.com/mp.png' }] })
+    const ok = (): Response => jsonResponse({ data: [{ url: 'https://cdn.example.com/mp.png' }] })
     fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: 'json unsupported' } }), { status: 400 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: 'json unsupported' } }), { status: 400 })
+      )
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok())
 
     const edit = (): Promise<{ images: string[] }> =>
       adapter.editImage!(
-        createContext({ providerId: 'multipart-only', baseUrl: 'https://multipart-only.example.com/v1', apiKey: '', model: 'gpt-image-2' }),
+        createContext({
+          providerId: 'multipart-only',
+          baseUrl: 'https://multipart-only.example.com/v1',
+          apiKey: '',
+          model: 'gpt-image-2'
+        }),
         {
           prompt: '按参考图重画',
           image: 'data:image/png;base64,AA=='
@@ -223,7 +260,12 @@ describe('openai-images adapter', () => {
     try {
       await expect(
         adapter.editImage!(
-          createContext({ providerId: 'slow-edits', baseUrl: 'https://slow-edits.example.com/v1', apiKey: 'sk-test', model: 'gpt-image-2' }),
+          createContext({
+            providerId: 'slow-edits',
+            baseUrl: 'https://slow-edits.example.com/v1',
+            apiKey: 'sk-test',
+            model: 'gpt-image-2'
+          }),
           {
             prompt: '按参考图重画',
             image: 'data:image/png;base64,AA=='
@@ -251,7 +293,13 @@ describe('openai-images adapter', () => {
     try {
       await expect(
         adapter.generateImage!(
-          createContext({ providerId: 'not-implemented', baseUrl: 'https://not-implemented.example.com', apiKey: 'sk-test', model: 'gpt-image-2', params: { size: '1024x1792' } }),
+          createContext({
+            providerId: 'not-implemented',
+            baseUrl: 'https://not-implemented.example.com',
+            apiKey: 'sk-test',
+            model: 'gpt-image-2',
+            params: { size: '1024x1792' }
+          }),
           {
             prompt: '参考图生图',
             references: ['data:image/png;base64,AA==', 'data:image/png;base64,Ag==']
@@ -282,7 +330,12 @@ describe('openai-images adapter', () => {
 
     const edit = (): Promise<{ images: string[] }> =>
       adapter.editImage!(
-        createContext({ providerId: 'json-only', baseUrl: 'https://json-only.example.com/v1', apiKey: '', model: 'gpt-image-2' }),
+        createContext({
+          providerId: 'json-only',
+          baseUrl: 'https://json-only.example.com/v1',
+          apiKey: '',
+          model: 'gpt-image-2'
+        }),
         {
           prompt: '参考图生图',
           image: 'data:image/png;base64,AA=='
@@ -304,26 +357,42 @@ describe('openai-images adapter', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example.com/snap-1.png' }] }))
-      .mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example.com/snap-2.png' }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ data: [{ url: 'https://cdn.example.com/snap-1.png' }] })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ data: [{ url: 'https://cdn.example.com/snap-2.png' }] })
+      )
 
     try {
       await expect(
         adapter.generateImage!(
-          createContext({ providerId: 'snap-1', baseUrl: 'https://snap.example.com/v1', model: 'gpt-image-1' }),
+          createContext({
+            providerId: 'snap-1',
+            baseUrl: 'https://snap.example.com/v1',
+            model: 'gpt-image-1'
+          }),
           { prompt: 'a lighthouse', size: '1024x1792' }
         )
       ).resolves.toEqual({ images: ['https://cdn.example.com/snap-1.png'] })
       await expect(
         adapter.generateImage!(
-          createContext({ providerId: 'snap-2', baseUrl: 'https://snap.example.com/v1', model: 'gpt-image-1' }),
+          createContext({
+            providerId: 'snap-2',
+            baseUrl: 'https://snap.example.com/v1',
+            model: 'gpt-image-1'
+          }),
           { prompt: 'a lighthouse', size: '1234x5678' }
         )
       ).resolves.toEqual({ images: ['https://cdn.example.com/snap-2.png'] })
 
       // 旧 dall-e 比例吸附到 1k 白名单；非法自由分辨率按最大边选 4k 档内最近长宽比
-      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).size).toBe('864x1536')
-      expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body)).size).toBe('2160x3840')
+      expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).size).toBe(
+        '864x1536'
+      )
+      expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body)).size).toBe(
+        '2160x3840'
+      )
     } finally {
       vi.unstubAllGlobals()
     }
@@ -338,7 +407,11 @@ describe('openai-images adapter', () => {
     try {
       await expect(
         adapter.generateImage!(
-          createContext({ providerId: 'qb-json', baseUrl: 'https://qb.example.com/v1', model: 'gpt-image-1' }),
+          createContext({
+            providerId: 'qb-json',
+            baseUrl: 'https://qb.example.com/v1',
+            model: 'gpt-image-1'
+          }),
           { prompt: 'a lighthouse', quality: 'high', background: 'transparent', count: 5 }
         )
       ).resolves.toEqual({ images: ['https://cdn.example.com/qb-1.png'] })
@@ -361,7 +434,11 @@ describe('openai-images adapter', () => {
     try {
       await expect(
         adapter.generateImage!(
-          createContext({ providerId: 'qb-omit', baseUrl: 'https://qb.example.com/v1', model: 'gpt-image-1' }),
+          createContext({
+            providerId: 'qb-omit',
+            baseUrl: 'https://qb.example.com/v1',
+            model: 'gpt-image-1'
+          }),
           { prompt: 'a lighthouse', quality: 'auto', count: 1 }
         )
       ).resolves.toEqual({ images: ['https://cdn.example.com/qb-2.png'] })
@@ -384,19 +461,31 @@ describe('openai-images adapter', () => {
     try {
       await expect(
         adapter.generateImage!(
-          createContext({ providerId: 'qb-clamp-10', baseUrl: 'https://clamp.example.com/v1', model: 'gpt-image-1' }),
+          createContext({
+            providerId: 'qb-clamp-10',
+            baseUrl: 'https://clamp.example.com/v1',
+            model: 'gpt-image-1'
+          }),
           { prompt: 'p', count: 10 }
         )
       ).resolves.toEqual({ images: ['https://cdn.example.com/c10.png'] })
       await expect(
         adapter.generateImage!(
-          createContext({ providerId: 'qb-clamp-99', baseUrl: 'https://clamp.example.com/v1', model: 'gpt-image-1' }),
+          createContext({
+            providerId: 'qb-clamp-99',
+            baseUrl: 'https://clamp.example.com/v1',
+            model: 'gpt-image-1'
+          }),
           { prompt: 'p', count: 99 }
         )
       ).resolves.toEqual({ images: ['https://cdn.example.com/c99.png'] })
       await expect(
         adapter.generateImage!(
-          createContext({ providerId: 'qb-xkiro', baseUrl: 'https://api.xkiro.com/v1', model: 'gpt-image' }),
+          createContext({
+            providerId: 'qb-xkiro',
+            baseUrl: 'https://api.xkiro.com/v1',
+            model: 'gpt-image'
+          }),
           { prompt: 'p', count: 10 }
         )
       ).resolves.toEqual({ images: ['https://cdn.xkiro.com/x.png'] })
@@ -414,13 +503,22 @@ describe('openai-images adapter', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ error: { message: 'Image must be a multipart file' }, code: 'invalid_image' }, 400))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: { message: 'Image must be a multipart file' }, code: 'invalid_image' },
+          400
+        )
+      )
       .mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example.com/mp-qb.png' }] }))
 
     try {
       await expect(
         adapter.generateImage!(
-          createContext({ providerId: 'qb-multipart', baseUrl: 'https://qb-mp.example.com/v1', model: 'gpt-image-1' }),
+          createContext({
+            providerId: 'qb-multipart',
+            baseUrl: 'https://qb-mp.example.com/v1',
+            model: 'gpt-image-1'
+          }),
           {
             prompt: 'transparent version',
             references: ['data:image/png;base64,AA=='],
