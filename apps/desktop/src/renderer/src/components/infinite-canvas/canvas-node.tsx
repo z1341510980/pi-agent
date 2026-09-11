@@ -87,11 +87,13 @@ interface ResizeState {
 function EmptyContent({
   icon,
   text,
-  theme
+  theme,
+  extra
 }: {
   icon: ReactNode
   text: string
   theme: CanvasTheme
+  extra?: ReactNode
 }): React.ReactElement {
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-3">
@@ -107,6 +109,7 @@ function EmptyContent({
       >
         {text}
       </span>
+      {extra}
     </div>
   )
 }
@@ -503,6 +506,16 @@ export const CanvasNode = memo(function CanvasNode({
             icon={<Sparkles className="size-7" />}
             text="连线到上游内容，在下方面板编写生成指令"
             theme={theme}
+            extra={
+              typeof metadata.model === 'string' && metadata.model ? (
+                <div
+                  className="max-w-full truncate px-6 text-[10px] opacity-50"
+                  style={{ color: theme.node.placeholder }}
+                >
+                  {metadata.model}
+                </div>
+              ) : null
+            }
           />
         )
       case 'video': {

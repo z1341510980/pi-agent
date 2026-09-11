@@ -13,6 +13,7 @@ import {
 
 import type { CanvasNodeData } from '@/api/infinite-canvas-client'
 import { proxyExternalImageUrl } from '@/api/infinite-canvas-client'
+import { listMediaProviders, type MediaProviderRow } from '@/api/media-provider-client'
 import type { CanvasTheme } from './canvas-theme'
 
 export interface UpstreamInputSummary {
@@ -364,6 +365,91 @@ function ConfigSettingsRow({
   return <span className="text-xs opacity-50">文本模式使用画布 Agent 默认配置</span>
 }
 
+/** 节点级模型选项：一个已启用 Provider 下的一段候选模型。 */
+interface ModelOption {
+  value: string
+  label: string
+}
+
+/** 按模态聚合已启用 Provider 的候选模型（行默认 model + params.models）。 */
+export function providerModelOptions(rows: MediaProviderRow[], modality: string): ModelOption[] {
+  const options: ModelOption[] = []
+  for (const row of rows) {
+    if (row.modality !== modality || !row.enabled) continue
+    const extra = typeof row.params?.models === 'string' ? row.params.models.split(/\r?\n/) : []
+    const models = [...new Set([row.model, ...extra].map((model) => model.trim()).filter(Boolean))]
+    for (const model of models) {
+      options.push({ value: `${row.id}:${model}`, label: `${row.name} / ${model}` })
+    }
+  }
+  return options
+}
+
+/** 节点面板模型选择：写 metadata.providerId/model；空 value = 跟随全局默认（清除）。 */
+function ModelPicker({
+  theme,
+  mode,
+  providerId,
+  model,
+  onChange
+}: {
+  theme: CanvasTheme
+  mode: string
+  providerId?: string
+  model?: string
+  onChange: (patch: { providerId?: string; model?: string }) => void
+}): ReactElement {
+  const [options, setOptions] = useState<ModelOption[] | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void listMediaProviders()
+      .then((rows) => {
+        if (!cancelled) setOptions(providerModelOptions(rows, mode))
+      })
+      .catch(() => {
+        if (!cancelled) setOptions([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [mode])
+  const value = providerId && model ? `${providerId}:${model}` : ''
+  const unavailable = options !== null && options.length === 0
+  return (
+    <label className="mt-2 block text-xs">
+      模型
+      <select
+        value={value}
+        disabled={options === null || unavailable}
+        aria-label="模型"
+        onChange={(event) => {
+          const next = event.target.value
+          if (!next) {
+            onChange({ providerId: undefined, model: undefined })
+            return
+          }
+          const separator = next.indexOf(':')
+          onChange({ providerId: next.slice(0, separator), model: next.slice(separator + 1) })
+        }}
+        className="mt-1 h-8 w-full rounded-lg border bg-transparent px-2 outline-none"
+        style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
+      >
+        <option value="">跟随全局默认</option>
+        {(options ?? []).map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+        {unavailable && (
+          <option value="" disabled>
+            未配置可用的 Provider
+          </option>
+        )}
+      </select>
+    </label>
+  )
+}
+
 /**
  * 参考项目的节点下方面板的桌面端适配版。
  * 文本输入、生成模式和 Agent 调用保持在节点 metadata 中，画布状态仍由父级统一持久化。
@@ -664,6 +750,17 @@ export function CanvasNodePanel({
             onConfigChange={(patch) => onConfigChange(node.id, patch)}
           />
         </div>
+      )}
+      {isConfig && mode !== 'text' && onConfigChange && (
+        <ModelPicker
+          theme={theme}
+          mode={mode}
+          providerId={
+            typeof node.metadata?.providerId === 'string' ? node.metadata.providerId : undefined
+          }
+          model={typeof node.metadata?.model === 'string' ? node.metadata.model : undefined}
+          onChange={(patch) => onConfigChange(node.id, patch)}
+        />
       )}
       <div className="mt-2 flex items-center justify-between gap-2">
         {isConfig ? (
