@@ -38,7 +38,9 @@ import {
   generateCanvasText,
   getCanvasProject,
   listCanvasProjects,
+  listCanvasVideoTasks,
   proxyExternalImageUrl,
+  refreshCanvasVideoTask,
   renameCanvasProject,
   reverseCanvasPrompt,
   saveCanvasGraphBody,
@@ -48,6 +50,7 @@ import {
   type CanvasProject,
   type CanvasProjectSettings,
   type CanvasNodeData as ApiCanvasNodeData,
+  type CanvasVideoTask,
   type ViewportTransform
 } from '@/api/infinite-canvas-client'
 import { cn } from '@/lib/utils'
@@ -119,6 +122,7 @@ import {
   invalidateDesignBoardThumbnail
 } from './design-board/design-board-thumbnail'
 import { buildCanvasGenerationContext } from './generation-context'
+import { applyCompletedVideoTask } from './video-task-sync'
 import {
   buildBatchDownloadArchive,
   collectBatchDownloadItemsWithEmptyNodes,
@@ -148,6 +152,8 @@ type DragState = {
 
 const DEFAULT_SETTINGS: CanvasProjectSettings = { backgroundMode: 'lines', showImageInfo: false }
 const DEFAULT_VIEWPORT: ViewportTransform = { x: 0, y: 0, k: 1 }
+/** 视频异步任务轮询间隔：与设计稿一致（打开项目期间 10s 一次）。 */
+const VIDEO_TASK_POLL_INTERVAL_MS = 10_000
 
 function cloneNodes(nodes: LocalNode[]): LocalNode[] {
   return nodes.map((node) => ({
@@ -339,6 +345,10 @@ export function InfiniteCanvasWorkspace({
   const clipboardRef = useRef<{ nodes: LocalNode[]; connections: LocalConnection[] } | null>(null)
   const viewportAnimationRef = useRef<number | null>(null)
   const generationControllersRef = useRef(new Map<string, AbortController>())
+  /** 已落画布的视频任务 id：轮询与手动重试共用的幂等集合。 */
+  const handledVideoTaskIdsRef = useRef(new Set<string>())
+  /** video-tasks 轮询在途标记：10s 定时器可能早于上一次请求返回。 */
+  const videoTasksInFlightRef = useRef(false)
   const pendingSelectionRef = useRef<Set<string> | null>(null)
 
   useEffect(() => {
@@ -2196,6 +2206,8 @@ export function InfiniteCanvasWorkspace({
                   project.id,
                   {
                     mode: generationMode,
+                    // 发起生成的节点 id：异步视频任务落库关联，供轮询/手动恢复回填
+                    nodeId,
                     prompt: effectivePrompt,
                     context: builtContext.contextText,
                     resourceContext: builtContext.context,
@@ -2238,6 +2250,28 @@ export function InfiniteCanvasWorkspace({
                   { signal: controller.signal }
                 )
         if (controller.signal.aborted) return
+        // 异步视频任务：服务端已落库并立即返回任务句柄。节点保持 loading 视觉
+        // （status 已是 loading），记录本地任务 id 供轮询/「重新获取」回填；
+        // 此处不创建子节点 —— 视频完成后由任务轮询统一落画布。
+        // runningNodeId 与控制器在 finally 里清理：节点卡片停止按钮消失，
+        // 但 loading 视觉凭 status 保留。
+        if ('videoTask' in result) {
+          setNodes((current) =>
+            current.map((node) =>
+              node.id === nodeId
+                ? {
+                    ...node,
+                    metadata: {
+                      ...node.metadata,
+                      videoTaskId: result.videoTask.id,
+                      videoTaskProgress: undefined
+                    }
+                  }
+                : node
+            )
+          )
+          return
+        }
         const images =
           generationMode === 'image' && 'images' in result && Array.isArray(result.images)
             ? result.images
@@ -2392,6 +2426,179 @@ export function InfiniteCanvasWorkspace({
       }
     },
     [addDerivedImage, project, pushHistory, resolvePromptReferences]
+  )
+
+  /**
+   * 视频任务状态回填（轮询与「重新获取」共用的单任务处理）：直接在传入的
+   * working 图上做变更，返回变更类型 —— 'structural' 表示落了视频子节点
+   * （success），'metadata' 表示只改了源节点元数据（error/进度），null 表示
+   * 无变更。failed/timeout 只覆盖仍在 loading 且任务 id 对得上的源节点
+   * （保留 videoTaskId 供重试）；running 仅在进度变化时写入。
+   *
+   * working 图由调用方从 nodesRef 起一份并在整个轮询批次间传递：同一 tick
+   * 处理多个任务时基于同一份可变工作副本，避免 stale ref 互相覆盖。
+   */
+  const applyVideoTaskUpdate = useCallback(
+    (
+      task: CanvasVideoTask,
+      working: { nodes: LocalNode[]; connections: LocalConnection[] }
+    ): 'structural' | 'metadata' | null => {
+      const source = working.nodes.find((node) => node.id === task.nodeId)
+      if (!source) {
+        // 源节点已删/未关联：终态任务记已处理，避免每轮空转
+        if (task.status !== 'running') handledVideoTaskIdsRef.current.add(task.id)
+        return null
+      }
+      const metadata = source.metadata ?? {}
+      if (task.status === 'success') {
+        const applied = applyCompletedVideoTask(working.nodes, working.connections, task, {
+          position: {
+            x: source.position.x + source.width + 96,
+            y: source.position.y + source.height / 2
+          },
+          handledTaskIds: handledVideoTaskIdsRef.current
+        })
+        if (!applied) return null
+        // 源节点退出 loading：状态/任务 id/进度/错误一并清掉（结果已在子节点上）
+        working.nodes = applied.nodes.map((node) =>
+          node.id === source.id
+            ? {
+                ...node,
+                metadata: {
+                  ...node.metadata,
+                  status: undefined,
+                  videoTaskId: undefined,
+                  videoTaskProgress: undefined,
+                  errorDetails: undefined
+                }
+              }
+            : node
+        )
+        working.connections = applied.connections
+        return 'structural'
+      }
+      if (task.status === 'failed' || task.status === 'timeout') {
+        // 只覆盖仍在 loading 且任务 id 匹配的节点：重试中/已清理的维持现状
+        if (metadata.status !== 'loading' || metadata.videoTaskId !== task.id) return null
+        working.nodes = working.nodes.map((node) =>
+          node.id === source.id
+            ? {
+                ...node,
+                metadata: {
+                  ...node.metadata,
+                  status: 'error',
+                  errorDetails:
+                    task.error ??
+                    (task.status === 'timeout' ? '视频生成超时，可重新获取' : '视频生成失败')
+                }
+              }
+            : node
+        )
+        return 'metadata'
+      }
+      // running：进度字符串变化才写，避免无谓重渲染
+      if (task.progress !== (metadata.videoTaskProgress ?? null)) {
+        working.nodes = working.nodes.map((node) =>
+          node.id === source.id
+            ? { ...node, metadata: { ...node.metadata, videoTaskProgress: task.progress } }
+            : node
+        )
+        return 'metadata'
+      }
+      return null
+    },
+    []
+  )
+
+  /** 批量应用任务状态：任一变更才提交一次 setNodes；history 只在结构变化（落子节点）时入栈。 */
+  const processVideoTasks = useCallback(
+    (tasks: CanvasVideoTask[], baseNodes?: LocalNode[]): void => {
+      const working = {
+        nodes: baseNodes ?? nodesRef.current,
+        connections: connectionsRef.current
+      }
+      let changed = false
+      let structural = false
+      for (const task of tasks) {
+        const outcome = applyVideoTaskUpdate(task, working)
+        if (outcome) changed = true
+        if (outcome === 'structural') structural = true
+      }
+      if (!changed) return
+      if (structural) pushHistory()
+      setNodes(working.nodes)
+      setConnections(working.connections)
+    },
+    [applyVideoTaskUpdate, pushHistory]
+  )
+
+  // 视频异步任务轮询：打开项目期间 10s 一次（挂载即先拉一轮，捞回关闭期间
+  // 完成的任务）；失败静默，等待下一个周期；in-flight 标记防止请求重叠。
+  useEffect(() => {
+    if (!project?.id) return
+    let disposed = false
+    const tick = async (): Promise<void> => {
+      if (videoTasksInFlightRef.current) return
+      videoTasksInFlightRef.current = true
+      try {
+        const { tasks } = await listCanvasVideoTasks(project.id)
+        if (!disposed) processVideoTasks(tasks)
+      } catch {
+        // 轮询失败不打扰用户：下个周期重试
+      } finally {
+        videoTasksInFlightRef.current = false
+      }
+    }
+    void tick()
+    const interval = setInterval(() => void tick(), VIDEO_TASK_POLL_INTERVAL_MS)
+    return () => {
+      disposed = true
+      clearInterval(interval)
+    }
+  }, [project?.id, processVideoTasks])
+
+  /** 「重新获取」：按节点上的本地任务 id 强制向上游轮询一次并按终态回填。 */
+  const retryVideoTask = useCallback(
+    async (nodeId: string): Promise<void> => {
+      const source = nodesRef.current.find((node) => node.id === nodeId)
+      const videoTaskId = source?.metadata?.videoTaskId
+      if (!source || typeof videoTaskId !== 'string' || !project) return
+      // 先回到 loading 视觉；无论刷新成功与否都把这份快照作为回填基线，
+      // 避免 nodesRef 尚未同步导致终态判断落空
+      const loadingNodes = nodesRef.current.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              metadata: {
+                ...node.metadata,
+                status: 'loading' as const,
+                errorDetails: undefined
+              }
+            }
+          : node
+      )
+      setNodes(loadingNodes)
+      try {
+        const { task } = await refreshCanvasVideoTask(project.id, videoTaskId)
+        processVideoTasks([task], loadingNodes)
+      } catch (reason) {
+        setNodes((current) =>
+          current.map((node) =>
+            node.id === nodeId
+              ? {
+                  ...node,
+                  metadata: {
+                    ...node.metadata,
+                    status: 'error',
+                    errorDetails: reason instanceof Error ? reason.message : '重新获取视频结果失败'
+                  }
+                }
+              : node
+          )
+        )
+      }
+    },
+    [processVideoTasks, project]
   )
 
   const generateImageFromText = useCallback(
@@ -2669,6 +2876,7 @@ export function InfiniteCanvasWorkspace({
               onExtensionMetadataChange={handleExtensionMetadataChange}
               onTitleChange={handleNodeTitleChange}
               onGenerateImage={generateImageFromText}
+              onRetryVideoTask={(id) => void retryVideoTask(id)}
               onViewImage={(item) => {
                 if (item.metadata?.content)
                   window.open(item.metadata.content, '_blank', 'noopener,noreferrer')

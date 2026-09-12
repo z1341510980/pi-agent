@@ -62,6 +62,8 @@ export interface CanvasNodeProps {
   onTitleChange: (nodeId: string, title: string) => void
   onFontSizeChange?: (nodeId: string, fontSize: number) => void
   onGenerateImage?: (node: CanvasNodeData) => void
+  /** 视频异步任务失败/超时后的「重新获取」入口；未提供时不显示按钮。 */
+  onRetryVideoTask?: (nodeId: string) => void
   onViewImage?: (node: CanvasNodeData) => void
   onDownloadImage?: (node: CanvasNodeData) => void
   onBatchSelect?: (nodeId: string, index: number) => void
@@ -142,6 +144,7 @@ export const CanvasNode = memo(function CanvasNode({
   onExtensionMetadataChange,
   onTitleChange,
   onGenerateImage,
+  onRetryVideoTask,
   onViewImage,
   onDownloadImage,
   onBatchSelect,
@@ -331,11 +334,18 @@ export const CanvasNode = memo(function CanvasNode({
 
   const renderContent = (): ReactNode => {
     if (status === 'loading') {
+      // 异步视频任务（带 videoTaskId）展示生成中 + 上报进度；其余保持原文案
+      const videoProgress =
+        typeof metadata.videoTaskId === 'string'
+          ? typeof metadata.videoTaskProgress === 'string' && metadata.videoTaskProgress
+            ? ` ${metadata.videoTaskProgress}`
+            : '…'
+          : null
       return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-3">
           <Loader2 className="size-7 animate-spin" style={{ color: theme.node.muted }} />
           <span className="text-xs" style={{ color: theme.node.placeholder }}>
-            生成中…
+            {videoProgress !== null ? `视频生成中${videoProgress}` : '生成中…'}
           </span>
         </div>
       )
@@ -350,6 +360,26 @@ export const CanvasNode = memo(function CanvasNode({
           >
             {typeof metadata.errorDetails === 'string' ? metadata.errorDetails : '生成失败'}
           </span>
+          {/* 视频异步任务失败/超时：保留 videoTaskId 供手动恢复 */}
+          {typeof metadata.videoTaskId === 'string' && onRetryVideoTask && (
+            <button
+              type="button"
+              className="rounded-full border px-3 py-1 text-xs transition hover:opacity-80"
+              style={{
+                borderColor: theme.node.stroke,
+                color: theme.node.text,
+                background: theme.node.panel
+              }}
+              onClick={(event) => {
+                event.stopPropagation()
+                onRetryVideoTask(data.id)
+              }}
+              onMouseDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              重新获取
+            </button>
+          )}
         </div>
       )
     }

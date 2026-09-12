@@ -82,6 +82,10 @@ export interface CanvasNodeMetadata {
   mimeType?: string
   durationMs?: number
   storageKey?: string
+  /** 视频异步任务本地行 id：工作区轮询/「重新获取」凭它回填节点。 */
+  videoTaskId?: string
+  /** 视频任务进度（服务端上报的百分比字符串）。 */
+  videoTaskProgress?: string | null
   images?: Array<CanvasGeneratedImage | string>
   primaryImageId?: string
   groupId?: string
@@ -271,6 +275,8 @@ export async function generateCanvasMedia(
   projectId: string,
   payload: {
     mode: 'audio' | 'video'
+    /** 发起生成的画布节点 id：异步视频任务落库关联，供工作区轮询回填。 */
+    nodeId?: string
     prompt: string
     context?: string
     resourceContext?: CanvasGenerationContext
@@ -289,11 +295,56 @@ export async function generateCanvasMedia(
     watermark?: boolean
   },
   options?: { signal?: AbortSignal }
-): Promise<{ outputs: Array<{ url: string; mimeType: string }> }> {
-  return postApi<{ outputs: Array<{ url: string; mimeType: string }> }>(
-    `${BASE}/projects/${encodeURIComponent(projectId)}/generate-media`,
-    payload,
-    options
+): Promise<
+  { outputs: Array<{ url: string; mimeType: string }> } | { videoTask: CanvasVideoTaskAccepted }
+> {
+  return postApi<
+    { outputs: Array<{ url: string; mimeType: string }> } | { videoTask: CanvasVideoTaskAccepted }
+  >(`${BASE}/projects/${encodeURIComponent(projectId)}/generate-media`, payload, options)
+}
+
+/** 视频异步任务视图（video-tasks 列表 / refresh 返回，与服务端 toVideoTaskApiView 对齐）。 */
+export interface CanvasVideoTask {
+  /** 本地任务行 id（refresh 用它，不是上游 task_id）。 */
+  id: string
+  /** 发起生成的画布节点 id（未关联时为 null）。 */
+  nodeId: string | null
+  /** 上游任务 ID。 */
+  taskId: string
+  status: 'running' | 'success' | 'failed' | 'timeout'
+  progress: string | null
+  error: string | null
+  model: string | null
+  createdAt: number
+  updatedAt: number
+  /** 本地资产路径（仅 success 携带）。 */
+  resultPath?: string
+}
+
+/** generate-media 异步视频提交被接受时的载荷（id 为本地任务行 id）。 */
+export interface CanvasVideoTaskAccepted {
+  id: string
+  taskId: string
+  status: string
+}
+
+/** 项目视频任务列表：工作区打开项目期间轮询读取。 */
+export async function listCanvasVideoTasks(projectId: string): Promise<{
+  tasks: CanvasVideoTask[]
+}> {
+  return getApi<{ tasks: CanvasVideoTask[] }>(
+    `${BASE}/projects/${encodeURIComponent(projectId)}/video-tasks`
+  )
+}
+
+/** 手动恢复：强制向上游轮询一次，成功则返回已本地化的任务视图。 */
+export async function refreshCanvasVideoTask(
+  projectId: string,
+  taskId: string
+): Promise<{ task: CanvasVideoTask }> {
+  return postApi<{ task: CanvasVideoTask }>(
+    `${BASE}/projects/${encodeURIComponent(projectId)}/video-tasks/${encodeURIComponent(taskId)}/refresh`,
+    {}
   )
 }
 
