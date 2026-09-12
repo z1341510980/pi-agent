@@ -203,5 +203,32 @@ export const infiniteCanvasMigrations: MigrationDefinition[] = [
         value TEXT NOT NULL
       );
     `
+  },
+  {
+    // 视频异步任务队列（设计 Task 2/3）：提交视频生成即落一行 running 任务
+    // （上游 task_id / 协议 / 节点关联 / 参数回显），后台 worker 与手动 refresh
+    // 共享轮询并推进状态。行是唯一持久状态：服务重启后 running 任务留在表内，
+    // 靠 worker / refresh 恢复（timeout 保留 task_id 供手动拉回结果）。
+    id: '020_create_infinite_canvas_video_tasks',
+    sql: `
+      CREATE TABLE IF NOT EXISTS infinite_canvas_video_tasks (
+        id          TEXT PRIMARY KEY,
+        project_id  TEXT NOT NULL,
+        node_id     TEXT,
+        provider_id TEXT NOT NULL,
+        task_id     TEXT NOT NULL,
+        protocol    TEXT NOT NULL DEFAULT 'videos',
+        model       TEXT,
+        params      TEXT NOT NULL DEFAULT '{}',
+        status      TEXT NOT NULL DEFAULT 'running',
+        progress    TEXT,
+        result_path TEXT,
+        error       TEXT,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_infinite_canvas_video_tasks_project
+        ON infinite_canvas_video_tasks(project_id);
+    `
   }
 ]

@@ -259,7 +259,7 @@ describe('infinite canvas media × media provider registry', () => {
     }
   })
 
-  it('generate-media video：newapi-video 任务轮询完成后输出转存资产', async () => {
+  it('generate-media video：提交异步任务立即返回 videoTask，refresh 拉回结果转存资产', async () => {
     const videoProvider = mediaStore.create({
       name: '视频任务',
       modality: 'video',
@@ -275,15 +275,20 @@ describe('infinite canvas media × media provider registry', () => {
     fetchMock
       // 提交任务
       .mockResolvedValueOnce(jsonResponse({ task_id: 'task-1', status: 'queued' }))
-      // 第一次轮询：进行中
-      .mockResolvedValueOnce(jsonResponse({ task_id: 'task-1', status: 'in_progress' }))
-      // 第二次轮询：完成
+      // refresh 轮询：完成
       .mockResolvedValueOnce(
         jsonResponse({
           task_id: 'task-1',
           status: 'completed',
           url: 'https://cdn.example.com/out.mp4',
           format: 'mp4'
+        })
+      )
+      // 结果下载（视频签名 URL 本地化）
+      .mockResolvedValueOnce(
+        new Response(Buffer.from('fake-mp4-bytes'), {
+          status: 200,
+          headers: { 'Content-Type': 'video/mp4' }
         })
       )
     try {
@@ -293,9 +298,14 @@ describe('infinite canvas media × media provider registry', () => {
         body: { mode: 'video', prompt: '延时摄影', size: '1280x720', seconds: 5 }
       })
       expect(response.statusCode).toBe(200)
-      const outputs = response.json().data.outputs as Array<{ url: string; mimeType: string }>
-      expect(outputs[0].mimeType).toBe('video/mp4')
-      expect(outputs[0].url).toMatch(/^\/api\/plugins\/infinite-canvas\/assets\//)
+      // 异步契约：提交即返回任务标识，不再阻塞轮询
+      const videoTask = response.json().data.videoTask as {
+        id: string
+        taskId: string
+        status: string
+      }
+      expect(videoTask).toMatchObject({ taskId: 'task-1', status: 'running' })
+      expect(videoTask.id).toBeTruthy()
       // 提交 payload：显式分辨率 + duration，response_format=url
       expect(fetchMock.mock.calls[0][0]).toBe('https://video.example.com/v1/video/generations')
       expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toMatchObject({
@@ -306,30 +316,36 @@ describe('infinite canvas media × media provider registry', () => {
         height: 720,
         response_format: 'url'
       })
-      // 轮询端点
+
+      // 手动 refresh：轮询一次 → 下载本地化 → 任务 success + 本地资产
+      const refreshed = await app.inject({
+        method: 'POST',
+        url: `${CANVAS_PREFIX}/projects/${projectId}/video-tasks/${videoTask.id}/refresh`
+      })
+      expect(refreshed.statusCode).toBe(200)
+      const task = refreshed.json().data.task as { status: string; resultPath?: string }
+      expect(task.status).toBe('success')
+      expect(task.resultPath).toMatch(/^\/api\/plugins\/infinite-canvas\/assets\//)
+      // 轮询端点按 task_id 拼装，第三个请求是结果下载
       expect(fetchMock.mock.calls[1][0]).toBe(
         'https://video.example.com/v1/video/generations/task-1'
       )
-      expect(fetchMock.mock.calls[2][0]).toBe(
-        'https://video.example.com/v1/video/generations/task-1'
-      )
+      expect(fetchMock.mock.calls[2][0]).toBe('https://cdn.example.com/out.mp4')
+      // 资产可取回，Content-Type 为视频
+      const asset = await app.inject({ method: 'GET', url: task.resultPath! })
+      expect(asset.statusCode).toBe(200)
+      expect(asset.headers['content-type']).toBe('video/mp4')
     } finally {
       vi.unstubAllGlobals()
     }
   })
 
-  it('generate-media video：任务失败时透出服务端 error.message', async () => {
+  it('generate-media video：提交失败透出服务端 error.message（502）', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ task_id: 'task-2', status: 'queued' }))
-      .mockResolvedValueOnce(
-        jsonResponse({
-          task_id: 'task-2',
-          status: 'failed',
-          error: { code: 1001, message: '内容审核未通过' }
-        })
-      )
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ error: { code: 1001, message: '内容审核未通过' } }, 400)
+    )
     try {
       const response = await app.inject({
         method: 'POST',

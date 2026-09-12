@@ -7,7 +7,15 @@
  * 下载在后台流式进行；转存完成前 /assets/:id 302 到源 URL 兜底。
  */
 import { createHash, randomUUID } from 'node:crypto'
-import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
@@ -106,7 +114,9 @@ function extensionForMime(mime: string): string {
     'audio/flac': '.flac',
     'audio/pcm': '.pcm',
     'video/mp4': '.mp4',
-    'video/webm': '.webm'
+    'video/webm': '.webm',
+    'video/quicktime': '.mov',
+    'video/x-matroska': '.mkv'
   }
   return map[mime] ?? '.bin'
 }
@@ -145,18 +155,12 @@ export class CanvasAssetStore {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     this.stmtGetByPath = db.prepare('SELECT * FROM infinite_canvas_assets WHERE id = ?')
-    this.stmtListByProject = db.prepare(
-      'SELECT * FROM infinite_canvas_assets WHERE project_id = ?'
-    )
-    this.stmtDeleteByProject = db.prepare(
-      'DELETE FROM infinite_canvas_assets WHERE project_id = ?'
-    )
+    this.stmtListByProject = db.prepare('SELECT * FROM infinite_canvas_assets WHERE project_id = ?')
+    this.stmtDeleteByProject = db.prepare('DELETE FROM infinite_canvas_assets WHERE project_id = ?')
     this.stmtFinalize = db.prepare(
       'UPDATE infinite_canvas_assets SET file_path = ?, mime = ?, bytes = ?, status = ?, content_hash = ? WHERE id = ?'
     )
-    this.stmtMarkStatus = db.prepare(
-      'UPDATE infinite_canvas_assets SET status = ? WHERE id = ?'
-    )
+    this.stmtMarkStatus = db.prepare('UPDATE infinite_canvas_assets SET status = ? WHERE id = ?')
     this.stmtFindByHash = db.prepare(
       'SELECT * FROM infinite_canvas_assets WHERE content_hash = ? AND status = ? ORDER BY created_at DESC LIMIT 1'
     )
@@ -191,7 +195,17 @@ export class CanvasAssetStore {
   beginRemoteAsset(projectId: string | null, url: string): string {
     const id = randomUUID()
     const partPath = join(this.assetsDir, `${id}.part`)
-    this.stmtInsert.run(id, projectId, partPath, 'image/png', 0, url, 'downloading', Date.now(), null)
+    this.stmtInsert.run(
+      id,
+      projectId,
+      partPath,
+      'image/png',
+      0,
+      url,
+      'downloading',
+      Date.now(),
+      null
+    )
     const task = this.downloadInBackground(id, url, partPath).finally(() => {
       this.inflight.delete(id)
     })
@@ -239,7 +253,9 @@ export class CanvasAssetStore {
 
   /** 转存失败原因；undefined 表示未失败。 */
   failureReason(path: string): string | undefined {
-    const id = path.startsWith(`${ASSET_PATH_PREFIX}/`) ? path.slice(ASSET_PATH_PREFIX.length + 1) : path
+    const id = path.startsWith(`${ASSET_PATH_PREFIX}/`)
+      ? path.slice(ASSET_PATH_PREFIX.length + 1)
+      : path
     return this.failureReasons.get(id)
   }
 
@@ -257,6 +273,17 @@ export class CanvasAssetStore {
     } catch {
       return null
     }
+  }
+
+  /**
+   * 视频产物落盘：异步任务轮询成功后把远程视频字节转成本地资产（worker 与
+   * refresh 共用）。视频没有稳定魔数可嗅探，直接信任调用方给定的 video/* mime
+   * （非 video/* 拒绝落盘）；去重/命名与图片资产共用 writeAsset 内部。
+   */
+  storeVideoFromBytes(projectId: string | null, bytes: Buffer, mime: string): string | null {
+    const normalized = mime.split(';')[0].trim().toLowerCase()
+    if (!normalized.startsWith('video/')) return null
+    return this.writeAsset(projectId, bytes, normalized, null)
   }
 
   private writeAsset(
@@ -277,7 +304,17 @@ export class CanvasAssetStore {
     const id = randomUUID()
     const filePath = join(this.assetsDir, `${id}-${hash.slice(0, 12)}${extensionForMime(mime)}`)
     writeFileSync(filePath, bytes)
-    this.stmtInsert.run(id, projectId, filePath, mime, bytes.length, sourceUrl, 'ready', Date.now(), hash)
+    this.stmtInsert.run(
+      id,
+      projectId,
+      filePath,
+      mime,
+      bytes.length,
+      sourceUrl,
+      'ready',
+      Date.now(),
+      hash
+    )
     return `${ASSET_PATH_PREFIX}/${id}`
   }
 

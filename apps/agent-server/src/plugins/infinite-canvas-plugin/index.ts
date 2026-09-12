@@ -9,12 +9,24 @@ import { createMediaProviderRoutes } from './media-provider-routes.js'
 import { InfiniteCanvasStore } from './store.js'
 import type { AnyCanvasNodeType } from './types.js'
 import { createPromptSourceService } from './prompt-source-service.js'
-import { CanvasAssetStore, MediaLogStore, referencesToDataUrls } from './canvas-assets.js'
-import { normalizeOpenAiCompatibleSize } from './media/shared.js'
+import {
+  ASSET_DOWNLOAD_TIMEOUT_MS,
+  CanvasAssetStore,
+  MediaLogStore,
+  referencesToDataUrls
+} from './canvas-assets.js'
+import {
+  CanvasVideoTaskStore,
+  VideoTaskCapabilityError,
+  toVideoTaskApiView,
+  type CanvasVideoTaskRecord
+} from './canvas-video-tasks.js'
+import { errorText, normalizeOpenAiCompatibleSize } from './media/shared.js'
+import type { ResolvedMediaProvider } from './media/adapter.js'
 import { MediaProviderStore } from './media/media-provider-store.js'
 import { MediaPrefsStore } from './media/media-prefs-store.js'
 import { TEXT_BRIDGE_ADAPTER, createMediaProviderRegistry } from './media/registry.js'
-import { createMediaGenerator } from './media/generator.js'
+import { assertProviderSelection, createMediaGenerator } from './media/generator.js'
 import {
   applyCanvasAgentOperations,
   summarizeCanvasAgentOperations,
@@ -36,12 +48,25 @@ const NODE_TYPE_LIST: Array<AnyCanvasNodeType> = [
 ]
 const EXTENSION_NODE_TYPE = /^[a-z][a-z0-9-]{0,63}:[a-z][a-z0-9_-]{0,63}$/
 
+/** 视频异步任务 worker 节奏：10s 一轮；updated_at 落后超过 8s 才轮询；总预算 60min。 */
+const VIDEO_TASK_POLL_INTERVAL_MS = 10_000
+const VIDEO_TASK_POLL_STALE_MS = 8_000
+const VIDEO_TASK_TIMEOUT_MS = 60 * 60_000
+
+/** 手动恢复结果：ok 携带任务视图；否则 statusCode/message 由路由转 4xx 裸错误。 */
+type VideoTaskRefreshOutcome =
+  | { ok: true; task: ReturnType<typeof toVideoTaskApiView> }
+  | { ok: false; statusCode: number; message: string }
+
 function nodeType(value: unknown): AnyCanvasNodeType {
   const type = String(value ?? 'text') as AnyCanvasNodeType
   return NODE_TYPE_LIST.includes(type) || EXTENSION_NODE_TYPE.test(type) ? type : 'text'
 }
 
 export function createInfiniteCanvasPlugin(): Plugin {
+  // 视频任务 worker 定时器的清理句柄：effect ledger disposer 与插件 teardown
+  // 双保险回收（dispose 幂等，重复调用安全）。
+  let disposeVideoTaskWorkerRef: (() => void) | undefined
   return {
     manifest: {
       name: 'infinite-canvas',
@@ -59,6 +84,10 @@ export function createInfiniteCanvasPlugin(): Plugin {
       builtin: true
     },
     migrations: infiniteCanvasMigrations,
+    teardown() {
+      disposeVideoTaskWorkerRef?.()
+      disposeVideoTaskWorkerRef = undefined
+    },
     setup(context: PluginContext) {
       const store = new InfiniteCanvasStore(context.db)
       context.registerService('infiniteCanvasStore', store)
@@ -106,6 +135,174 @@ export function createInfiniteCanvasPlugin(): Plugin {
       const assets = new CanvasAssetStore(context.db, join(dataDir, 'agent', 'canvas-assets'))
       // 媒体生成日志：请求/响应留痕，画布内"生成日志"面板可查
       const mediaLogs = new MediaLogStore(context.db)
+
+      // ── 视频异步任务队列（设计 Task 2/3）──────────────────────────────
+      // 任务行是唯一持久状态：提交即落库，worker 与手动 refresh 共享
+      // pollVideoTaskRow 单次轮询（SUCCESS → 下载本地化 → success；
+      // fail_reason → failed；queued/in_progress → 刷进度保持 running）。
+      const videoTasks = new CanvasVideoTaskStore(context.db)
+
+      /**
+       * 上游视频结果下载：result_url 是 24h 签名 URL，必须本地化；
+       * mime 信任服务声明，非 video/* 回落 mp4（NewAPI 视频产物即 mp4）。
+       */
+      const downloadVideoResult = async (url: string): Promise<{ bytes: Buffer; mime: string }> => {
+        const response = await fetch(url, {
+          signal: AbortSignal.timeout(ASSET_DOWNLOAD_TIMEOUT_MS),
+          redirect: 'follow',
+          headers: {
+            Accept: 'video/webm,video/mp4,video/*;q=0.8,*/*;q=0.5',
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+          }
+        })
+        if (!response.ok) throw new Error(`视频结果下载失败：HTTP ${response.status}`)
+        const bytes = Buffer.from(await response.arrayBuffer())
+        if (!bytes.length) throw new Error('视频结果下载失败：响应内容为空')
+        const declared = (response.headers.get('content-type') ?? '')
+          .split(';')[0]
+          .trim()
+          .toLowerCase()
+        return { bytes, mime: declared.startsWith('video/') ? declared : 'video/mp4' }
+      }
+
+      /**
+       * 任务行 → Provider/adapter 解析：行内 provider_id 已删/停用、adapter
+       * 缺失属本地能力问题，抛 VideoTaskCapabilityError（refresh 按 4xx 透出）。
+       */
+      const resolveVideoTaskAdapter = async (
+        providerId: string
+      ): Promise<ResolvedMediaProvider> => {
+        const providerRow = mediaProviderStore.get(providerId)
+        if (!providerRow || providerRow.modality !== 'video' || !providerRow.enabled) {
+          throw new VideoTaskCapabilityError(
+            `视频任务关联的 Provider「${providerId}」已删除或停用，无法轮询`
+          )
+        }
+        try {
+          return await mediaProviderRegistry.resolve('video', { providerId })
+        } catch (error) {
+          throw new VideoTaskCapabilityError(`视频任务无法轮询：${errorText(error)}`)
+        }
+      }
+
+      /**
+       * 共享单次轮询（worker 与 refresh 路由复用）：按行内 provider_id/task_id/
+       * protocol 查上游一次并落库。上游查询/下载抛错时行保持原状（worker 下一轮
+       * 重试），只有明确的 success/failed 才推进状态。
+       */
+      const pollVideoTaskRow = async (
+        row: CanvasVideoTaskRecord
+      ): Promise<CanvasVideoTaskRecord> => {
+        const { adapter, ctx } = await resolveVideoTaskAdapter(row.providerId)
+        if (!adapter.pollVideoTask) {
+          throw new VideoTaskCapabilityError(`媒体适配器 "${adapter.id}" 不支持视频任务轮询`)
+        }
+        const poll = await adapter.pollVideoTask(ctx, {
+          taskId: row.taskId,
+          protocol: row.protocol
+        })
+        if (poll.status === 'success') {
+          if (!poll.url) {
+            return videoTasks.update(row.id, {
+              status: 'failed',
+              error: '任务已完成但 Provider 响应中没有视频 URL'
+            })!
+          }
+          const { bytes, mime } = await downloadVideoResult(poll.url)
+          const resultPath = assets.storeVideoFromBytes(row.projectId, bytes, mime)
+          if (!resultPath) {
+            return videoTasks.update(row.id, {
+              status: 'failed',
+              error: `视频内容无法本地化存储（${mime}）`
+            })!
+          }
+          return videoTasks.update(row.id, {
+            status: 'success',
+            resultPath,
+            error: null,
+            ...(poll.progress ? { progress: poll.progress } : {})
+          })!
+        }
+        if (poll.status === 'failed') {
+          return videoTasks.update(row.id, {
+            status: 'failed',
+            error: poll.error ?? '视频任务失败',
+            ...(poll.progress ? { progress: poll.progress } : {})
+          })!
+        }
+        // queued/in_progress：行保持 running，仅刷新进度（updated_at 前推，8s 后再轮询）
+        return videoTasks.update(row.id, { progress: poll.progress ?? null })!
+      }
+
+      /** 手动恢复入口：未知行 404、能力缺失 409；上游失败抛给路由按 502 透出。 */
+      const refreshVideoTask = async (input: {
+        projectId: string
+        taskId: string
+      }): Promise<VideoTaskRefreshOutcome> => {
+        const row = videoTasks.get(input.taskId)
+        if (!row || row.projectId !== input.projectId) {
+          return { ok: false as const, statusCode: 404, message: '视频任务不存在' }
+        }
+        try {
+          return { ok: true as const, task: toVideoTaskApiView(await pollVideoTaskRow(row)) }
+        } catch (error) {
+          if (error instanceof VideoTaskCapabilityError) {
+            return { ok: false as const, statusCode: 409, message: error.message }
+          }
+          throw error
+        }
+      }
+
+      /** 音视频输出统一资产本地化；失败保留原始地址（与图片链路兜底一致）。 */
+      const localizeMediaOutputs = (
+        projectId: string | undefined,
+        outputs: Array<{ url: string; mimeType: string }>
+      ): Array<{ url: string; mimeType: string }> => {
+        try {
+          return outputs.map((output) => ({
+            mimeType: output.mimeType,
+            url: localizeImages(projectId, [output.url])[0] ?? output.url
+          }))
+        } catch (error) {
+          mediaLogger?.warn?.({ error }, '音视频输出本地化失败，保留原始地址')
+          return outputs
+        }
+      }
+
+      let workerBusy = false
+      /**
+       * 后台 worker tick：先按总预算（created_at 起 60min）把 running 标 timeout
+       * （保留 task_id 供手动恢复），再轮询 stale（updated_at 落后 >8s）的 running
+       * 任务。单任务失败只记日志；全局性失败（如宿主关闭后残留 tick）同样吞掉，
+       * 绝不冒泡成未处理拒绝。
+       */
+      const runVideoTaskWorkerTick = async (): Promise<void> => {
+        if (workerBusy) return
+        workerBusy = true
+        try {
+          const timedOut = videoTasks.markTimeoutIfStale(VIDEO_TASK_TIMEOUT_MS)
+          const now = Date.now()
+          const stale = videoTasks
+            .listRunning()
+            .filter((task) => now - task.updatedAt >= VIDEO_TASK_POLL_STALE_MS)
+          mediaLogger.debug?.({ timedOut, polling: stale.length }, '视频任务轮询')
+          for (const task of stale) {
+            try {
+              await pollVideoTaskRow(task)
+            } catch (error) {
+              mediaLogger?.warn?.(
+                { taskId: task.id, upstreamTaskId: task.taskId, error: errorText(error) },
+                '视频任务轮询失败'
+              )
+            }
+          }
+        } catch (error) {
+          mediaLogger?.warn?.({ error: errorText(error) }, '视频任务轮询周期失败')
+        } finally {
+          workerBusy = false
+        }
+      }
 
       /**
        * 把生成结果统一转成本地资产路径：远程 URL 后台转存（立即返回资产路径），
@@ -307,12 +504,14 @@ export function createInfiniteCanvasPlugin(): Plugin {
       }
 
       /**
-       * 对外音视频入口：providerId 透传（画布节点指定 → 模态默认）→ adapter 生成 →
-       * 输出统一走资产本地化。音频结果是 data URL（同步落盘），视频结果是远程 URL
-       * （后台转存）；本地化失败保留原始地址，与图片链路的兜底一致。
+       * 对外音视频入口：音频保持同步链路（data URL 快速返回）；视频优先异步
+       * 任务链路（adapter 支持 submitVideoTask 时提交即返回，轮询/恢复交给
+       * worker 与 refresh 路由），否则回落既有同步阻塞生成。输出统一走资产
+       * 本地化；本地化失败保留原始地址，与图片链路的兜底一致。
        */
       const generateMediaLocalized = async (input: {
         projectId?: string
+        nodeId?: string
         mode: 'audio' | 'video'
         prompt: string
         providerId?: string
@@ -326,45 +525,86 @@ export function createInfiniteCanvasPlugin(): Plugin {
         refImages?: string[]
         resolution?: string
         signal?: AbortSignal
-      }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }> => {
+      }): Promise<
+        | { outputs: Array<{ url: string; mimeType: string }> }
+        | { videoTask: { id: string; taskId: string; status: string } }
+      > => {
         // 参考图归一化：资产路径/远程 URL 服务商取不到，统一转 data URL；
         // 单图 image（文档协议）与 refImages（ref_image_N 多参考协议）同走该链路
         const [image] = input.image ? (await referencesToDataUrls(assets, [input.image]))! : []
         const refImages = input.refImages?.length
           ? await referencesToDataUrls(assets, input.refImages)
           : undefined
-        const result =
-          input.mode === 'audio'
-            ? await media.generateAudio({
-                prompt: input.prompt,
-                model: input.model,
-                voice: input.voice,
-                format: input.format,
-                speed: input.speed,
-                providerId: input.providerId,
-                signal: input.signal
-              })
-            : await media.generateVideo({
-                prompt: input.prompt,
-                model: input.model,
-                image,
-                ...(refImages?.length ? { refImages } : {}),
-                resolution: input.resolution,
-                providerId: input.providerId,
-                duration: input.seconds,
-                ...parseVideoSize(input.size),
-                signal: input.signal
-              })
-        let outputs = result.outputs
-        try {
-          outputs = outputs.map((output) => ({
-            mimeType: output.mimeType,
-            url: localizeImages(input.projectId, [output.url])[0] ?? output.url
-          }))
-        } catch (error) {
-          mediaLogger?.warn?.({ error }, '音视频输出本地化失败，保留原始地址')
+        if (input.mode === 'audio') {
+          const result = await media.generateAudio({
+            prompt: input.prompt,
+            model: input.model,
+            voice: input.voice,
+            format: input.format,
+            speed: input.speed,
+            providerId: input.providerId,
+            signal: input.signal
+          })
+          return { outputs: localizeMediaOutputs(input.projectId, result.outputs) }
         }
-        return { outputs }
+        // 视频：显式选择校验（与 generateVideo 同一口径）→ 解析 adapter
+        await assertProviderSelection(mediaProviderRegistry, 'video', input.providerId, input.model)
+        const { adapter, ctx } = await mediaProviderRegistry.resolve('video', {
+          providerId: input.providerId
+        })
+        if (adapter.submitVideoTask) {
+          const submission = await adapter.submitVideoTask(ctx, {
+            prompt: input.prompt,
+            model: input.model,
+            ...(image ? { image } : {}),
+            ...(refImages?.length ? { refImages } : {}),
+            resolution: input.resolution,
+            providerId: input.providerId,
+            duration: input.seconds,
+            ...parseVideoSize(input.size),
+            signal: input.signal
+          })
+          if (!submission.taskId) {
+            if (!submission.urls?.length) {
+              throw new Error('视频 Provider 响应中没有任务 ID，无法追踪异步任务')
+            }
+            // 同步形状网关（提交响应直接带成品 URL）：退回既有同步响应语义
+            return {
+              outputs: localizeMediaOutputs(
+                input.projectId,
+                submission.urls.map((url) => ({ url, mimeType: 'video/mp4' }))
+              )
+            }
+          }
+          const task = videoTasks.create({
+            projectId: input.projectId ?? '',
+            nodeId: input.nodeId,
+            providerId: ctx.providerId,
+            taskId: submission.taskId,
+            protocol: submission.protocol,
+            model: input.model || ctx.model || undefined,
+            // 参数回显：桌面端展示/排查用（不含提示词与参考图内容本体）
+            params: {
+              ...(input.seconds !== undefined ? { duration: input.seconds } : {}),
+              ...(input.resolution ? { resolution: input.resolution } : {}),
+              ...(refImages?.length ? { refImages: refImages.length } : {}),
+              ...(image ? { image: true } : {})
+            }
+          })
+          return { videoTask: { id: task.id, taskId: task.taskId, status: task.status } }
+        }
+        const result = await media.generateVideo({
+          prompt: input.prompt,
+          model: input.model,
+          image,
+          ...(refImages?.length ? { refImages } : {}),
+          resolution: input.resolution,
+          providerId: input.providerId,
+          duration: input.seconds,
+          ...parseVideoSize(input.size),
+          signal: input.signal
+        })
+        return { outputs: localizeMediaOutputs(input.projectId, result.outputs) }
       }
 
       for (const route of createInfiniteCanvasRoutes(
@@ -397,7 +637,12 @@ export function createInfiniteCanvasPlugin(): Plugin {
         promptSourceService,
         getMediaProviderStore,
         assets,
-        mediaLogs
+        mediaLogs,
+        {
+          list: (projectId) =>
+            videoTasks.listByProject(projectId).map((task) => toVideoTaskApiView(task)),
+          refresh: refreshVideoTask
+        }
       ))
         context.registerRoute(route)
 
@@ -775,6 +1020,33 @@ export function createInfiniteCanvasPlugin(): Plugin {
         priority: 10,
         rendererKey: 'infinite-canvas.media-settings'
       })
+      // 视频任务 worker：10s 一轮，unref 不阻止进程退出；插件停用/卸载时清理
+      // （effect ledger disposer 与插件 teardown 双保险，dispose 幂等）
+      let videoTaskWorkerTimer: ReturnType<typeof setInterval> | undefined
+      const disposeVideoTaskWorker = (): void => {
+        if (videoTaskWorkerTimer) {
+          clearInterval(videoTaskWorkerTimer)
+          videoTaskWorkerTimer = undefined
+        }
+      }
+      videoTaskWorkerTimer = setInterval(() => {
+        void runVideoTaskWorkerTick()
+      }, VIDEO_TASK_POLL_INTERVAL_MS)
+      videoTaskWorkerTimer.unref()
+      context.registerDisposable(disposeVideoTaskWorker, {
+        resourceId: 'infinite-canvas-video-task-worker',
+        unloadScope: 'immediate'
+      })
+      disposeVideoTaskWorkerRef = disposeVideoTaskWorker
+      // 服务注册：任务队列（store/refresh/tick）供诊断与测试直取，Registry 供
+      // 高级宿主注册额外 adapter（与 infiniteCanvasStore 同一注册约定）
+      context.registerService('infiniteCanvasVideoTaskQueue', {
+        store: videoTasks,
+        refresh: refreshVideoTask,
+        tick: runVideoTaskWorkerTick
+      })
+      context.registerService('infiniteCanvasMediaRegistry', mediaProviderRegistry)
+
       context.logger.info('Infinite Canvas 插件已初始化')
     }
   }

@@ -49,8 +49,19 @@ export type CanvasImageGenerateHandler = (input: {
   signal?: AbortSignal
 }) => Promise<{ images: string[] }>
 
+/** generate-media 异步视频提交被接受时的响应载荷。 */
+export interface CanvasVideoTaskAccepted {
+  /** 本地任务行 id（后续 video-tasks 查询/refresh 用它，不是上游 task_id）。 */
+  id: string
+  /** 上游任务 ID。 */
+  taskId: string
+  status: string
+}
+
 export type CanvasMediaGenerateHandler = (input: {
   projectId?: string
+  /** 发起生成的画布节点 id：异步视频任务落库时关联，供桌面端回填节点。 */
+  nodeId?: string
   mode: 'audio' | 'video'
   prompt: string
   context?: string
@@ -71,7 +82,9 @@ export type CanvasMediaGenerateHandler = (input: {
   generateAudio?: boolean
   watermark?: boolean
   signal?: AbortSignal
-}) => Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
+}) => Promise<
+  { outputs: Array<{ url: string; mimeType: string }> } | { videoTask: CanvasVideoTaskAccepted }
+>
 
 export type CanvasImageEditHandler = (input: {
   projectId?: string
@@ -92,6 +105,35 @@ export type CanvasReversePromptHandler = (input: {
   model?: string
   signal?: AbortSignal
 }) => Promise<{ text: string }>
+
+/** video-tasks 列表/refresh 的任务视图（由插件层 toVideoTaskApiView 产出）。 */
+export type CanvasVideoTaskView = {
+  id: string
+  nodeId: string | null
+  taskId: string
+  status: string
+  progress: string | null
+  error: string | null
+  model: string | null
+  createdAt: number
+  updatedAt: number
+  resultPath?: string
+}
+
+/** 项目任务列表：created_at 倒序，封顶 100 条（插件层 CanvasVideoTaskStore 实现）。 */
+export type CanvasVideoTaskListHandler = (projectId: string) => CanvasVideoTaskView[]
+
+/**
+ * 手动恢复：强制向上游轮询一次并落库/本地化。任务行不存在或 Provider/adapter
+ * 能力缺失返回 { ok:false, statusCode, message }（路由按 4xx 裸错误透出）；
+ * 上游查询/下载抛错向上传播（路由按 502 MEDIA 语义透出）。
+ */
+export type CanvasVideoTaskRefreshHandler = (input: {
+  projectId: string
+  taskId: string
+}) => Promise<
+  { ok: true; task: CanvasVideoTaskView } | { ok: false; statusCode: number; message: string }
+>
 
 const NODE_TYPES = new Set<AnyCanvasNodeType>([
   'image',
@@ -183,7 +225,15 @@ export function createInfiniteCanvasRoutes(
    */
   getMediaProviders?: () => MediaProviderStore | undefined,
   assets?: CanvasAssetStore,
-  mediaLogs?: MediaLogStore
+  mediaLogs?: MediaLogStore,
+  /**
+   * 视频异步任务队列处理器：list 供工作区轮询任务列表，refresh 供手动恢复
+   * （超时/服务重启后的任务拉回结果）。由插件层闭包注入，路由保持纯转发。
+   */
+  videoTaskQueue?: {
+    list: CanvasVideoTaskListHandler
+    refresh: CanvasVideoTaskRefreshHandler
+  }
 ): RouteDefinition[] {
   return [
     {
@@ -688,6 +738,8 @@ export function createInfiniteCanvasRoutes(
             size: input.size === undefined ? undefined : String(input.size),
             seconds: input.seconds === undefined ? undefined : Number(input.seconds),
             image: optionalString(input.image),
+            // 发起生成的画布节点 id：异步视频任务落库关联，桌面端凭它回填节点
+            nodeId: input.nodeId === undefined ? undefined : String(input.nodeId),
             // ref_image_N 多参考：只收字符串项并封顶 8 张，归一化由插件层统一处理
             refImages: Array.isArray(input.refImages)
               ? input.refImages
@@ -706,6 +758,48 @@ export function createInfiniteCanvasRoutes(
             .send(
               failure(
                 'MEDIA_GENERATION_FAILED',
+                error instanceof Error ? error.message : String(error),
+                request.traceId
+              )
+            )
+        }
+      }
+    },
+    {
+      // 视频异步任务列表：桌面端工作区轮询（打开项目期间 ~10s 间隔）读取
+      // 排队/生成中/进度与最终结果（resultPath 仅 success 携带）
+      method: 'GET',
+      path: '/projects/:projectId/video-tasks',
+      handler: async (request, reply) => {
+        if (!videoTaskQueue?.list)
+          return reply.code(503).send({ ok: false, error: '视频任务服务未初始化' })
+        return success({ tasks: videoTaskQueue.list(request.params.projectId) }, request.traceId)
+      }
+    },
+    {
+      // 手动恢复：按本地任务行 id 强制向上游轮询一次；SUCCESS 则下载视频本地化
+      // （timeout/服务重启滞留的任务同样可恢复，行内 task_id 永久保留）。
+      // 未知行 / Provider 已删 / adapter 无轮询能力 → 4xx 裸错误；上游查询失败 → 502。
+      method: 'POST',
+      path: '/projects/:projectId/video-tasks/:taskId/refresh',
+      handler: async (request, reply) => {
+        if (!videoTaskQueue?.refresh)
+          return reply.code(503).send({ ok: false, error: '视频任务服务未初始化' })
+        try {
+          const result = await videoTaskQueue.refresh({
+            projectId: request.params.projectId,
+            taskId: request.params.taskId
+          })
+          if (!result.ok) {
+            return reply.code(result.statusCode).send({ ok: false, error: result.message })
+          }
+          return success({ task: result.task }, request.traceId)
+        } catch (error) {
+          return reply
+            .code(502)
+            .send(
+              failure(
+                'VIDEO_TASK_REFRESH_FAILED',
                 error instanceof Error ? error.message : String(error),
                 request.traceId
               )

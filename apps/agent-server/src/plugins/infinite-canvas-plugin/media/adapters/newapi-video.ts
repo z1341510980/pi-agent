@@ -8,7 +8,7 @@
  *   completed → url 字段、failed → error.message。
  *
  * 实测 NewAPI 兼容网关（aimanplay 等）的轮询响应不是文档的扁平形状，而是包裹层
- * {code,message,data:{status:'SUCCESS',fail_reason,result_url,data:{data:{results:[{url}]}}}}；
+ * {code,message,data:{status:'SUCCESS',fail_reason,result_url,progress,data:{results:[{url}]}}}；
  * 视频 URL 经 extractVideoUrls 提取（submit/poll 两条路径共用），失败原因优先取
  * data.fail_reason —— 均通过 ImageJobPollSource 的 extractUrls/failureText 覆盖注入，
  * 不改动 shared.parseImages 的图片语义。
@@ -17,24 +17,38 @@
  * 请求体为扁平 ref_image_0..N 字段 + duration/resolution（不带 width/height/fps/
  * n/response_format），轮询端点切换为 GET {base}/v1/videos/{task_id}。
  *
- * 轮询复用 shared 的 ImageJobPollSource / resolveImageResponse 机制（与图片任务
- *   同一套退避与状态判定）。视频更慢，超时预算用专用
- *   VIDEO_JOB_TIMEOUT_MS（30min，实测存在 15min+ 才完成的任务）。
+ * 异步任务拆分（设计 Task 2）：submitVideoTask（提交即返回 task_id）与
+ * pollVideoTask（单次状态查询，归一化 queued/in_progress/success/failed）供
+ * 服务端任务队列使用；generateVideo 保留同步实现，内部复用同一 submit/poll
+ * 原语（提交响应已有成品 URL 直接返回，否则按图片任务的退避节奏轮询）。
  */
 
 import type {
   MediaModalityContext,
   MediaProviderAdapter,
-  VideoGenerationInput
+  VideoGenerationInput,
+  VideoTaskPollInput,
+  VideoTaskPollResult,
+  VideoTaskProtocol,
+  VideoTaskSubmission
 } from '../adapter.js'
 import {
+  IMAGE_POLL_INITIAL_DELAY_MS,
   VIDEO_JOB_TIMEOUT_MS,
+  delay,
   errorText,
   imageErrorMessage,
+  imageJob,
+  imageJobFailure,
+  isCompletedStatus,
+  isFailedStatus,
   isRecord,
+  nextImagePollDelayMs,
   normalizeImageBaseUrl,
-  resolveImageResponse,
+  readImageResponse,
+  recordCandidates,
   safeBaseUrl,
+  taskStatus,
   withAbortGuard,
   type ImageJobPollSource
 } from '../shared.js'
@@ -48,6 +62,9 @@ export const NEWAPI_VIDEO_DEFAULTS = { duration: 5, width: 1280, height: 720, fp
 /** ref_image_N 多参考协议的参考图上限（路由层入参校验与此同源）。 */
 export const NEWAPI_VIDEO_MAX_REF_IMAGES = 8
 
+/** 上游「排队中」状态词（其余非终态一律按 in_progress 继续轮询）。 */
+const VIDEO_POLL_QUEUED_STATUSES = new Set(['queued', 'pending', 'created', 'waiting'])
+
 /**
  * NewAPI 兼容网关的视频 URL 提取。实测包裹链是 data → data.data → data.data.data
  * （results 数组最深一层），优先级回落：result_url → results[].url → 任意层的 url
@@ -56,13 +73,7 @@ export const NEWAPI_VIDEO_MAX_REF_IMAGES = 8
  */
 export function extractVideoUrls(body: unknown): string[] {
   if (!isRecord(body)) return []
-  // data 包裹链逐层展开（live 形状最深 3 层，留 1 层余量）
-  const layers: Record<string, unknown>[] = [body]
-  let current: unknown = body.data
-  for (let depth = 0; depth < 4 && isRecord(current); depth += 1) {
-    layers.push(current)
-    current = current.data
-  }
+  const layers = recordCandidates(body)
   for (const layer of layers) {
     if (typeof layer.result_url === 'string' && layer.result_url.length > 0) {
       return [layer.result_url]
@@ -88,6 +99,15 @@ export function videoFailureText(body: unknown): string | undefined {
   if (!isRecord(body) || !isRecord(body.data)) return undefined
   const reason = body.data.fail_reason
   return typeof reason === 'string' && reason.trim() ? reason.trim() : undefined
+}
+
+/** 轮询响应里的进度文本（如 '42%'）：取包裹链任意层的 progress 字符串。 */
+export function videoProgress(body: unknown): string | undefined {
+  for (const candidate of recordCandidates(body)) {
+    const progress = candidate.progress
+    if (typeof progress === 'string' && progress.trim()) return progress.trim()
+  }
+  return undefined
 }
 
 interface VideoRuntime {
@@ -145,6 +165,149 @@ function numberParam(
   return fallback
 }
 
+interface VideoSubmitPlan {
+  body: Record<string, unknown>
+  submitEndpoint: string
+  protocol: VideoTaskProtocol
+}
+
+/** 组装提交载荷：带参考图 → /v1/videos（ref_image_N）；否则文档协议 /video/generations。 */
+function buildSubmitPlan(
+  rt: VideoRuntime,
+  ctx: MediaModalityContext,
+  input: VideoGenerationInput
+): VideoSubmitPlan {
+  const refImages = input.refImages
+    ?.filter((value) => value.length > 0)
+    .slice(0, NEWAPI_VIDEO_MAX_REF_IMAGES)
+  const useRefProtocol = Boolean(refImages?.length)
+  const resolution = input.resolution?.trim() || ctx.params.resolution?.trim() || ''
+  const body = useRefProtocol
+    ? {
+        model: input.model || rt.model,
+        prompt: input.prompt,
+        ...refImageFields(refImages!),
+        duration: numberParam(input.duration, ctx.params.duration, NEWAPI_VIDEO_DEFAULTS.duration),
+        ...(resolution ? { resolution } : {})
+      }
+    : {
+        model: input.model || rt.model,
+        prompt: input.prompt,
+        ...(input.image ? { image: input.image } : {}),
+        duration: numberParam(input.duration, ctx.params.duration, NEWAPI_VIDEO_DEFAULTS.duration),
+        width: numberParam(input.width, ctx.params.width, NEWAPI_VIDEO_DEFAULTS.width),
+        height: numberParam(input.height, ctx.params.height, NEWAPI_VIDEO_DEFAULTS.height),
+        fps: numberParam(input.fps, ctx.params.fps, NEWAPI_VIDEO_DEFAULTS.fps),
+        ...(input.n !== undefined && Number.isFinite(input.n) ? { n: Math.floor(input.n) } : {}),
+        response_format: 'url'
+      }
+  return {
+    body,
+    submitEndpoint: useRefProtocol ? `${rt.baseUrl}/videos` : `${rt.baseUrl}/video/generations`,
+    protocol: useRefProtocol ? 'videos' : 'generations'
+  }
+}
+
+/**
+ * 提交视频任务（submitVideoTask 与 generateVideo 共用）：POST 提交端点并解析
+ * task_id。语义与同步实现的 resolveImageResponse 逐条对齐 —— 成品 URL 优先、
+ * data.fail_reason 次之、再按状态判定 failed/completed，均直接抛错。
+ * 同步形状网关（响应带成品 URL 无 task_id）返回 urls + 空串 taskId。
+ */
+async function submitVideoRequest(
+  rt: VideoRuntime,
+  plan: VideoSubmitPlan,
+  signal: AbortSignal | undefined
+): Promise<VideoTaskSubmission> {
+  const guard = withAbortGuard(signal, VIDEO_JOB_TIMEOUT_MS)
+  try {
+    const response = await fetch(plan.submitEndpoint, {
+      method: 'POST',
+      headers: { ...rt.headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(plan.body),
+      signal: guard.signal
+    })
+    const responseBody = await response.json().catch(() => null)
+    if (!response.ok) {
+      throw new Error(
+        `视频生成失败: ${imageErrorMessage(responseBody) || `HTTP ${response.status}`}`
+      )
+    }
+    const urls = extractVideoUrls(responseBody)
+    if (urls.length) {
+      // 提交响应已携带成品 URL（提交即完成 / 同步形状网关）：无需任务轮询
+      return {
+        taskId: imageJob(responseBody)?.id ?? '',
+        protocol: plan.protocol,
+        status: 'success',
+        urls
+      }
+    }
+    const failureText = videoFailureText(responseBody)
+    if (failureText) throw new Error(`视频生成失败: ${failureText}`)
+    const job = imageJob(responseBody)
+    if (!job?.id) throw new Error('视频 Provider 返回中没有视频数据')
+    const status = taskStatus(job.status)
+    if (isFailedStatus(status)) throw imageJobFailure(responseBody, '视频生成失败')
+    if (isCompletedStatus(status)) throw new Error('视频 Provider 返回中没有视频数据')
+    return { taskId: job.id, protocol: plan.protocol, status: status || 'queued' }
+  } finally {
+    guard.dispose()
+  }
+}
+
+/**
+ * 单次任务状态查询（pollVideoTask 与 generateVideo 轮询循环共用）：GET 任务端点
+ * 一次，把上游形状归一化成 queued/in_progress/success/failed；HTTP 层错误直接
+ * 抛出（worker 记日志后下轮重试，refresh 路由按 502 透出）。
+ */
+async function pollVideoTaskOnce(
+  rt: VideoRuntime,
+  input: VideoTaskPollInput
+): Promise<VideoTaskPollResult> {
+  const source = pollSource(rt, input.protocol === 'videos')
+  const guard = withAbortGuard(input.signal)
+  try {
+    const response = await fetch(source.buildEndpoint(input.taskId), {
+      headers: source.headers,
+      signal: guard.signal
+    })
+    const body = await readImageResponse(response, '视频任务查询失败')
+    const progress = videoProgress(body)
+    const withProgress = (result: VideoTaskPollResult): VideoTaskPollResult =>
+      progress ? { ...result, progress } : result
+    const urls = extractVideoUrls(body)
+    if (urls.length) return withProgress({ status: 'success', url: urls[0] })
+    const failureText = source.failureText?.(body)
+    if (failureText) return withProgress({ status: 'failed', error: failureText })
+    const statusCandidate = recordCandidates(body).find(
+      (candidate) => typeof candidate.status === 'string' || typeof candidate.state === 'string'
+    )
+    const fallbackStatus = statusCandidate?.status ?? statusCandidate?.state
+    const job = imageJob(body)
+    const rawStatus = job?.status ?? (typeof fallbackStatus === 'string' ? fallbackStatus : '')
+    const status = taskStatus(rawStatus)
+    if (isFailedStatus(status)) {
+      return withProgress({
+        status: 'failed',
+        error: imageErrorMessage(body) || rawStatus || '视频任务失败'
+      })
+    }
+    if (isCompletedStatus(status)) {
+      // 上游判定完成但提取不出 URL：无法本地化，按失败透出可读原因
+      return withProgress({ status: 'failed', error: '视频 Provider 返回中没有视频数据' })
+    }
+    if (!job && !status) {
+      return withProgress({ status: 'failed', error: '视频 Provider 返回中没有视频数据' })
+    }
+    return withProgress({
+      status: VIDEO_POLL_QUEUED_STATUSES.has(status) ? 'queued' : 'in_progress'
+    })
+  } finally {
+    guard.dispose()
+  }
+}
+
 export const newapiVideoAdapter: MediaProviderAdapter = {
   id: 'newapi-video',
   label: 'NewAPI 视频任务',
@@ -162,74 +325,40 @@ export const newapiVideoAdapter: MediaProviderAdapter = {
     input: VideoGenerationInput
   ): Promise<{ outputs: Array<{ url: string; mimeType: string }> }> {
     const rt = createRuntime(ctx)
-    // 协议切换：带参考图 → /v1/videos（ref_image_N）；否则保持文档协议 /video/generations。
-    const refImages = input.refImages
-      ?.filter((value) => value.length > 0)
-      .slice(0, NEWAPI_VIDEO_MAX_REF_IMAGES)
-    const useRefProtocol = Boolean(refImages?.length)
-    const resolution = input.resolution?.trim() || ctx.params.resolution?.trim() || ''
-    const body = useRefProtocol
-      ? {
-          model: input.model || rt.model,
-          prompt: input.prompt,
-          ...refImageFields(refImages!),
-          duration: numberParam(
-            input.duration,
-            ctx.params.duration,
-            NEWAPI_VIDEO_DEFAULTS.duration
-          ),
-          ...(resolution ? { resolution } : {})
-        }
-      : {
-          model: input.model || rt.model,
-          prompt: input.prompt,
-          ...(input.image ? { image: input.image } : {}),
-          duration: numberParam(
-            input.duration,
-            ctx.params.duration,
-            NEWAPI_VIDEO_DEFAULTS.duration
-          ),
-          width: numberParam(input.width, ctx.params.width, NEWAPI_VIDEO_DEFAULTS.width),
-          height: numberParam(input.height, ctx.params.height, NEWAPI_VIDEO_DEFAULTS.height),
-          fps: numberParam(input.fps, ctx.params.fps, NEWAPI_VIDEO_DEFAULTS.fps),
-          ...(input.n !== undefined && Number.isFinite(input.n) ? { n: Math.floor(input.n) } : {}),
-          response_format: 'url'
-        }
-    const submitEndpoint = useRefProtocol
-      ? `${rt.baseUrl}/videos`
-      : `${rt.baseUrl}/video/generations`
+    const plan = buildSubmitPlan(rt, ctx, input)
     const guard = withAbortGuard(input.signal, VIDEO_JOB_TIMEOUT_MS)
     try {
-      const response = await fetch(submitEndpoint, {
-        method: 'POST',
-        headers: { ...rt.headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: guard.signal
-      })
-      const responseBody = await response.json().catch(() => null)
-      if (!response.ok) {
-        throw new Error(
-          `视频生成失败: ${imageErrorMessage(responseBody) || `HTTP ${response.status}`}`
-        )
+      // 提交：拿 task_id 或提交即完成的成品 URL（与队列链路 submitVideoTask 同一实现）
+      const submission = await submitVideoRequest(rt, plan, input.signal)
+      if (submission.urls?.length) {
+        return {
+          outputs: submission.urls.map((url) => ({ url, mimeType: 'video/mp4' }))
+        }
       }
-      const urls = await resolveImageResponse(
-        pollSource(rt, useRefProtocol),
-        responseBody,
-        guard.signal,
-        '视频生成失败',
-        '视频 Provider 返回中没有视频数据',
-        ctx.logger,
-        input.traceId
-      )
-      return {
-        outputs: urls.map((url) => ({ url, mimeType: 'video/mp4' }))
+      // 轮询：与 pollVideoTask 同一单次查询实现，退避节奏与图片任务一致
+      // （首个间隔 2s，其后 1.5 倍递增封顶 10s）
+      let waitMs = IMAGE_POLL_INITIAL_DELAY_MS
+      for (;;) {
+        await delay(waitMs, guard.signal)
+        const poll = await pollVideoTaskOnce(rt, {
+          taskId: submission.taskId,
+          protocol: submission.protocol,
+          signal: guard.signal
+        })
+        if (poll.status === 'success') {
+          return { outputs: [{ url: poll.url!, mimeType: 'video/mp4' }] }
+        }
+        if (poll.status === 'failed') {
+          throw new Error(`视频生成失败: ${poll.error ?? '任务失败'}`)
+        }
+        waitMs = nextImagePollDelayMs(waitMs)
       }
     } catch (error) {
       ctx.logger?.error?.(
         {
           providerId: rt.providerId,
           provider: providerLabel(rt),
-          endpoint: useRefProtocol ? '/v1/videos' : '/video/generations',
+          endpoint: plan.protocol === 'videos' ? '/v1/videos' : '/video/generations',
           error: errorText(error)
         },
         '视频请求失败'
@@ -238,5 +367,18 @@ export const newapiVideoAdapter: MediaProviderAdapter = {
     } finally {
       guard.dispose()
     }
+  },
+  async submitVideoTask(
+    ctx: MediaModalityContext,
+    input: VideoGenerationInput
+  ): Promise<VideoTaskSubmission> {
+    const rt = createRuntime(ctx)
+    return submitVideoRequest(rt, buildSubmitPlan(rt, ctx, input), input.signal)
+  },
+  async pollVideoTask(
+    ctx: MediaModalityContext,
+    input: VideoTaskPollInput
+  ): Promise<VideoTaskPollResult> {
+    return pollVideoTaskOnce(createRuntime(ctx), input)
   }
 }

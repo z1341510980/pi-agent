@@ -198,8 +198,9 @@ export function providerCandidateModels(row: MediaProviderRow): string[] {
 /**
  * 节点显式选择校验：providerId 存在时必须命中可用 Provider（不回退默认），
  * 所选 model 必须仍在该 Provider 候选列表内 —— 失效即报错，阻止发起上游请求。
+ * 导出供插件层异步视频任务链路复用（提交前与 generateVideo 同一校验口径）。
  */
-async function assertProviderSelection(
+export async function assertProviderSelection(
   registry: MediaProviderRegistry,
   modality: 'image' | 'audio' | 'video',
   providerId: string | undefined,

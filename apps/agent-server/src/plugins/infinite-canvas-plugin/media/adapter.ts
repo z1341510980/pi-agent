@@ -134,6 +134,42 @@ export interface MediaOutput {
   mimeType: string
 }
 
+/** 视频任务协议标识：'videos' = ref_image_N 多参考协议（POST/GET {base}/v1/videos），'generations' = 文档协议（{base}/video/generations）。 */
+export type VideoTaskProtocol = 'videos' | 'generations'
+
+/**
+ * submitVideoTask 结果：异步任务（taskId 非空，后续按 protocol 轮询）或
+ * 提交即完成（urls 非空且 taskId 空串 —— 同步形状网关，无任务可追踪）。
+ */
+export interface VideoTaskSubmission {
+  /** 上游任务 ID；空串表示提交响应直接携带成品 URL。 */
+  taskId: string
+  protocol: VideoTaskProtocol
+  /** 归一化提交状态（queued/success/…，仅供诊断）。 */
+  status: string
+  /** 提交响应里直接可取的视频 URL（同步形状 / 提交即完成时非空）。 */
+  urls?: string[]
+}
+
+export interface VideoTaskPollInput {
+  taskId: string
+  protocol: VideoTaskProtocol
+  signal?: AbortSignal
+}
+
+/** pollVideoTask 归一化状态：queued/in_progress 继续等待，success/failed 终态。 */
+export type VideoTaskPollStatus = 'queued' | 'in_progress' | 'success' | 'failed'
+
+export interface VideoTaskPollResult {
+  status: VideoTaskPollStatus
+  /** 上游进度文本（如 '42%'），原样透传。 */
+  progress?: string
+  /** success 时的视频结果 URL（多为 24h 签名 URL，调用方负责本地化）。 */
+  url?: string
+  /** failed 时的失败原因。 */
+  error?: string
+}
+
 /** spec §2 命名别名：图片模态输入与通用媒体输入同构。 */
 export type ImageGenerationInput = MediaGenerationInput
 export type ImageEditInput = MediaEditInput
@@ -164,6 +200,16 @@ export interface MediaProviderAdapter {
     ctx: MediaModalityContext,
     input: VideoGenerationInput
   ): Promise<{ outputs: MediaOutput[] }>
+  /**
+   * 提交异步视频任务：立即返回上游 task_id，不轮询不阻塞（generateVideo 内部
+   * 同样以此提交 + pollVideoTask 组合）。同步形状网关回 urls、taskId 空串。
+   */
+  submitVideoTask?(
+    ctx: MediaModalityContext,
+    input: VideoGenerationInput
+  ): Promise<VideoTaskSubmission>
+  /** 查询一次异步视频任务状态：单次 GET + 状态归一化，不循环不退避。 */
+  pollVideoTask?(ctx: MediaModalityContext, input: VideoTaskPollInput): Promise<VideoTaskPollResult>
   /** 连接测试（阶段三实现，先声明） */
   testConnection?(ctx: MediaModalityContext): Promise<{ ok: boolean; message?: string }>
 }
