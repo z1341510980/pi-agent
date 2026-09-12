@@ -291,6 +291,8 @@ export async function generateCanvasMedia(
     voice?: string
     format?: string
     speed?: number
+    /** 多参考协议的分辨率档位串（如 '480p竖'/'768p(1:1)'）：按 provider 模型档案枚举原样透传。 */
+    resolution?: string
     size?: string
     seconds?: number
     generateAudio?: boolean

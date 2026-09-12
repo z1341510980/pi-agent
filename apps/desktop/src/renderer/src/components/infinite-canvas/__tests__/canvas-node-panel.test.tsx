@@ -311,6 +311,57 @@ describe('节点面板：图像设置弹窗（替代原比例选择器）', () =
   })
 })
 
+describe('节点面板：视频分辨率档位', () => {
+  function VideoHarness({
+    initialMetadata,
+    onPatch
+  }: {
+    initialMetadata?: Record<string, unknown>
+    onPatch?: (patch: Record<string, unknown>) => void
+  }): ReactElement {
+    const [metadata, setMetadata] = useState<Record<string, unknown>>({
+      generationMode: 'video',
+      prompt: '测试',
+      ...initialMetadata
+    })
+    const node: CanvasNodeData = { ...configNode(), metadata }
+    return (
+      <CanvasNodePanel
+        {...baseProps(node)}
+        orderedReferences={[]}
+        onConfigChange={(_id, patch) => {
+          onPatch?.(patch)
+          setMetadata((current) => ({ ...current, ...patch }))
+        }}
+      />
+    )
+  }
+
+  it('分辨率下拉展示六档枚举，未选时默认 480p竖', async () => {
+    render(<VideoHarness />)
+
+    const combobox = screen.getByRole('combobox', { name: '视频分辨率' })
+    expect(combobox.textContent).toContain('480p竖')
+
+    fireEvent.keyDown(combobox, { key: 'Enter' })
+    for (const preset of ['480p竖', '768p竖', '480p横', '768p横', '480p(1:1)', '768p(1:1)']) {
+      expect(await screen.findByRole('option', { name: preset })).toBeTruthy()
+    }
+  })
+
+  it('选择档位写回 { resolution } patch 并回显', async () => {
+    const patches: Array<Record<string, unknown>> = []
+    render(<VideoHarness onPatch={(patch) => patches.push(patch)} />)
+
+    const combobox = screen.getByRole('combobox', { name: '视频分辨率' })
+    fireEvent.keyDown(combobox, { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('option', { name: '768p(1:1)' }))
+
+    expect(patches).toEqual([{ resolution: '768p(1:1)' }])
+    await waitFor(() => expect(combobox.textContent).toContain('768p(1:1)'))
+  })
+})
+
 describe('节点面板：图像快捷栏', () => {
   it('展开图标打开 Dialog，编辑提示词回调 onPromptChange', async () => {
     const onPromptChange = vi.fn()

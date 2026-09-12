@@ -110,16 +110,15 @@ function resolutionTierForSize(size: unknown): ResolutionTier {
   }
   return 'auto'
 }
-// 视频分辨率预设：横竖成对，覆盖 768P / 720P / 1080P 档；'auto' 跟随 Provider 默认。
-// 768P 是部分模型（如 minimax 视频）的输出上限档。
-const VIDEO_SIZES = [
-  'auto',
-  '1360x768',
-  '768x1360',
-  '1280x720',
-  '720x1280',
-  '1920x1080',
-  '1080x1920'
+// 视频分辨率档位：与服务端 aimanplay 模型档案的 resolution 枚举对齐（newapi-video adapter），
+// 面板写 metadata.resolution 原样透传；默认档竖屏优先 480p竖。
+const VIDEO_RESOLUTION_PRESETS = [
+  '480p竖',
+  '768p竖',
+  '480p横',
+  '768p横',
+  '480p(1:1)',
+  '768p(1:1)'
 ] as const
 const VIDEO_SECONDS = [5, 10, 15]
 const AUDIO_FORMATS = ['mp3', 'wav']
@@ -227,11 +226,14 @@ function ConfigSettingsRow({
   const metadata = node.metadata ?? {}
   const selectStyle = { borderColor: theme.toolbar.border, color: theme.node.text }
   if (mode === 'video') {
-    const size = String(metadata.size || 'auto')
+    const rawResolution = typeof metadata.resolution === 'string' ? metadata.resolution : ''
+    const resolution = (VIDEO_RESOLUTION_PRESETS as readonly string[]).includes(rawResolution)
+      ? rawResolution
+      : '480p竖'
     const seconds = Number(metadata.seconds) || 5
     return (
       <>
-        <Select value={size} onValueChange={(next) => onConfigChange({ size: next })}>
+        <Select value={resolution} onValueChange={(next) => onConfigChange({ resolution: next })}>
           <SelectTrigger
             aria-label="视频分辨率"
             className="h-8 rounded-full border bg-transparent px-2 text-xs shadow-none dark:bg-transparent"
@@ -240,18 +242,11 @@ function ConfigSettingsRow({
             <SelectValue />
           </SelectTrigger>
           <CanvasSelectContent theme={theme}>
-            {VIDEO_SIZES.map((value) => {
-              const [width, height] = value.split('x').map(Number)
-              const label =
-                value === 'auto'
-                  ? '自动分辨率'
-                  : `${width}×${height}（${width >= height ? '横版' : '竖版'}）`
-              return (
-                <SelectItem key={value} value={value}>
-                  {label}
-                </SelectItem>
-              )
-            })}
+            {VIDEO_RESOLUTION_PRESETS.map((value) => (
+              <SelectItem key={value} value={value}>
+                {value}
+              </SelectItem>
+            ))}
           </CanvasSelectContent>
         </Select>
         <span className="inline-flex items-center gap-1 text-xs opacity-70">

@@ -2244,6 +2244,12 @@ export function InfiniteCanvasWorkspace({
                     format: typeof meta.format === 'string' ? meta.format : undefined,
                     speed: Number(meta.speed) > 0 ? Number(meta.speed) : undefined,
                     size: generationMode === 'video' ? sizeValue : undefined,
+                    // 分辨率档位（aimanplay 档案枚举 480p竖 等）：面板 metadata.resolution 原样透传，
+                    // 服务端按模型枚举校验；旧 WxH size 继续发送供未知/legacy provider 消费。
+                    resolution:
+                      typeof meta.resolution === 'string' && meta.resolution
+                        ? meta.resolution
+                        : undefined,
                     seconds:
                       generationMode === 'video' && Number(meta.seconds) > 0
                         ? Number(meta.seconds)
