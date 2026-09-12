@@ -253,17 +253,18 @@ export function createInfiniteCanvasPlugin(): Plugin {
             input.image,
             ...(input.images ?? [])
           ]))!
+          // 蒙版归一化：现画的蒙版是 data URL（原样透传），节点里存的可能是资产路径
+          const [mask] = input.mask ? (await referencesToDataUrls(assets, [input.mask]))! : []
           referencePreviews = [image, ...images].map((ref) => ({
             preview: assets.storeFromDataUrl(input.projectId ?? null, ref) ?? '',
             bytes: ref.length
           }))
-          maskPath = input.mask
-            ? assets.storeFromDataUrl(input.projectId ?? null, input.mask)
-            : null
+          maskPath = mask ? assets.storeFromDataUrl(input.projectId ?? null, mask) : null
           const result = await editImageCore({
             ...input,
             image,
-            images: images.length ? images : undefined
+            images: images.length ? images : undefined,
+            mask
           })
           let responseImages = result.images
           try {
@@ -319,6 +320,8 @@ export function createInfiniteCanvasPlugin(): Plugin {
         image?: string
         signal?: AbortSignal
       }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }> => {
+        // 首帧参考图归一化：资产路径服务商取不到（桌面端暂不发送，保持链路一致）
+        const [image] = input.image ? (await referencesToDataUrls(assets, [input.image]))! : []
         const result =
           input.mode === 'audio'
             ? await media.generateAudio({
@@ -333,7 +336,7 @@ export function createInfiniteCanvasPlugin(): Plugin {
             : await media.generateVideo({
                 prompt: input.prompt,
                 model: input.model,
-                image: input.image,
+                image,
                 providerId: input.providerId,
                 duration: input.seconds,
                 ...parseVideoSize(input.size),
@@ -372,8 +375,12 @@ export function createInfiniteCanvasPlugin(): Plugin {
         generateImageLocalized,
         generateMediaLocalized,
         editImageLocalized,
-        ({ image, instruction, model, signal }) =>
-          media.analyzeImage({ image, instruction, model, signal }),
+        async ({ image, instruction, model, signal }) => {
+          // 反推原图归一化：节点内容常是资产路径，上游视觉模型取不到本地地址；
+          // 资产缺失/未转存完成时抛可见错误（与参考图链路同一文案），由路由转 502
+          const [normalizedImage] = (await referencesToDataUrls(assets, [image]))!
+          return media.analyzeImage({ image: normalizedImage, instruction, model, signal })
+        },
         promptSourceService,
         getMediaProviderStore,
         assets,

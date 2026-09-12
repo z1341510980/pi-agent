@@ -7,7 +7,7 @@ import type { PromptSourceService } from './prompt-source-service.js'
 import type { MediaProviderRow } from './media/adapter.js'
 import type { MediaProviderStore } from './media/media-provider-store.js'
 import type { CanvasAssetStore, MediaLogStore } from './canvas-assets.js'
-import { imageMimeFromBytes } from './canvas-assets.js'
+import { ASSET_PATH_PREFIX, imageMimeFromBytes } from './canvas-assets.js'
 import {
   canvasImageDataUrls,
   formatCanvasGenerationContext,
@@ -689,7 +689,13 @@ export function createInfiniteCanvasRoutes(
             image,
             providerId: input.providerId === undefined ? undefined : String(input.providerId),
             images: Array.isArray(input.images)
-              ? input.images.filter((item): item is string => typeof item === 'string' && item.startsWith('data:'))
+              ? // 预过滤只丢弃非字符串垃圾项：data URL 原样、资产路径留给
+                // editImageLocalized 统一归一化成 data URL
+                input.images.filter(
+                  (item): item is string =>
+                    typeof item === 'string' &&
+                    (item.startsWith('data:') || item.startsWith(`${ASSET_PATH_PREFIX}/`))
+                )
               : undefined,
             mask: typeof input.mask === 'string' && input.mask ? input.mask : undefined,
             model: input.model === undefined ? undefined : String(input.model),

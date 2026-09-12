@@ -17,7 +17,7 @@ import { mediaDiag } from '../../core/config/media-diag.js'
 /** 后台下载单张的硬上限：正常 CDN 几十秒内完成，慢 CDN 也别无限挂着。 */
 export const ASSET_DOWNLOAD_TIMEOUT_MS = 15 * 60_000
 
-const ASSET_PATH_PREFIX = '/api/plugins/infinite-canvas/assets'
+export const ASSET_PATH_PREFIX = '/api/plugins/infinite-canvas/assets'
 
 type AssetStatus = 'ready' | 'downloading' | 'failed'
 
