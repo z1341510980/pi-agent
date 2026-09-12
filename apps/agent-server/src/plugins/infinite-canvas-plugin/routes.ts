@@ -8,7 +8,10 @@ import type { MediaProviderRow } from './media/adapter.js'
 import type { MediaProviderStore } from './media/media-provider-store.js'
 import type { CanvasAssetStore, MediaLogStore } from './canvas-assets.js'
 import { ASSET_PATH_PREFIX, imageMimeFromBytes } from './canvas-assets.js'
-import { NEWAPI_VIDEO_MAX_REF_IMAGES } from './media/adapters/newapi-video.js'
+import {
+  NEWAPI_VIDEO_MAX_REF_AUDIOS,
+  NEWAPI_VIDEO_MAX_REF_IMAGES
+} from './media/adapters/newapi-video.js'
 import {
   canvasImageDataUrls,
   formatCanvasGenerationContext,
@@ -75,8 +78,10 @@ export type CanvasMediaGenerateHandler = (input: {
   seconds?: number
   /** 图生视频的单张参考图（文档协议 image 字段）。 */
   image?: string
-  /** 多参考图（ref_image_N 协议）：按发送顺序，首张为主参考，上限 8 张。 */
+  /** 多参考图（ref_image_N 协议）：按发送顺序，首张为主参考，上限 9 张。 */
   refImages?: string[]
+  /** 参考音频（ref_audio_N 协议）：按发送顺序，上限 3 段。 */
+  refAudios?: string[]
   /** 多参考协议的分辨率串（如 '768p竖'），原样透传。 */
   resolution?: string
   generateAudio?: boolean
@@ -743,11 +748,17 @@ export function createInfiniteCanvasRoutes(
             image: optionalString(input.image),
             // 发起生成的画布节点 id：异步视频任务落库关联，桌面端凭它回填节点
             nodeId: input.nodeId === undefined ? undefined : String(input.nodeId),
-            // ref_image_N 多参考：只收字符串项并封顶 8 张，归一化由插件层统一处理
+            // ref_image_N 多参考：只收字符串项并封顶 9 张，归一化由插件层统一处理
             refImages: Array.isArray(input.refImages)
               ? input.refImages
                   .filter((item): item is string => typeof item === 'string' && item.length > 0)
                   .slice(0, NEWAPI_VIDEO_MAX_REF_IMAGES)
+              : undefined,
+            // ref_audio_N 参考音频：只收字符串项并封顶 3 段
+            refAudios: Array.isArray(input.refAudios)
+              ? input.refAudios
+                  .filter((item): item is string => typeof item === 'string' && item.length > 0)
+                  .slice(0, NEWAPI_VIDEO_MAX_REF_AUDIOS)
               : undefined,
             resolution: optionalString(input.resolution),
             generateAudio:

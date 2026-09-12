@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MediaModalityContext } from '../adapter.js'
+import { mediaDiag } from '../../../../core/config/media-diag.js'
+import { clearAimanplayOssCaches } from '../aimanplay-oss.js'
 import {
   NEWAPI_VIDEO_DEFAULT_MODEL,
   NEWAPI_VIDEO_DEFAULTS,
   NEWAPI_VIDEO_MAX_REF_IMAGES,
-  newapiVideoAdapter
+  NEWAPI_VIDEO_MAX_REF_AUDIOS,
+  newapiVideoAdapter,
+  resolveAimanplayVideoProfile
 } from '../adapters/newapi-video.js'
 
 /**
@@ -12,7 +16,29 @@ import {
  * completed+url）、失败路径透出 error.message、参数默认值与图生视频透传；
  * 以及 NewAPI 兼容网关（aimanplay 等）的真实包裹层响应形状
  * （SUCCESS + result_url + 嵌套 results）与 ref_image_N 多参考协议（/v1/videos）。
+ * aimanplay 四模型档案（first-last/ref-media/text-only）的分流、duration/resolution
+ * 钳制与参考素材 OSS URL 化（含内容缓存）单独成组。
  */
+
+/** 模拟站点 STS 接口响应（api.md §3.1）。 */
+const OSS_STS_RESPONSE = {
+  success: true,
+  enabled: true,
+  message: '',
+  host: 'https://video-bucket.oss-cn-hangzhou.aliyuncs.com',
+  region: 'oss-cn-hangzhou',
+  bucket: 'video-bucket',
+  dir: 'canvas/2026',
+  accessKeyId: 'STS_AK',
+  accessKeySecret: 'STS_SK',
+  securityToken: 'STS_TOKEN',
+  expiration: new Date(Date.now() + 3600_000).toISOString(),
+  maxImageBytes: 10 * 1024 * 1024,
+  maxAudioBytes: 20 * 1024 * 1024
+}
+
+const isStsRequest = (url: unknown): boolean => String(url).includes('/api/video-upload/oss-sts')
+const isOssPut = (url: unknown): boolean => String(url).includes('.aliyuncs.com')
 
 /** NewAPI 兼容网关的真实完成响应：status 大写、url 藏在 data.result_url / 嵌套 results。 */
 const LIVE_COMPLETED_BODY = {
@@ -70,9 +96,31 @@ describe('newapi-video adapter', () => {
       headers: { 'Content-Type': 'application/json' }
     })
 
+  /**
+   * OSS 链路 fetch 桩：按 URL 分流 —— STS/PUT 走固定响应，视频网关（提交/轮询）
+   * 按 push 入队顺序消费，不受素材上传次数（缓存命中与否）影响。
+   */
+  const stubVideoFetch = (
+    fetchMock: ReturnType<typeof vi.fn>
+  ): {
+    push: (response: () => Response) => void
+  } => {
+    const queue: Array<() => Response> = []
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input)
+      if (isStsRequest(url)) return jsonResponse(OSS_STS_RESPONSE)
+      if (isOssPut(url)) return new Response('', { status: 200 })
+      const next = queue.shift()
+      if (!next) throw new Error(`视频网关收到未预期的请求：${url}`)
+      return next()
+    })
+    return { push: (response) => queue.push(response) }
+  }
+
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.useRealTimers()
+    clearAimanplayOssCaches()
   })
 
   it('submits the documented payload and polls until the task completes with a url', async () => {
@@ -345,26 +393,26 @@ describe('newapi-video adapter', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     vi.useFakeTimers()
-    fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse({
-          code: 'success',
-          message: '',
-          data: { task_id: 'v-ref-1', status: 'PENDING' }
-        })
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          code: 'success',
-          message: '',
-          data: {
-            task_id: 'v-ref-1',
-            status: 'SUCCESS',
-            fail_reason: '',
-            result_url: 'https://cdn.video.example/ref/out.mp4'
-          }
-        })
-      )
+    const gateway = stubVideoFetch(fetchMock)
+    gateway.push(() =>
+      jsonResponse({
+        code: 'success',
+        message: '',
+        data: { task_id: 'v-ref-1', status: 'PENDING' }
+      })
+    )
+    gateway.push(() =>
+      jsonResponse({
+        code: 'success',
+        message: '',
+        data: {
+          task_id: 'v-ref-1',
+          status: 'SUCCESS',
+          fail_reason: '',
+          result_url: 'https://cdn.video.example/ref/out.mp4'
+        }
+      })
+    )
 
     try {
       const resultPromise = adapter.generateVideo!(createContext(), {
@@ -381,15 +429,38 @@ describe('newapi-video adapter', () => {
         outputs: [{ url: 'https://cdn.video.example/ref/out.mp4', mimeType: 'video/mp4' }]
       })
 
-      expect(fetchMock).toHaveBeenCalledTimes(2)
+      // 未知模型（kling-v1）：data URL 先经 OSS 桥 URL 化（1 次 STS + 2 次 PUT），
+      // http(s) 引用原样透传；共 STS + PUT×2 + 提交 + 轮询 = 5 次
+      expect(fetchMock).toHaveBeenCalledTimes(5)
+      expect(fetchMock.mock.calls[0][0]).toBe('https://api.video.example/api/video-upload/oss-sts')
+      const putUrls = fetchMock.mock.calls
+        .filter(([url]) => isOssPut(url))
+        .map(([url]) => String(url))
+      expect(putUrls).toHaveLength(2)
+      for (const url of putUrls) {
+        expect(url.startsWith(`${OSS_STS_RESPONSE.host}/${OSS_STS_RESPONSE.dir}/`)).toBe(true)
+        expect(url.endsWith('.png')).toBe(true)
+      }
+      const putInit = fetchMock.mock.calls[1][1] as RequestInit
+      expect(putInit.method).toBe('PUT')
+      expect(putInit.headers as Record<string, string>).toMatchObject({
+        'x-oss-object-acl': 'public-read',
+        'x-oss-security-token': OSS_STS_RESPONSE.securityToken
+      })
+      expect(
+        (putInit.headers as Record<string, string>).Authorization?.startsWith(
+          `OSS ${OSS_STS_RESPONSE.accessKeyId}:`
+        )
+      ).toBe(true)
+
       // 多参考协议：提交 POST {base}/v1/videos
-      expect(fetchMock.mock.calls[0][0]).toBe('https://api.video.example/v1/videos')
-      const submit = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+      expect(fetchMock.mock.calls[3][0]).toBe('https://api.video.example/v1/videos')
+      const submit = JSON.parse(String((fetchMock.mock.calls[3][1] as RequestInit).body))
       expect(submit).toMatchObject({
         model: NEWAPI_VIDEO_DEFAULT_MODEL,
         prompt: '多图参考生成',
-        ref_image_0: 'data:image/png;base64,AA==',
-        ref_image_1: 'data:image/png;base64,BB==',
+        ref_image_0: putUrls[0],
+        ref_image_1: putUrls[1],
         ref_image_2: 'https://cdn.video.example/up/ref.png',
         duration: 5
       })
@@ -400,7 +471,7 @@ describe('newapi-video adapter', () => {
       expect(submit.n).toBeUndefined()
       expect(submit.response_format).toBeUndefined()
       // 轮询端点按协议切换为 GET {base}/v1/videos/{task_id}
-      expect(fetchMock.mock.calls[1][0]).toBe('https://api.video.example/v1/videos/v-ref-1')
+      expect(fetchMock.mock.calls[4][0]).toBe('https://api.video.example/v1/videos/v-ref-1')
     } finally {
       vi.useRealTimers()
     }
@@ -409,9 +480,14 @@ describe('newapi-video adapter', () => {
   it('passes resolution through on the ref protocol and omits it when unset', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
+    const gateway = stubVideoFetch(fetchMock)
     const immediateDone = (): Response =>
       jsonResponse({ task_id: 'v-res', status: 'completed', url: 'https://cdn.video.com/v.mp4' })
-    fetchMock.mockResolvedValueOnce(immediateDone())
+    ;[1, 2, 3].forEach(() => gateway.push(immediateDone))
+    const submitBodies = (): Record<string, unknown>[] =>
+      fetchMock.mock.calls
+        .filter(([url]) => String(url).endsWith('/v1/videos'))
+        .map(([, init]) => JSON.parse(String((init as RequestInit).body)))
 
     await expect(
       adapter.generateVideo!(createContext(), {
@@ -420,65 +496,390 @@ describe('newapi-video adapter', () => {
         resolution: '768p竖'
       })
     ).resolves.toBeTruthy()
-    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).resolution).toBe(
-      '768p竖'
-    )
+    expect(submitBodies()[0]?.resolution).toBe('768p竖')
 
-    // 输入未传 → 不带 resolution 字段
-    fetchMock.mockResolvedValueOnce(immediateDone())
+    // 输入未传 → 不带 resolution 字段（内容缓存命中，第二次提交不再触发 OSS 上传）
     await expect(
       adapter.generateVideo!(createContext(), {
         prompt: 'x',
         refImages: ['data:image/png;base64,AA==']
       })
     ).resolves.toBeTruthy()
-    expect(
-      JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body)).resolution
-    ).toBeUndefined()
+    expect(submitBodies()[1]?.resolution).toBeUndefined()
 
     // Provider 行 params.resolution 作为频道级默认兜底
-    fetchMock.mockResolvedValueOnce(immediateDone())
     await expect(
       adapter.generateVideo!(createContext({ params: { resolution: '768p横' } }), {
         prompt: 'x',
         refImages: ['data:image/png;base64,AA==']
       })
     ).resolves.toBeTruthy()
-    expect(JSON.parse(String((fetchMock.mock.calls[2][1] as RequestInit).body)).resolution).toBe(
-      '768p横'
-    )
+    expect(submitBodies()[2]?.resolution).toBe('768p横')
   })
 
   it('caps refImages at the adapter limit and ignores an empty list', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    fetchMock.mockResolvedValueOnce(
+    const gateway = stubVideoFetch(fetchMock)
+    gateway.push(() =>
       jsonResponse({ task_id: 'v-cap', status: 'completed', url: 'https://cdn.video.com/v.mp4' })
     )
-    const manyRefs = Array.from(
-      { length: NEWAPI_VIDEO_MAX_REF_IMAGES + 2 },
-      (_, index) => `data:image/png;base64,${index}`
-    )
+    const manyRefs = Array.from({ length: NEWAPI_VIDEO_MAX_REF_IMAGES + 2 }, (_, index) =>
+      Buffer.from(`ref-${index}`).toString('base64')
+    ).map((payload) => `data:image/png;base64,${payload}`)
 
     await expect(
       adapter.generateVideo!(createContext(), { prompt: 'x', refImages: manyRefs })
     ).resolves.toBeTruthy()
-    const submit = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    const submitBodies = fetchMock.mock.calls
+      .filter(([url]) => String(url).endsWith('/v1/videos'))
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)))
+    const submit = submitBodies[0] as Record<string, string>
     expect(Object.keys(submit).filter((key) => key.startsWith('ref_image_'))).toHaveLength(
       NEWAPI_VIDEO_MAX_REF_IMAGES
     )
+    // 每张 data URL 都被 URL 化成 OSS 公开地址
+    const putUrls = fetchMock.mock.calls
+      .filter(([url]) => isOssPut(url))
+      .map(([url]) => String(url))
+    expect(putUrls).toHaveLength(NEWAPI_VIDEO_MAX_REF_IMAGES)
     expect(submit[`ref_image_${NEWAPI_VIDEO_MAX_REF_IMAGES - 1}`]).toBe(
-      `data:image/png;base64,${NEWAPI_VIDEO_MAX_REF_IMAGES - 1}`
+      putUrls[NEWAPI_VIDEO_MAX_REF_IMAGES - 1]
     )
     expect(submit[`ref_image_${NEWAPI_VIDEO_MAX_REF_IMAGES}`]).toBeUndefined()
 
-    // 空数组视为未传：回落文档协议 POST /video/generations
-    fetchMock.mockResolvedValueOnce(
+    // 空数组视为未传：回落文档协议 POST /video/generations（无 OSS 上传）
+    gateway.push(() =>
       jsonResponse({ task_id: 't', status: 'completed', url: 'https://cdn.video.com/v.mp4' })
     )
     await expect(
       adapter.generateVideo!(createContext(), { prompt: 'x', refImages: [] })
     ).resolves.toBeTruthy()
-    expect(fetchMock.mock.calls[1][0]).toBe('https://api.video.example/v1/video/generations')
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/video/generations'))
+    ).toHaveLength(1)
+  })
+})
+
+describe('aimanplay 模型档案（first-last / ref-media / text-only）', () => {
+  const adapter = newapiVideoAdapter
+
+  const createContext = (overrides: Partial<MediaModalityContext> = {}): MediaModalityContext => ({
+    providerId: 'video',
+    baseUrl: 'https://api.video.example',
+    apiKey: 'sk-video',
+    model: '',
+    params: {},
+    ...overrides
+  })
+
+  const jsonResponse = (body: unknown, status = 200): Response =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' }
+    })
+
+  const stubVideoFetch = (
+    fetchMock: ReturnType<typeof vi.fn>
+  ): {
+    push: (response: () => Response) => void
+  } => {
+    const queue: Array<() => Response> = []
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input)
+      if (isStsRequest(url)) return jsonResponse(OSS_STS_RESPONSE)
+      if (isOssPut(url)) return new Response('', { status: 200 })
+      const next = queue.shift()
+      if (!next) throw new Error(`视频网关收到未预期的请求：${url}`)
+      return next()
+    })
+    return { push: (response) => queue.push(response) }
+  }
+
+  const ossPutUrls = (fetchMock: ReturnType<typeof vi.fn>): string[] =>
+    fetchMock.mock.calls.filter(([url]) => isOssPut(url)).map(([url]) => String(url))
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    clearAimanplayOssCaches()
+  })
+
+  it('resolves the four aimanplay profiles and returns null for unknown models', () => {
+    expect(resolveAimanplayVideoProfile('minimax_h3_lightx2v')).toMatchObject({
+      kind: 'first-last',
+      durationRange: [1, 10],
+      defaultDuration: 5,
+      defaultResolution: '480p竖'
+    })
+    expect(resolveAimanplayVideoProfile('minimax_h3_lightx2v')?.resolutions).toEqual([
+      '480p竖',
+      '480p横',
+      '768p竖',
+      '768p横',
+      '480p(1:1)',
+      '768p(1:1)'
+    ])
+    expect(resolveAimanplayVideoProfile('minimax_h3_image_audio_to_video_v2_15s')).toMatchObject({
+      kind: 'ref-media',
+      durationRange: [1, 15],
+      defaultDuration: 15
+    })
+    expect(resolveAimanplayVideoProfile('minimax_h3_zm_u24')).toMatchObject({
+      kind: 'ref-media',
+      durationRange: [1, 15],
+      defaultDuration: 5
+    })
+    expect(resolveAimanplayVideoProfile('minimax_h3_lightx2v_no_pic')).toMatchObject({
+      kind: 'text-only',
+      durationRange: [1, 10],
+      defaultDuration: 5
+    })
+    expect(resolveAimanplayVideoProfile('kling-v1')).toBeNull()
+    expect(resolveAimanplayVideoProfile('')).toBeNull()
+  })
+
+  it('first-last 档案：前两张参考图 → first_frame/last_frame，档案 duration/resolution 兜底', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const gateway = stubVideoFetch(fetchMock)
+    gateway.push(() => jsonResponse({ task_id: 'fl-1', status: 'queued' }))
+
+    await adapter.submitVideoTask!(createContext({ model: 'minimax_h3_lightx2v' }), {
+      prompt: '首尾帧生成',
+      refImages: [
+        'data:image/png;base64,AA==',
+        'data:image/png;base64,BB==',
+        'data:image/png;base64,CC=='
+      ]
+    })
+
+    // 只物化前两张（第三张不参与首尾帧协议）
+    expect(ossPutUrls(fetchMock)).toHaveLength(2)
+    const submit = JSON.parse(
+      String(
+        (
+          fetchMock.mock.calls.find(
+            ([url]) => String(url) === 'https://api.video.example/v1/videos'
+          )?.[1] as RequestInit
+        ).body
+      )
+    )
+    expect(submit).toEqual({
+      model: 'minimax_h3_lightx2v',
+      prompt: '首尾帧生成',
+      first_frame: ossPutUrls(fetchMock)[0],
+      last_frame: ossPutUrls(fetchMock)[1],
+      duration: 5,
+      resolution: '480p竖'
+    })
+  })
+
+  it('first-last 档案：只有 1 张参考图时报可读错误且不发起任何请求', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(
+      adapter.submitVideoTask!(createContext({ model: 'minimax_h3_lightx2v' }), {
+        prompt: 'x',
+        refImages: ['data:image/png;base64,AA==']
+      })
+    ).rejects.toThrow('首尾帧模型 minimax_h3_lightx2v 需要 2 张参考图（首帧与尾帧）')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('ref-media 档案：ref_image_N + ref_audio_N 展开，duration/resolution 取档案默认', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const gateway = stubVideoFetch(fetchMock)
+    gateway.push(() => jsonResponse({ task_id: 'rm-1', status: 'queued' }))
+
+    await adapter.submitVideoTask!(
+      createContext({ model: 'minimax_h3_image_audio_to_video_v2_15s' }),
+      {
+        prompt: '图音参考生成',
+        refImages: ['data:image/png;base64,AA==', 'data:image/png;base64,BB=='],
+        refAudios: ['data:audio/mpeg;base64,CC==']
+      }
+    )
+
+    const puts = ossPutUrls(fetchMock)
+    expect(puts.filter((url) => url.endsWith('.png'))).toHaveLength(2)
+    const audioUrl = puts.find((url) => url.endsWith('.mp3'))
+    expect(audioUrl).toBeTruthy()
+    const submit = JSON.parse(
+      String(
+        (
+          fetchMock.mock.calls.find(
+            ([url]) => String(url) === 'https://api.video.example/v1/videos'
+          )?.[1] as RequestInit
+        ).body
+      )
+    )
+    expect(submit).toEqual({
+      model: 'minimax_h3_image_audio_to_video_v2_15s',
+      prompt: '图音参考生成',
+      ref_image_0: puts[0],
+      ref_image_1: puts[1],
+      ref_audio_0: audioUrl,
+      duration: 15,
+      resolution: '480p竖'
+    })
+    expect(submit.width).toBeUndefined()
+    expect(submit.height).toBeUndefined()
+    expect(submit.fps).toBeUndefined()
+    expect(submit.n).toBeUndefined()
+    expect(submit.response_format).toBeUndefined()
+  })
+
+  it('ref-media 档案：图片封顶 9 张、音频封顶 3 段', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const gateway = stubVideoFetch(fetchMock)
+    gateway.push(() => jsonResponse({ task_id: 'rm-cap', status: 'queued' }))
+
+    await adapter.submitVideoTask!(createContext({ model: 'minimax_h3_zm_u24' }), {
+      prompt: '封顶',
+      refImages: Array.from({ length: NEWAPI_VIDEO_MAX_REF_IMAGES + 1 }, (_, index) =>
+        Buffer.from(`img-${index}`).toString('base64')
+      ).map((payload) => `data:image/png;base64,${payload}`),
+      refAudios: Array.from({ length: NEWAPI_VIDEO_MAX_REF_AUDIOS + 2 }, (_, index) =>
+        Buffer.from(`aud-${index}`).toString('base64')
+      ).map((payload) => `data:audio/mpeg;base64,${payload}`)
+    })
+
+    const submit = JSON.parse(
+      String(
+        (
+          fetchMock.mock.calls.find(
+            ([url]) => String(url) === 'https://api.video.example/v1/videos'
+          )?.[1] as RequestInit
+        ).body
+      )
+    )
+    expect(Object.keys(submit).filter((key) => key.startsWith('ref_image_'))).toHaveLength(
+      NEWAPI_VIDEO_MAX_REF_IMAGES
+    )
+    expect(Object.keys(submit).filter((key) => key.startsWith('ref_audio_'))).toHaveLength(
+      NEWAPI_VIDEO_MAX_REF_AUDIOS
+    )
+    expect(ossPutUrls(fetchMock)).toHaveLength(
+      NEWAPI_VIDEO_MAX_REF_IMAGES + NEWAPI_VIDEO_MAX_REF_AUDIOS
+    )
+  })
+
+  it('duration 钳制：20 → 15（v2_15s）、缺省 → 档案默认 15/5、首尾帧 20 → 10', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const gateway = stubVideoFetch(fetchMock)
+    for (const taskId of ['d1', 'd2', 'd3', 'd4']) {
+      gateway.push(() => jsonResponse({ task_id: taskId, status: 'queued' }))
+    }
+
+    await adapter.submitVideoTask!(
+      createContext({ model: 'minimax_h3_image_audio_to_video_v2_15s' }),
+      { prompt: 'x', duration: 20 }
+    )
+    await adapter.submitVideoTask!(
+      createContext({ model: 'minimax_h3_image_audio_to_video_v2_15s' }),
+      { prompt: 'x' }
+    )
+    await adapter.submitVideoTask!(createContext({ model: 'minimax_h3_zm_u24' }), { prompt: 'x' })
+    await adapter.submitVideoTask!(createContext({ model: 'minimax_h3_lightx2v' }), {
+      prompt: 'x',
+      duration: 20,
+      refImages: ['data:image/png;base64,AA==', 'data:image/png;base64,BB==']
+    })
+
+    const bodies = fetchMock.mock.calls
+      .filter(([url]) => String(url).endsWith('/v1/videos'))
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)))
+    expect(bodies.map((body) => body.duration)).toEqual([15, 15, 5, 10])
+  })
+
+  it('resolution 校验：枚举外值报可读错误（不发起请求）；params 兜底与档案默认', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const gateway = stubVideoFetch(fetchMock)
+    gateway.push(() => jsonResponse({ task_id: 'r1', status: 'queued' }))
+    gateway.push(() => jsonResponse({ task_id: 'r2', status: 'queued' }))
+
+    // 枚举外值：参数与素材校验先行，未触发任何 OSS/网关请求
+    await expect(
+      adapter.submitVideoTask!(createContext({ model: 'minimax_h3_lightx2v' }), {
+        prompt: 'x',
+        resolution: '1080p竖',
+        refImages: ['data:image/png;base64,AA==', 'data:image/png;base64,BB==']
+      })
+    ).rejects.toThrow('不是模型 minimax_h3_lightx2v 支持的档位')
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    // params.resolution 命中枚举 → 兜底生效；都缺省 → 档案默认 480p竖
+    await adapter.submitVideoTask!(
+      createContext({ model: 'minimax_h3_lightx2v', params: { resolution: '768p横' } }),
+      {
+        prompt: 'x',
+        refImages: ['data:image/png;base64,AA==', 'data:image/png;base64,BB==']
+      }
+    )
+    await adapter.submitVideoTask!(createContext({ model: 'minimax_h3_zm_u24' }), {
+      prompt: 'x',
+      refImages: ['data:image/png;base64,CC==']
+    })
+    const bodies = fetchMock.mock.calls
+      .filter(([url]) => String(url).endsWith('/v1/videos'))
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)))
+    expect(bodies.map((body) => body.resolution)).toEqual(['768p横', '480p竖'])
+  })
+
+  it('text-only 档案：不带媒体字段，带参考素材时落 video-references-ignored 诊断', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const gateway = stubVideoFetch(fetchMock)
+    gateway.push(() => jsonResponse({ task_id: 't1', status: 'queued' }))
+    const diagSpy = vi.spyOn(mediaDiag, 'event')
+
+    try {
+      await adapter.submitVideoTask!(createContext({ model: 'minimax_h3_lightx2v_no_pic' }), {
+        prompt: '纯文生视频',
+        refImages: ['data:image/png;base64,AA=='],
+        refAudios: ['data:audio/mpeg;base64,BB==']
+      })
+
+      const submit = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+      expect(submit).toEqual({
+        model: 'minimax_h3_lightx2v_no_pic',
+        prompt: '纯文生视频',
+        duration: 5,
+        resolution: '480p竖'
+      })
+      expect(ossPutUrls(fetchMock)).toHaveLength(0)
+      expect(diagSpy).toHaveBeenCalledWith('video-references-ignored', {
+        model: 'minimax_h3_lightx2v_no_pic',
+        refImageCount: 1,
+        refAudioCount: 1
+      })
+    } finally {
+      diagSpy.mockRestore()
+    }
+  })
+
+  it('URL 化内容缓存：同一 data URL 重复提交只 PUT 一次，ref_image 指向同一 OSS URL', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const gateway = stubVideoFetch(fetchMock)
+    gateway.push(() => jsonResponse({ task_id: 'c1', status: 'queued' }))
+    gateway.push(() => jsonResponse({ task_id: 'c2', status: 'queued' }))
+    const input = { prompt: '缓存复用', refImages: ['data:image/png;base64,AA=='] }
+
+    await adapter.submitVideoTask!(createContext(), input)
+    await adapter.submitVideoTask!(createContext(), input)
+
+    const putUrls = ossPutUrls(fetchMock)
+    expect(putUrls).toHaveLength(1)
+    const submitCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/v1/videos'))
+    expect(submitCalls).toHaveLength(2)
+    const first = JSON.parse(String((submitCalls[0][1] as RequestInit).body))
+    const second = JSON.parse(String((submitCalls[1][1] as RequestInit).body))
+    expect(first.ref_image_0).toBe(putUrls[0])
+    expect(second.ref_image_0).toBe(putUrls[0])
   })
 })

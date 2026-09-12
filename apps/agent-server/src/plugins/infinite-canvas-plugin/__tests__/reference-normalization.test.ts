@@ -13,11 +13,43 @@ import { join } from 'node:path'
 import { createInfiniteCanvasPlugin } from '../index.js'
 import { infiniteCanvasMigrations } from '../migrations.js'
 import { MediaLogStore } from '../canvas-assets.js'
+import { clearAimanplayOssCaches } from '../media/aimanplay-oss.js'
 import { MediaProviderStore } from '../media/media-provider-store.js'
 import type { PluginContext, RouteDefinition } from '../../../core/plugin/plugin-types.js'
 
 const PNG_BYTES = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
 const PNG_DATA_URL = `data:image/png;base64,${PNG_BYTES.toString('base64')}`
+
+/** 模拟站点 STS 接口响应（api.md §3.1）：视频 Provider baseUrl 为 https://video.test/v1。 */
+const OSS_STS_BODY = {
+  success: true,
+  enabled: true,
+  message: '',
+  host: 'https://ref-bucket.oss-cn-hangzhou.aliyuncs.com',
+  region: 'oss-cn-hangzhou',
+  bucket: 'ref-bucket',
+  dir: 'canvas-refs',
+  accessKeyId: 'STS_AK',
+  accessKeySecret: 'STS_SK',
+  securityToken: 'STS_TOKEN',
+  expiration: new Date(Date.now() + 3600_000).toISOString(),
+  maxImageBytes: 10 * 1024 * 1024,
+  maxAudioBytes: 20 * 1024 * 1024
+}
+
+/** OSS 桥 fetch 桩：STS/PUT 固定响应；仅视频网关提交回立即完成，其余 URL 快速失败
+ * （后台资产转存会复用同一个 fetch 桩，慢速响应会拖到 db.close 之后触发 unhandled）。 */
+const stubOssBridge = (fetchMock: ReturnType<typeof vi.fn>): void => {
+  fetchMock.mockImplementation(async (input: unknown) => {
+    const url = String(input)
+    if (url.includes('/api/video-upload/oss-sts')) return jsonResponse(OSS_STS_BODY)
+    if (url.includes('.aliyuncs.com')) return new Response('', { status: 200 })
+    if (url === 'https://video.test/v1/videos') {
+      return jsonResponse({ url: 'https://cdn.example.com/ref-out.mp4' })
+    }
+    throw new Error(`未预期的请求：${url}`)
+  })
+}
 
 interface ReplyMock {
   code: (statusCode: number) => ReplyMock
@@ -120,7 +152,10 @@ describe('画布媒体路由的资产路径归一化', () => {
     delete process.env.PI_DATA_DIR
     rmSync(dataDir, { recursive: true, force: true })
   })
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    clearAimanplayOssCaches()
+  })
 
   const routeFor = (method: string, path: string): RouteDefinition =>
     routes.find((route) => route.method === method && route.path === path)!
@@ -262,12 +297,11 @@ describe('画布媒体路由的资产路径归一化', () => {
     expect(payload.image).toBe(PNG_DATA_URL)
   })
 
-  it('generate-media：refImages 全部归一化并按 ref_image_N 走 /v1/videos 多参考协议', async () => {
+  it('generate-media：refImages 归一化后经 OSS 桥 URL 化，按 ref_image_N 走 /v1/videos', async () => {
     const assetPath = await uploadAsset()
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse({ url: 'https://cdn.example.com/ref-out.mp4' }))
+    const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
+    stubOssBridge(fetchMock)
 
     const reply = replyMock()
     await routeFor('POST', '/projects/:projectId/generate-media').handler(
@@ -279,27 +313,32 @@ describe('画布媒体路由的资产路径归一化', () => {
     )
 
     expect(reply.statusCode).toBe(200)
-    const [endpoint, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    // 多参考协议：提交端点切换为 POST {base}/v1/videos
+    const [endpoint, init] = fetchMock.mock.calls.find(
+      ([url]) => String(url) === 'https://video.test/v1/videos'
+    ) as [string, RequestInit]
     expect(endpoint).toBe('https://video.test/v1/videos')
     const payload = JSON.parse(String(init.body)) as Record<string, unknown>
-    // 资产路径已归一化成 data URL；data URL 原样透传
-    expect(payload.ref_image_0).toBe(PNG_DATA_URL)
-    expect(payload.ref_image_1).toBe(PNG_DATA_URL)
+    // 资产路径与 data URL 是同一份 PNG 内容：URL 化后两条 ref_image 指向同一 OSS 对象
+    expect(payload.ref_image_0).toBe(payload.ref_image_1)
+    expect(String(payload.ref_image_0)).toMatch(
+      /^https:\/\/ref-bucket\.oss-cn-hangzhou\.aliyuncs\.com\/canvas-refs\/[0-9a-f-]{36}\.png$/
+    )
     // 协议不带文档协议的 image 字段
     expect(payload.image).toBeUndefined()
   })
 
-  it('generate-media：refImages 过滤非字符串项并封顶 8 张', async () => {
+  it('generate-media：refImages 过滤非字符串项并封顶 9 张', async () => {
     const refImages = [
-      ...Array.from({ length: 9 }, (_, index) => `data:image/png;base64,${index}`),
+      ...Array.from(
+        { length: 10 },
+        (_, index) => `data:image/png;base64,${Buffer.from(`ref-${index}`).toString('base64')}`
+      ),
       42,
       ''
     ]
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse({ url: 'https://cdn.example.com/capped.mp4' }))
+    const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
+    stubOssBridge(fetchMock)
 
     const reply = replyMock()
     await routeFor('POST', '/projects/:projectId/generate-media').handler(
@@ -311,11 +350,15 @@ describe('画布媒体路由的资产路径归一化', () => {
     )
 
     expect(reply.statusCode).toBe(200)
-    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const init = fetchMock.mock.calls.find(
+      ([url]) => String(url) === 'https://video.test/v1/videos'
+    )?.[1] as RequestInit
     const payload = JSON.parse(String(init.body)) as Record<string, unknown>
     const refKeys = Object.keys(payload).filter((key) => key.startsWith('ref_image_'))
-    expect(refKeys).toHaveLength(8)
-    expect(payload.ref_image_7).toBe('data:image/png;base64,7')
-    expect(payload.ref_image_8).toBeUndefined()
+    expect(refKeys).toHaveLength(9)
+    expect(String(payload.ref_image_8)).toMatch(
+      /^https:\/\/ref-bucket\.oss[^/]+\.aliyuncs\.com\/canvas-refs\/[0-9a-f-]{36}\.png$/
+    )
+    expect(payload.ref_image_9).toBeUndefined()
   })
 })

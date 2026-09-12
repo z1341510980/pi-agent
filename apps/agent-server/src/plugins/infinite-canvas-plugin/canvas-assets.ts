@@ -468,7 +468,17 @@ function extractAssetSuffix(reference: string): string | null {
   return /^[\w-]+$/.test(id) ? id : null
 }
 
-async function referenceToDataUrl(assets: CanvasAssetStore, reference: string): Promise<string> {
+/**
+ * 单条参考素材 → data URL：data URL 原样返回；本地资产路径读盘（mime 信任资产行，
+ * 图片/音频均可）；http(s) 按素材类型校验 mime（image 或 audio）后转 data URL。
+ * kind 缺省 image；refAudios（参考音频）链路传 audio。
+ */
+export async function referenceToDataUrl(
+  assets: CanvasAssetStore,
+  reference: string,
+  kind: 'image' | 'audio' = 'image'
+): Promise<string> {
+  const label = kind === 'audio' ? '参考音频' : '参考图'
   if (reference.startsWith('data:')) return reference
 
   // 本地资产：直接读盘，绕开网络
@@ -479,44 +489,54 @@ async function referenceToDataUrl(assets: CanvasAssetStore, reference: string): 
       const bytes = readFileSync(asset.filePath)
       return `data:${asset.mime};base64,${bytes.toString('base64')}`
     }
-    throw new Error(`参考图资产不存在或尚未转存完成：${reference}`)
+    throw new Error(`${label}资产不存在或尚未转存完成：${reference}`)
   }
 
-  // 远程图：走系统代理取回（部分域名直连不可达）
+  // 远程素材：走系统代理取回（部分域名直连不可达）
   if (/^https?:\/\//.test(reference)) {
     const response = await fetch(reference, {
       signal: AbortSignal.timeout(60_000),
       redirect: 'follow',
       headers: {
-        Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        Accept: 'image/avif,image/webp,image/apng,image/*,audio/*,*/*;q=0.8',
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
       }
     })
-    if (!response.ok) throw new Error(`参考图下载失败：HTTP ${response.status}`)
+    if (!response.ok) throw new Error(`${label}下载失败：HTTP ${response.status}`)
     const bytes = Buffer.from(await response.arrayBuffer())
-    const mime = imageMimeFromBytes(bytes, response.headers.get('content-type') ?? '')
-    if (!mime.startsWith('image/')) throw new Error(`参考图不是有效图片：${reference}`)
+    const contentType = response.headers.get('content-type') ?? ''
+    const mime =
+      kind === 'audio'
+        ? assetMimeFromBytes(bytes, contentType)
+        : imageMimeFromBytes(bytes, contentType)
+    if (!mime.startsWith(kind === 'audio' ? 'audio/' : 'image/')) {
+      throw new Error(`${label}不是有效的${kind === 'audio' ? '音频' : '图片'}内容：${reference}`)
+    }
     return `data:${mime};base64,${bytes.toString('base64')}`
   }
 
-  throw new Error(`不支持的参考图地址：${reference}`)
+  throw new Error(`不支持的${label}地址：${reference}`)
 }
 
 /**
- * 参考图归一化：所有参考图必须以 data URL 形式发给图片 Provider。
+ * 参考素材归一化：所有参考素材必须以 data URL 形式发给 Provider/素材桥。
  * 本地资产路径、localhost 地址、内网不可达 URL 都不是服务商能取到的形式；
- * 归一化失败时抛出可见错误，绝不悄悄丢参考图。
+ * 归一化失败时抛出可见错误，绝不悄悄丢参考素材。
  */
 export async function referencesToDataUrls(
   assets: CanvasAssetStore,
-  references: string[] | undefined
+  references: string[] | undefined,
+  kind: 'image' | 'audio' = 'image'
 ): Promise<string[] | undefined> {
   if (!references?.length) return references
-  const converted = await Promise.all(references.map((ref) => referenceToDataUrl(assets, ref)))
+  const converted = await Promise.all(
+    references.map((ref) => referenceToDataUrl(assets, ref, kind))
+  )
   mediaDiag.event('reference-normalized', {
     total: converted.length,
-    fromData: references.filter((ref) => ref.startsWith('data:')).length
+    fromData: references.filter((ref) => ref.startsWith('data:')).length,
+    kind
   })
   return converted
 }

@@ -114,6 +114,11 @@ export interface VideoGenerationInput {
    * 元素顺序即 ref_image_0..N 的发送顺序（首张为主参考）。
    */
   refImages?: string[]
+  /**
+   * 参考音频（ref_audio_0..2 协议，≤3）：ref-media 档案模型（aimanplay 图音参考）
+   * 使用；提交前经 OSS 素材桥 URL 化（data URL/资产路径 → 公开 URL，http(s) 直传）。
+   */
+  refAudios?: string[]
   model?: string
   /** 视频时长（秒） */
   duration?: number

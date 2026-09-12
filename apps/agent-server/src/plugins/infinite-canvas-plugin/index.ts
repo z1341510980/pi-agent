@@ -13,6 +13,7 @@ import {
   ASSET_DOWNLOAD_TIMEOUT_MS,
   CanvasAssetStore,
   MediaLogStore,
+  referenceToDataUrl,
   referencesToDataUrls
 } from './canvas-assets.js'
 import {
@@ -22,6 +23,7 @@ import {
   type CanvasVideoTaskRecord
 } from './canvas-video-tasks.js'
 import { errorText, normalizeOpenAiCompatibleSize } from './media/shared.js'
+import { setAimanplayOssAssetDataUrlResolver } from './media/aimanplay-oss.js'
 import type { ResolvedMediaProvider } from './media/adapter.js'
 import { MediaProviderStore } from './media/media-provider-store.js'
 import { MediaPrefsStore } from './media/media-prefs-store.js'
@@ -133,6 +135,9 @@ export function createInfiniteCanvasPlugin(): Plugin {
       // 生成结果本地资产：落盘后前端拿稳定的 /assets/:id，不再依赖慢 CDN
       const dataDir = process.env.PI_DATA_DIR ?? join(homedir(), '.pi')
       const assets = new CanvasAssetStore(context.db, join(dataDir, 'agent', 'canvas-assets'))
+      // aimanplay OSS 素材桥不持有 store：本地资产路径（/assets/:id）→ data URL
+      // 的解析由插件注入（桥内只在素材未经归一化直接到达时兜底使用）
+      setAimanplayOssAssetDataUrlResolver((source) => referenceToDataUrl(assets, source))
       // 媒体生成日志：请求/响应留痕，画布内"生成日志"面板可查
       const mediaLogs = new MediaLogStore(context.db)
 
@@ -527,6 +532,7 @@ export function createInfiniteCanvasPlugin(): Plugin {
         seconds?: number
         image?: string
         refImages?: string[]
+        refAudios?: string[]
         resolution?: string
         signal?: AbortSignal
       }): Promise<
@@ -538,6 +544,10 @@ export function createInfiniteCanvasPlugin(): Plugin {
         const [image] = input.image ? (await referencesToDataUrls(assets, [input.image]))! : []
         const refImages = input.refImages?.length
           ? await referencesToDataUrls(assets, input.refImages)
+          : undefined
+        // 参考音频归一化（ref-media 档案模型）：http 分支按 audio/* 校验 mime
+        const refAudios = input.refAudios?.length
+          ? await referencesToDataUrls(assets, input.refAudios, 'audio')
           : undefined
         if (input.mode === 'audio') {
           const result = await media.generateAudio({
@@ -562,6 +572,7 @@ export function createInfiniteCanvasPlugin(): Plugin {
             model: input.model,
             ...(image ? { image } : {}),
             ...(refImages?.length ? { refImages } : {}),
+            ...(refAudios?.length ? { refAudios } : {}),
             resolution: input.resolution,
             providerId: input.providerId,
             duration: input.seconds,
@@ -592,6 +603,7 @@ export function createInfiniteCanvasPlugin(): Plugin {
               ...(input.seconds !== undefined ? { duration: input.seconds } : {}),
               ...(input.resolution ? { resolution: input.resolution } : {}),
               ...(refImages?.length ? { refImages: refImages.length } : {}),
+              ...(refAudios?.length ? { refAudios: refAudios.length } : {}),
               ...(image ? { image: true } : {})
             }
           })
@@ -602,6 +614,7 @@ export function createInfiniteCanvasPlugin(): Plugin {
           model: input.model,
           image,
           ...(refImages?.length ? { refImages } : {}),
+          ...(refAudios?.length ? { refAudios } : {}),
           resolution: input.resolution,
           providerId: input.providerId,
           duration: input.seconds,

@@ -1,5 +1,5 @@
 /**
- * newapi-video adapter：NewAPI 视频任务协议 + 多参考图协议。
+ * newapi-video adapter：NewAPI 视频任务协议 + 多参考图协议 + aimanplay 模型档案。
  *
  * 文档口径（docs/new-api/openapi/generated/ai-model/视频（Videos））：
  * - POST {base}/video/generations：{ model, prompt, image?, duration?, width?,
@@ -17,6 +17,12 @@
  * 请求体为扁平 ref_image_0..N 字段 + duration/resolution（不带 width/height/fps/
  * n/response_format），轮询端点切换为 GET {base}/v1/videos/{task_id}。
  *
+ * aimanplay 四模型档案（api.md §4，resolveAimanplayVideoProfile）：首尾帧模型走
+ * first_frame/last_frame、图音参考模型走 ref_image_N + ref_audio_N、纯文生模型
+ * 不带媒体字段；duration/resolution 按档案钳制与校验。所有参考素材提交前经
+ * OSS 素材桥（../aimanplay-oss）URL 化 —— 接口只收 URL 不收 base64，data URL
+ * 会被网关静默丢弃；http(s) 引用原样透传。
+ *
  * 异步任务拆分（设计 Task 2）：submitVideoTask（提交即返回 task_id）与
  * pollVideoTask（单次状态查询，归一化 queued/in_progress/success/failed）供
  * 服务端任务队列使用；generateVideo 保留同步实现，内部复用同一 submit/poll
@@ -33,6 +39,7 @@ import type {
   VideoTaskSubmission
 } from '../adapter.js'
 import { mediaDiag } from '../../../../core/config/media-diag.js'
+import { uploadToAimanplayOss, type AimanplayOssRuntime } from '../aimanplay-oss.js'
 import {
   IMAGE_POLL_INITIAL_DELAY_MS,
   VIDEO_JOB_TIMEOUT_MS,
@@ -60,8 +67,76 @@ export const NEWAPI_VIDEO_DEFAULT_MODEL = 'kling-v1'
 /** adapter 参数缺省值（formSchema 声明同源）。 */
 export const NEWAPI_VIDEO_DEFAULTS = { duration: 5, width: 1280, height: 720, fps: 30 } as const
 
-/** ref_image_N 多参考协议的参考图上限（路由层入参校验与此同源）。 */
-export const NEWAPI_VIDEO_MAX_REF_IMAGES = 8
+/**
+ * ref_image_N 多参考协议的参考图上限（路由层入参校验与此同源）；
+ * aimanplay 图音参考模型的文档上限即 9 张（api.md §4）。
+ */
+export const NEWAPI_VIDEO_MAX_REF_IMAGES = 9
+
+/** ref_audio_N 参考音频上限（aimanplay 图音参考模型，路由层入参校验与此同源）。 */
+export const NEWAPI_VIDEO_MAX_REF_AUDIOS = 3
+
+/**
+ * aimanplay 四模型档案（api.md §4 模型参数表，模型 id 精确匹配）：
+ * 首尾帧/图音参考/纯文生三类，duration 范围+默认、resolution 枚举+默认
+ * （竖屏优先 480p竖）。未知模型不进档案，保留既有通用行为。
+ */
+export interface AimanplayVideoProfile {
+  kind: 'first-last' | 'ref-media' | 'text-only'
+  durationRange: [number, number]
+  defaultDuration: number
+  resolutions: string[]
+  defaultResolution: string
+}
+
+/** 首尾帧/纯文生档位（480p 竖→横、768p 竖→横，再加 1:1 方形）。 */
+const AIMANPLAY_RESOLUTIONS_LIGHTX2V = [
+  '480p竖',
+  '480p横',
+  '768p竖',
+  '768p横',
+  '480p(1:1)',
+  '768p(1:1)'
+]
+
+/** 图音参考基础档位（v2_15s 不支持 1:1）。 */
+const AIMANPLAY_RESOLUTIONS_REF_MEDIA = ['480p竖', '768p竖', '480p横', '768p横']
+
+export const AIMANPLAY_MODEL_PROFILES: Record<string, AimanplayVideoProfile> = {
+  minimax_h3_lightx2v: {
+    kind: 'first-last',
+    durationRange: [1, 10],
+    defaultDuration: 5,
+    resolutions: AIMANPLAY_RESOLUTIONS_LIGHTX2V,
+    defaultResolution: '480p竖'
+  },
+  minimax_h3_image_audio_to_video_v2_15s: {
+    kind: 'ref-media',
+    durationRange: [1, 15],
+    defaultDuration: 15,
+    resolutions: AIMANPLAY_RESOLUTIONS_REF_MEDIA,
+    defaultResolution: '480p竖'
+  },
+  minimax_h3_zm_u24: {
+    kind: 'ref-media',
+    durationRange: [1, 15],
+    defaultDuration: 5,
+    resolutions: [...AIMANPLAY_RESOLUTIONS_REF_MEDIA, '480p(1:1)', '768p(1:1)'],
+    defaultResolution: '480p竖'
+  },
+  minimax_h3_lightx2v_no_pic: {
+    kind: 'text-only',
+    durationRange: [1, 10],
+    defaultDuration: 5,
+    resolutions: AIMANPLAY_RESOLUTIONS_LIGHTX2V,
+    defaultResolution: '480p竖'
+  }
+}
+
+/** 模型 id → 档案；未知/空模型返回 null（调用方回落通用行为）。 */
+export function resolveAimanplayVideoProfile(model: string): AimanplayVideoProfile | null {
+  return AIMANPLAY_MODEL_PROFILES[model.trim()] ?? null
+}
 
 /** 上游「排队中」状态词（其余非终态一律按 in_progress 继续轮询）。 */
 const VIDEO_POLL_QUEUED_STATUSES = new Set(['queued', 'pending', 'created', 'waiting'])
@@ -114,6 +189,7 @@ export function videoProgress(body: unknown): string | undefined {
 interface VideoRuntime {
   providerId: string
   baseUrl: string
+  apiKey: string
   model: string
   headers: Record<string, string>
 }
@@ -122,6 +198,7 @@ function createRuntime(ctx: MediaModalityContext): VideoRuntime {
   return {
     providerId: ctx.providerId,
     baseUrl: normalizeImageBaseUrl(ctx.baseUrl),
+    apiKey: ctx.apiKey,
     model: ctx.model || NEWAPI_VIDEO_DEFAULT_MODEL,
     headers: ctx.apiKey ? { Authorization: `Bearer ${ctx.apiKey}` } : {}
   }
@@ -155,6 +232,53 @@ function refImageFields(refImages: string[]): Record<string, string> {
   return fields
 }
 
+/** 参考音频载荷：refAudios 按发送顺序展开成扁平 ref_audio_0..N 字段。 */
+function refAudioFields(refAudios: string[]): Record<string, string> {
+  const fields: Record<string, string> = {}
+  refAudios.forEach((value, index) => {
+    fields[`ref_audio_${index}`] = value
+  })
+  return fields
+}
+
+function countNonEmpty(values: string[] | undefined): number {
+  return values?.filter((value) => value.length > 0).length ?? 0
+}
+
+interface MaterializedReferences {
+  values: string[]
+  /** 实际执行了 OSS 上传（非 http(s) 直传）的素材数，诊断用。 */
+  uploadedCount: number
+}
+
+/**
+ * 参考素材 URL 化：data URL/本地资产路径 → OSS 公开 URL（aimanplay 接口只收
+ * URL），http(s) 原样透传。串行上传（设计文档口径：提交期串行上传兜底 STS 限流）。
+ */
+async function materializeReferences(
+  rt: VideoRuntime,
+  sources: string[] | undefined,
+  kind: 'image' | 'audio',
+  cap: number
+): Promise<MaterializedReferences> {
+  const list = (sources ?? []).filter((value) => value.length > 0).slice(0, cap)
+  if (!list.length) return { values: [], uploadedCount: 0 }
+  const ossRuntime: AimanplayOssRuntime = {
+    providerId: rt.providerId,
+    baseUrl: rt.baseUrl,
+    apiKey: rt.apiKey
+  }
+  const values: string[] = []
+  let uploadedCount = 0
+  for (const source of list) {
+    const isPublicUrl = /^https?:\/\//i.test(source.trim())
+    const url = await uploadToAimanplayOss(ossRuntime, source, kind)
+    if (!isPublicUrl) uploadedCount++
+    values.push(url)
+  }
+  return { values, uploadedCount }
+}
+
 function numberParam(
   value: number | undefined,
   param: string | undefined,
@@ -170,24 +294,150 @@ interface VideoSubmitPlan {
   body: Record<string, unknown>
   submitEndpoint: string
   protocol: VideoTaskProtocol
+  /** 诊断元信息：命中的 aimanplay 模型档案类别（未知模型缺省）。 */
+  modelProfile?: AimanplayVideoProfile['kind']
+  /** 本次提交实际上传 OSS 的素材数（http(s) 直传不计）。 */
+  uploadedToOss: number
+  /** 进入提交体的参考音频数。 */
+  refAudioCount: number
 }
 
-/** 组装提交载荷：带参考图 → /v1/videos（ref_image_N）；否则文档协议 /video/generations。 */
-function buildSubmitPlan(
+/** 档案 duration：入参非法（缺省/非正数）→ 模型默认；再钳入模型范围。 */
+function profileDuration(profile: AimanplayVideoProfile, duration: number | undefined): number {
+  const value =
+    duration !== undefined && Number.isFinite(duration) && duration > 0
+      ? duration
+      : profile.defaultDuration
+  const [min, max] = profile.durationRange
+  return Math.min(max, Math.max(min, value))
+}
+
+/**
+ * 档案 resolution：input → provider params → 模型默认三级回落；
+ * 枚举外的值直接报可读错误（列出可选档位），绝不静默透传。
+ */
+function profileResolution(
+  profile: AimanplayVideoProfile,
+  model: string,
+  input: VideoGenerationInput,
+  ctx: MediaModalityContext
+): string {
+  const value =
+    input.resolution?.trim() || ctx.params.resolution?.trim() || profile.defaultResolution
+  if (!profile.resolutions.includes(value)) {
+    throw new Error(
+      `分辨率「${value}」不是模型 ${model} 支持的档位，可选：${profile.resolutions.join('、')}`
+    )
+  }
+  return value
+}
+
+/** aimanplay 档案模型的提交载荷：素材先 URL 化，duration/resolution 先校验（失败不发起上传）。 */
+async function buildProfileSubmitPlan(
+  rt: VideoRuntime,
+  ctx: MediaModalityContext,
+  input: VideoGenerationInput,
+  model: string,
+  profile: AimanplayVideoProfile
+): Promise<VideoSubmitPlan> {
+  const submitEndpoint = `${rt.baseUrl}/videos`
+  const duration = profileDuration(profile, input.duration)
+  const resolution = profileResolution(profile, model, input, ctx)
+  if (profile.kind === 'text-only') {
+    const refImageCount = countNonEmpty(input.refImages)
+    const refAudioCount = countNonEmpty(input.refAudios)
+    if (refImageCount || refAudioCount) {
+      mediaDiag.event('video-references-ignored', { model, refImageCount, refAudioCount })
+    }
+    return {
+      body: { model, prompt: input.prompt, duration, resolution },
+      submitEndpoint,
+      protocol: 'videos',
+      modelProfile: profile.kind,
+      uploadedToOss: 0,
+      refAudioCount: 0
+    }
+  }
+  if (profile.kind === 'first-last') {
+    const refs = (input.refImages ?? []).filter((value) => value.length > 0)
+    if (refs.length < 2) {
+      throw new Error(`首尾帧模型 ${model} 需要 2 张参考图（首帧与尾帧）`)
+    }
+    const materialized = await materializeReferences(rt, refs, 'image', 2)
+    return {
+      body: {
+        model,
+        prompt: input.prompt,
+        first_frame: materialized.values[0]!,
+        last_frame: materialized.values[1]!,
+        duration,
+        resolution
+      },
+      submitEndpoint,
+      protocol: 'videos',
+      modelProfile: profile.kind,
+      uploadedToOss: materialized.uploadedCount,
+      refAudioCount: 0
+    }
+  }
+  const images = await materializeReferences(
+    rt,
+    input.refImages,
+    'image',
+    NEWAPI_VIDEO_MAX_REF_IMAGES
+  )
+  const audios = await materializeReferences(
+    rt,
+    input.refAudios,
+    'audio',
+    NEWAPI_VIDEO_MAX_REF_AUDIOS
+  )
+  return {
+    body: {
+      model,
+      prompt: input.prompt,
+      ...refImageFields(images.values),
+      ...refAudioFields(audios.values),
+      duration,
+      resolution
+    },
+    submitEndpoint,
+    protocol: 'videos',
+    modelProfile: profile.kind,
+    uploadedToOss: images.uploadedCount + audios.uploadedCount,
+    refAudioCount: audios.values.length
+  }
+}
+
+/**
+ * 组装提交载荷：aimanplay 四模型按档案分流（素材先 URL 化）；未知模型保留
+ * 既有分流（带参考图 → /v1/videos ref_image_N，否则文档协议 /video/generations），
+ * 但参考图同样先物化为 OSS 公开 URL —— 修复 base64 data URL 被网关静默丢弃。
+ */
+async function buildSubmitPlan(
   rt: VideoRuntime,
   ctx: MediaModalityContext,
   input: VideoGenerationInput
-): VideoSubmitPlan {
-  const refImages = input.refImages
-    ?.filter((value) => value.length > 0)
-    .slice(0, NEWAPI_VIDEO_MAX_REF_IMAGES)
-  const useRefProtocol = Boolean(refImages?.length)
+): Promise<VideoSubmitPlan> {
+  const model = input.model || rt.model
+  const profile = resolveAimanplayVideoProfile(model)
+  if (profile) {
+    return buildProfileSubmitPlan(rt, ctx, input, model, profile)
+  }
+  const refs = await materializeReferences(
+    rt,
+    input.refImages,
+    'image',
+    NEWAPI_VIDEO_MAX_REF_IMAGES
+  )
+  const refImages = refs.values
+  const useRefProtocol = Boolean(refImages.length)
   const resolution = input.resolution?.trim() || ctx.params.resolution?.trim() || ''
   const body = useRefProtocol
     ? {
         model: input.model || rt.model,
         prompt: input.prompt,
-        ...refImageFields(refImages!),
+        ...refImageFields(refImages),
         duration: numberParam(input.duration, ctx.params.duration, NEWAPI_VIDEO_DEFAULTS.duration),
         ...(resolution ? { resolution } : {})
       }
@@ -205,7 +455,9 @@ function buildSubmitPlan(
   return {
     body,
     submitEndpoint: useRefProtocol ? `${rt.baseUrl}/videos` : `${rt.baseUrl}/video/generations`,
-    protocol: useRefProtocol ? 'videos' : 'generations'
+    protocol: useRefProtocol ? 'videos' : 'generations',
+    uploadedToOss: refs.uploadedCount,
+    refAudioCount: 0
   }
 }
 
@@ -231,6 +483,9 @@ async function submitVideoRequest(
       endpoint: plan.submitEndpoint.replace(rt.baseUrl, ''),
       protocol: plan.protocol,
       model: typeof plan.body.model === 'string' ? plan.body.model : '',
+      ...(plan.modelProfile ? { modelProfile: plan.modelProfile } : {}),
+      uploadedToOss: plan.uploadedToOss,
+      refAudioCount: plan.refAudioCount,
       refImageCount: refImageEntries.length,
       refImageBytes: refImageEntries.reduce(
         (total, [, value]) => total + (typeof value === 'string' ? value.length : 0),
@@ -348,7 +603,7 @@ export const newapiVideoAdapter: MediaProviderAdapter = {
     input: VideoGenerationInput
   ): Promise<{ outputs: Array<{ url: string; mimeType: string }> }> {
     const rt = createRuntime(ctx)
-    const plan = buildSubmitPlan(rt, ctx, input)
+    const plan = await buildSubmitPlan(rt, ctx, input)
     const guard = withAbortGuard(input.signal, VIDEO_JOB_TIMEOUT_MS)
     try {
       // 提交：拿 task_id 或提交即完成的成品 URL（与队列链路 submitVideoTask 同一实现）
@@ -396,7 +651,7 @@ export const newapiVideoAdapter: MediaProviderAdapter = {
     input: VideoGenerationInput
   ): Promise<VideoTaskSubmission> {
     const rt = createRuntime(ctx)
-    return submitVideoRequest(rt, buildSubmitPlan(rt, ctx, input), input.signal)
+    return submitVideoRequest(rt, await buildSubmitPlan(rt, ctx, input), input.signal)
   },
   async pollVideoTask(
     ctx: MediaModalityContext,

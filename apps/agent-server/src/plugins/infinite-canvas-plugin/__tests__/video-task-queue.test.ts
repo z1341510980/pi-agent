@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { createInfiniteCanvasPlugin } from '../index.js'
 import { infiniteCanvasMigrations } from '../migrations.js'
 import { ASSET_PATH_PREFIX } from '../canvas-assets.js'
+import { clearAimanplayOssCaches } from '../media/aimanplay-oss.js'
 import type { CanvasVideoTaskStore } from '../canvas-video-tasks.js'
 import { MediaProviderStore } from '../media/media-provider-store.js'
 import type { MediaProviderRegistry } from '../media/registry.js'
@@ -22,6 +23,23 @@ import type { PluginContext, RouteDefinition } from '../../../core/plugin/plugin
 
 const PNG_BYTES = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
 const PNG_DATA_URL = `data:image/png;base64,${PNG_BYTES.toString('base64')}`
+
+/** 模拟站点 STS 接口响应（api.md §3.1）：视频 Provider baseUrl 为 https://video.test/v1。 */
+const OSS_STS_BODY = {
+  success: true,
+  enabled: true,
+  message: '',
+  host: 'https://ref-bucket.oss-cn-hangzhou.aliyuncs.com',
+  region: 'oss-cn-hangzhou',
+  bucket: 'ref-bucket',
+  dir: 'canvas-refs',
+  accessKeyId: 'STS_AK',
+  accessKeySecret: 'STS_SK',
+  securityToken: 'STS_TOKEN',
+  expiration: new Date(Date.now() + 3600_000).toISOString(),
+  maxImageBytes: 10 * 1024 * 1024,
+  maxAudioBytes: 20 * 1024 * 1024
+}
 
 /** NewAPI 兼容网关的真实完成响应：status 大写 SUCCESS、url 藏在 data.result_url。 */
 const LIVE_COMPLETED_BODY = (taskId: string, url: string): Record<string, unknown> => ({
@@ -181,7 +199,10 @@ describe('画布视频异步任务队列（服务端）', () => {
     delete process.env.PI_DATA_DIR
     rmSync(dataDir, { recursive: true, force: true })
   })
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    clearAimanplayOssCaches()
+  })
 
   const routeFor = (method: string, path: string): RouteDefinition =>
     routes.find((route) => route.method === method && route.path === path)!
@@ -231,14 +252,19 @@ describe('画布视频异步任务队列（服务端）', () => {
   })
 
   it('generate-media 视频：提交异步任务立即返回 videoTask，行落库带 node_id/协议且不轮询', async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      jsonResponse({
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    // 参考图 URL 化链路：data URL → STS + 签名 PUT → OSS 公开 URL → 提交体
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input)
+      if (url.includes('/api/video-upload/oss-sts')) return jsonResponse(OSS_STS_BODY)
+      if (url.includes('.aliyuncs.com')) return new Response('', { status: 200 })
+      return jsonResponse({
         code: 'success',
         message: '',
         data: { task_id: 'task-x', status: 'QUEUED' }
       })
-    )
-    vi.stubGlobal('fetch', fetchMock)
+    })
 
     const reply = replyMock()
     const result = (await routeFor('POST', '/projects/:projectId/generate-media').handler(
@@ -262,12 +288,15 @@ describe('画布视频异步任务队列（服务端）', () => {
     expect(result.data.videoTask?.id).toBeTruthy()
     // 异步响应没有 outputs
     expect(result.data.outputs).toBeUndefined()
-    // 只有提交 fetch，不轮询
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [endpoint, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    // 只有提交链路 fetch（STS + PUT + 提交），不轮询
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls[0][0]).toBe('https://video.test/api/video-upload/oss-sts')
+    const [endpoint, init] = fetchMock.mock.calls[2] as [string, RequestInit]
     expect(endpoint).toBe('https://video.test/v1/videos')
     const payload = JSON.parse(String(init.body)) as Record<string, unknown>
-    expect(payload.ref_image_0).toBe(PNG_DATA_URL)
+    expect(String(payload.ref_image_0)).toMatch(
+      /^https:\/\/ref-bucket\.oss-cn-hangzhou\.aliyuncs\.com\/canvas-refs\/[0-9a-f-]{36}\.png$/
+    )
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk-video')
 
     const row = videoTasks.get(result.data.videoTask!.id)!

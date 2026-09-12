@@ -60,6 +60,8 @@ export interface MediaGenerator {
     image?: string
     /** 多参考图（ref_image_N 协议，POST /v1/videos）：首张为主参考。 */
     refImages?: string[]
+    /** 参考音频（ref_audio_N 协议，≤3）：ref-media 档案模型使用。 */
+    refAudios?: string[]
     /** 多参考协议的分辨率串（如 '768p竖'），缺省省略。 */
     resolution?: string
     duration?: number
