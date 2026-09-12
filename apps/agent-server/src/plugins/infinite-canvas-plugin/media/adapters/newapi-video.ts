@@ -223,14 +223,19 @@ async function submitVideoRequest(
   const guard = withAbortGuard(signal, VIDEO_JOB_TIMEOUT_MS)
   try {
     // 提交侧诊断：只记元信息（数量/字节），不落提示词与图片内容 —— 回答「参考图到底发了吗」
-    const refImageEntries = Object.entries(plan.body).filter(([key]) => key.startsWith('ref_image_'))
+    const refImageEntries = Object.entries(plan.body).filter(([key]) =>
+      key.startsWith('ref_image_')
+    )
     mediaDiag.event('video-submit', {
       providerId: rt.providerId,
       endpoint: plan.submitEndpoint.replace(rt.baseUrl, ''),
       protocol: plan.protocol,
       model: typeof plan.body.model === 'string' ? plan.body.model : '',
       refImageCount: refImageEntries.length,
-      refImageBytes: refImageEntries.reduce((total, [, value]) => total + (typeof value === 'string' ? value.length : 0), 0),
+      refImageBytes: refImageEntries.reduce(
+        (total, [, value]) => total + (typeof value === 'string' ? value.length : 0),
+        0
+      ),
       singleImageBytes: typeof plan.body.image === 'string' ? plan.body.image.length : 0
     })
     const response = await fetch(plan.submitEndpoint, {
