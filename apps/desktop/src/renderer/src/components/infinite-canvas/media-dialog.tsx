@@ -10,6 +10,13 @@ import { Brush, Eraser, Maximize2, Redo2, RotateCcw, Undo2, WandSparkles } from 
 import type { CanvasTheme } from './canvas-theme'
 import { DialogAction, MediaDialogShell } from './media-dialog-shell'
 import { piecePixelBounds, seedCuts } from './crop-split-interaction'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import { toEditableImageUrl } from '@/lib/download'
 
 export interface MaskEditPayload {
@@ -380,16 +387,33 @@ export function UpscaleDialog({
       />
       <label className="mt-3 block text-xs">
         放大倍数
-        <select
-          value={scale}
-          onChange={(event) => setScale(Number(event.target.value))}
-          className="mt-1 h-9 w-full rounded-lg border bg-transparent px-2"
-          style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
-        >
-          <option value={2}>2x</option>
-          <option value={3}>3x</option>
-          <option value={4}>4x</option>
-        </select>
+        <Select value={String(scale)} onValueChange={(next) => setScale(Number(next))}>
+          <SelectTrigger
+            aria-label="放大倍数"
+            className="mt-1 h-9 w-full rounded-lg border bg-transparent px-2 text-xs shadow-none dark:bg-transparent"
+            style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent
+            position="popper"
+            className="z-[120]"
+            style={{
+              background: theme.node.panel,
+              borderColor: theme.node.stroke,
+              color: theme.node.text
+            }}
+            data-canvas-no-zoom
+            onWheel={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {[2, 3, 4].map((value) => (
+              <SelectItem key={value} value={String(value)}>
+                {value}x
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </label>
       <DialogAction theme={theme} label={`创建 ${scale}x 结果`} onClick={() => onConfirm(scale)} />
     </MediaDialogShell>

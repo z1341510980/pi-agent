@@ -353,11 +353,15 @@ describe('节点模型选择', () => {
   it('下拉按模态聚合已启用 Provider 的候选模型，默认跟随全局默认', async () => {
     render(<ModelHarness initialMetadata={{ generationMode: 'image' }} />)
 
-    await screen.findByText('ProviderA / img-a')
-    expect(screen.getByText('ProviderA / img-b')).toBeTruthy()
-    expect(screen.getByText('ProviderA / custom-x')).toBeTruthy()
-    expect(screen.queryByText('ProviderB / vid-a')).toBeNull()
-    expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe('')
+    const combobox = await screen.findByRole('combobox', { name: '模型' })
+    await waitFor(() => expect(combobox.textContent).toContain('跟随全局默认'))
+
+    fireEvent.keyDown(combobox, { key: 'Enter' })
+    expect(await screen.findByRole('option', { name: 'ProviderA / img-a' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'ProviderA / img-b' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'ProviderA / custom-x' })).toBeTruthy()
+    expect(screen.queryByRole('option', { name: 'ProviderB / vid-a' })).toBeNull()
+    expect(combobox.textContent).toContain('跟随全局默认')
   })
 
   it('选择具体模型时按 provider:model 写回 metadata', async () => {
@@ -366,12 +370,13 @@ describe('节点模型选择', () => {
       <ModelHarness initialMetadata={{ generationMode: 'image' }} onConfigChange={onConfigChange} />
     )
 
-    await screen.findByText('ProviderA / img-a')
-    const select = screen.getByLabelText('模型') as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'p-image:img-b' } })
+    const combobox = await screen.findByRole('combobox', { name: '模型' })
+    await waitFor(() => expect(combobox.textContent).toContain('跟随全局默认'))
+    fireEvent.keyDown(combobox, { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('option', { name: 'ProviderA / img-b' }))
 
     expect(onConfigChange).toHaveBeenCalledWith('cfg-1', { providerId: 'p-image', model: 'img-b' })
-    expect(select.value).toBe('p-image:img-b')
+    await waitFor(() => expect(combobox.textContent).toContain('ProviderA / img-b'))
   })
 
   it('预置节点模型时回显，改选跟随全局默认时清除', async () => {
@@ -383,25 +388,31 @@ describe('节点模型选择', () => {
       />
     )
 
-    const select = screen.getByLabelText('模型') as HTMLSelectElement
-    await waitFor(() => expect(select.value).toBe('p-image:img-b'))
-    fireEvent.change(select, { target: { value: '' } })
+    const combobox = await screen.findByRole('combobox', { name: '模型' })
+    await waitFor(() => expect(combobox.textContent).toContain('ProviderA / img-b'))
+    fireEvent.keyDown(combobox, { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('option', { name: '跟随全局默认' }))
 
     expect(onConfigChange).toHaveBeenCalledWith('cfg-1', {
       providerId: undefined,
       model: undefined
     })
+    await waitFor(() => expect(combobox.textContent).toContain('跟随全局默认'))
   })
 
   it('模态无可用 Provider 时下拉禁用', async () => {
     render(<ModelHarness initialMetadata={{ generationMode: 'image' }} />)
 
-    await screen.findByText('ProviderA / img-a')
+    const combobox = await screen.findByRole('combobox', { name: '模型' })
+    await waitFor(() => expect(combobox.textContent).toContain('跟随全局默认'))
     fireEvent.click(screen.getByRole('button', { name: '视频' }))
 
-    const select = screen.getByLabelText('模型') as HTMLSelectElement
-    await waitFor(() => expect(select.disabled).toBe(true))
-    expect(screen.queryByText('ProviderA / img-a')).toBeNull()
+    // 切模式后 ModelPicker 换分支重挂载（ImageQuickBar → ConfigSettingsRow 行），重新查询
+    const videoCombobox = await screen.findByRole('combobox', { name: '模型' })
+    await waitFor(() => expect((videoCombobox as HTMLButtonElement).disabled).toBe(true))
+    expect(videoCombobox.textContent).toContain('未配置可用的 Provider')
+    fireEvent.keyDown(videoCombobox, { key: 'Enter' })
+    expect(screen.queryByRole('option', { name: 'ProviderA / img-a' })).toBeNull()
   })
 
   it('listMediaProviders 失败时下拉禁用并提示', async () => {
@@ -410,13 +421,35 @@ describe('节点模型选择', () => {
 
     // 先等拒绝被兜住（提示文案出现），再断言禁用，避免 options===null 时断言恒真
     await screen.findByText('未配置可用的 Provider')
-    expect((screen.getByLabelText('模型') as HTMLSelectElement).disabled).toBe(true)
+    expect((screen.getByRole('combobox', { name: '模型' }) as HTMLButtonElement).disabled).toBe(
+      true
+    )
+  })
+
+  it('模型列表解析期间显示加载中，解析为空时显示未配置提示', async () => {
+    let resolveLoading: (() => void) | undefined
+    mediaProviderApi.listMediaProviders.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        resolveLoading = resolve
+      })
+      return []
+    })
+    render(<ModelHarness initialMetadata={{ generationMode: 'image' }} />)
+
+    const combobox = await screen.findByRole('combobox', { name: '模型' })
+    expect(combobox.textContent).toContain('加载模型中…')
+    expect((combobox as HTMLButtonElement).disabled).toBe(true)
+
+    resolveLoading?.()
+    await waitFor(() => expect(combobox.textContent).toContain('未配置可用的 Provider'))
+    expect((combobox as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('图片/视频/音频工作流节点（非 config）面板同样显示模型选择', async () => {
     render(<ModelHarness initialMetadata={{ generationMode: 'image' }} nodeType="image" />)
 
-    await screen.findByText('ProviderA / img-a')
-    expect((screen.getByLabelText('模型') as HTMLSelectElement).disabled).toBe(false)
+    const combobox = await screen.findByRole('combobox', { name: '模型' })
+    await waitFor(() => expect(combobox.textContent).toContain('跟随全局默认'))
+    expect((combobox as HTMLButtonElement).disabled).toBe(false)
   })
 })

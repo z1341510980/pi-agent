@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import {
   ArrowUp,
   BookOpen,
@@ -25,6 +25,13 @@ import { Dialog, DialogContent, DialogFooter, DialogTitle } from '@/components/u
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Segmented } from '@/components/ui/segmented'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { saveCanvasAsset } from './asset-library'
 import {
@@ -117,6 +124,34 @@ const VIDEO_SIZES = [
 const VIDEO_SECONDS = [5, 10, 15]
 const AUDIO_FORMATS = ['mp3', 'wav']
 
+/** 「跟随全局默认」的哨兵值：Radix Select 不接受空串 value。 */
+const FOLLOW_GLOBAL_DEFAULT = '__follow_global_default__'
+
+function CanvasSelectContent({
+  theme,
+  children
+}: {
+  theme: CanvasTheme
+  children: ReactNode
+}): ReactElement {
+  return (
+    <SelectContent
+      position="popper"
+      className="z-[120]"
+      style={{
+        background: theme.node.panel,
+        borderColor: theme.node.stroke,
+        color: theme.node.text
+      }}
+      data-canvas-no-zoom
+      onWheel={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      {children}
+    </SelectContent>
+  )
+}
+
 function ModeSegmented({
   theme,
   mode,
@@ -196,41 +231,51 @@ function ConfigSettingsRow({
     const seconds = Number(metadata.seconds) || 5
     return (
       <>
-        <select
-          value={size}
-          onChange={(event) => onConfigChange({ size: event.target.value })}
-          className="h-8 rounded-full border bg-transparent px-2 text-xs outline-none"
-          style={selectStyle}
-          aria-label="视频分辨率"
-        >
-          {VIDEO_SIZES.map((value) => {
-            const [width, height] = value.split('x').map(Number)
-            const label =
-              value === 'auto'
-                ? '自动分辨率'
-                : `${width}×${height}（${width >= height ? '横版' : '竖版'}）`
-            return (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            )
-          })}
-        </select>
-        <label className="inline-flex items-center gap-1 text-xs opacity-70">
-          时长
-          <select
-            value={seconds}
-            onChange={(event) => onConfigChange({ seconds: Number(event.target.value) })}
-            className="h-8 rounded-full border bg-transparent px-2 text-xs outline-none"
+        <Select value={size} onValueChange={(next) => onConfigChange({ size: next })}>
+          <SelectTrigger
+            aria-label="视频分辨率"
+            className="h-8 rounded-full border bg-transparent px-2 text-xs shadow-none dark:bg-transparent"
             style={selectStyle}
           >
-            {VIDEO_SECONDS.map((value) => (
-              <option key={value} value={value}>
-                {value}s
-              </option>
-            ))}
-          </select>
-        </label>
+            <SelectValue />
+          </SelectTrigger>
+          <CanvasSelectContent theme={theme}>
+            {VIDEO_SIZES.map((value) => {
+              const [width, height] = value.split('x').map(Number)
+              const label =
+                value === 'auto'
+                  ? '自动分辨率'
+                  : `${width}×${height}（${width >= height ? '横版' : '竖版'}）`
+              return (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              )
+            })}
+          </CanvasSelectContent>
+        </Select>
+        <span className="inline-flex items-center gap-1 text-xs opacity-70">
+          时长
+          <Select
+            value={String(seconds)}
+            onValueChange={(next) => onConfigChange({ seconds: Number(next) })}
+          >
+            <SelectTrigger
+              aria-label="视频时长"
+              className="h-8 rounded-full border bg-transparent px-2 text-xs shadow-none dark:bg-transparent"
+              style={selectStyle}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <CanvasSelectContent theme={theme}>
+              {VIDEO_SECONDS.map((value) => (
+                <SelectItem key={value} value={String(value)}>
+                  {value}s
+                </SelectItem>
+              ))}
+            </CanvasSelectContent>
+          </Select>
+        </span>
       </>
     )
   }
@@ -245,19 +290,25 @@ function ConfigSettingsRow({
           className="h-8 w-24 rounded-full border bg-transparent px-2 text-xs outline-none"
           style={selectStyle}
         />
-        <select
+        <Select
           value={String(metadata.format || 'mp3')}
-          onChange={(event) => onConfigChange({ format: event.target.value })}
-          className="h-8 rounded-full border bg-transparent px-2 text-xs outline-none"
-          style={selectStyle}
-          aria-label="音频格式"
+          onValueChange={(next) => onConfigChange({ format: next })}
         >
-          {AUDIO_FORMATS.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger
+            aria-label="音频格式"
+            className="h-8 rounded-full border bg-transparent px-2 text-xs shadow-none dark:bg-transparent"
+            style={selectStyle}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <CanvasSelectContent theme={theme}>
+            {AUDIO_FORMATS.map((value) => (
+              <SelectItem key={value} value={value}>
+                {value}
+              </SelectItem>
+            ))}
+          </CanvasSelectContent>
+        </Select>
         <label className="inline-flex items-center gap-1 text-xs opacity-70">
           语速
           <input
@@ -731,35 +782,40 @@ function ModelPicker({
   return (
     <label className="inline-flex min-w-0 flex-1 items-center gap-1 text-xs opacity-70">
       模型
-      <select
-        value={value}
+      <Select
+        value={value || FOLLOW_GLOBAL_DEFAULT}
         disabled={options === null || unavailable}
-        aria-label="模型"
-        onChange={(event) => {
-          const next = event.target.value
-          if (!next) {
+        onValueChange={(next) => {
+          if (next === FOLLOW_GLOBAL_DEFAULT) {
             onChange({ providerId: undefined, model: undefined })
             return
           }
           const separator = next.indexOf(':')
           onChange({ providerId: next.slice(0, separator), model: next.slice(separator + 1) })
         }}
-        className="h-8 min-w-0 flex-1 rounded-full border bg-transparent px-2 text-xs outline-none"
-        style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
       >
-        <option value="">
-          {options === null
-            ? '加载模型中…'
-            : unavailable
-              ? '未配置可用的 Provider'
-              : '跟随全局默认'}
-        </option>
-        {(options ?? []).map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+        <SelectTrigger
+          aria-label="模型"
+          className="h-8 min-w-0 flex-1 rounded-full border bg-transparent px-2 text-xs shadow-none dark:bg-transparent"
+          style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <CanvasSelectContent theme={theme}>
+          <SelectItem value={FOLLOW_GLOBAL_DEFAULT}>
+            {options === null
+              ? '加载模型中…'
+              : unavailable
+                ? '未配置可用的 Provider'
+                : '跟随全局默认'}
+          </SelectItem>
+          {(options ?? []).map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </CanvasSelectContent>
+      </Select>
     </label>
   )
 }
@@ -890,17 +946,21 @@ export function CanvasNodePanel({
     : '可使用已连接的上游节点作为上下文'
 
   const modeSelect = (
-    <select
-      value={mode}
-      onChange={(event) => updateMode(event.target.value)}
-      className="h-8 min-w-28 rounded-full border bg-transparent px-3 text-xs outline-none"
-      style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
-    >
-      <option value="text">文本 Agent</option>
-      <option value="image">图片工作流</option>
-      <option value="video">视频工作流</option>
-      <option value="audio">音频工作流</option>
-    </select>
+    <Select value={mode} onValueChange={updateMode}>
+      <SelectTrigger
+        aria-label="节点模式"
+        className="h-8 min-w-28 rounded-full border bg-transparent px-3 text-xs shadow-none dark:bg-transparent"
+        style={{ borderColor: theme.toolbar.border, color: theme.node.text }}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <CanvasSelectContent theme={theme}>
+        <SelectItem value="text">文本 Agent</SelectItem>
+        <SelectItem value="image">图片工作流</SelectItem>
+        <SelectItem value="video">视频工作流</SelectItem>
+        <SelectItem value="audio">音频工作流</SelectItem>
+      </CanvasSelectContent>
+    </Select>
   )
 
   const imageQuickBarProps = {
