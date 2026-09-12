@@ -102,13 +102,18 @@ export interface AudioGenerationInput {
   signal?: AbortSignal
 }
 
-/** 视频生成输入：newapi-video adapter（/video/generations）的载荷来源。 */
+/** 视频生成输入：newapi-video adapter（/video/generations 与 /v1/videos）的载荷来源。 */
 export interface VideoGenerationInput {
   /** 画布透传的 Provider 提示；缺省时解析 video 模态默认。 */
   providerId?: string
   prompt: string
   /** 图生视频的参考图（URL 或 base64/data URL，协议原样透传）。 */
   image?: string
+  /**
+   * 多参考图（ref_image_N 协议）：存在时提交 POST {base}/v1/videos 并忽略单图 image；
+   * 元素顺序即 ref_image_0..N 的发送顺序（首张为主参考）。
+   */
+  refImages?: string[]
   model?: string
   /** 视频时长（秒） */
   duration?: number
@@ -117,6 +122,8 @@ export interface VideoGenerationInput {
   fps?: number
   /** 生成条数（协议可选，默认 1） */
   n?: number
+  /** 多参考协议的分辨率串（如 '768p竖'）：原样透传，缺省省略。 */
+  resolution?: string
   traceId?: string
   signal?: AbortSignal
 }

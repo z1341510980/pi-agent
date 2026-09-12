@@ -113,7 +113,8 @@ export function createInfiniteCanvasPlugin(): Plugin {
        */
       const localizeImages = (projectId: string | undefined, images: string[]): string[] =>
         images.map((image) => {
-          if (image.startsWith('data:')) return assets.storeFromDataUrl(projectId ?? null, image) ?? image
+          if (image.startsWith('data:'))
+            return assets.storeFromDataUrl(projectId ?? null, image) ?? image
           if (image.startsWith('http://') || image.startsWith('https://')) {
             return assets.beginRemoteAsset(projectId ?? '', image)
           }
@@ -159,7 +160,9 @@ export function createInfiniteCanvasPlugin(): Plugin {
       }
 
       /** 对外入口：归一化参考图 → 生图 → 本地化结果 → 记录日志。 */
-      const generateImageLocalized = async (input: Parameters<typeof generateImageCore>[0]): Promise<{ images: string[] }> => {
+      const generateImageLocalized = async (
+        input: Parameters<typeof generateImageCore>[0]
+      ): Promise<{ images: string[] }> => {
         const startedAt = Date.now()
         const endpoint = input.references?.length ? '/images/edits' : '/images/generations'
         const logBase = {
@@ -234,7 +237,9 @@ export function createInfiniteCanvasPlugin(): Plugin {
       }
 
       /** 对外编辑入口：归一化原图 → 编辑 → 本地化结果 → 记录日志。 */
-      const editImageLocalized = async (input: Parameters<typeof editImageCore>[0]): Promise<{ images: string[] }> => {
+      const editImageLocalized = async (
+        input: Parameters<typeof editImageCore>[0]
+      ): Promise<{ images: string[] }> => {
         const startedAt = Date.now()
         const logBase = {
           kind: 'edit' as const,
@@ -318,10 +323,16 @@ export function createInfiniteCanvasPlugin(): Plugin {
         size?: string
         seconds?: number
         image?: string
+        refImages?: string[]
+        resolution?: string
         signal?: AbortSignal
       }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }> => {
-        // 首帧参考图归一化：资产路径服务商取不到（桌面端暂不发送，保持链路一致）
+        // 参考图归一化：资产路径/远程 URL 服务商取不到，统一转 data URL；
+        // 单图 image（文档协议）与 refImages（ref_image_N 多参考协议）同走该链路
         const [image] = input.image ? (await referencesToDataUrls(assets, [input.image]))! : []
+        const refImages = input.refImages?.length
+          ? await referencesToDataUrls(assets, input.refImages)
+          : undefined
         const result =
           input.mode === 'audio'
             ? await media.generateAudio({
@@ -337,6 +348,8 @@ export function createInfiniteCanvasPlugin(): Plugin {
                 prompt: input.prompt,
                 model: input.model,
                 image,
+                ...(refImages?.length ? { refImages } : {}),
+                resolution: input.resolution,
                 providerId: input.providerId,
                 duration: input.seconds,
                 ...parseVideoSize(input.size),

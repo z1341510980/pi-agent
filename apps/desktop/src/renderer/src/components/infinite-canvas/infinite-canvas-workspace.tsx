@@ -2201,10 +2201,16 @@ export function InfiniteCanvasWorkspace({
                     resourceContext: builtContext.context,
                     model: typeof meta.model === 'string' ? meta.model : undefined,
                     providerId: typeof meta.providerId === 'string' ? meta.providerId : undefined,
+                    // 单图保持向后兼容（文档协议 image 字段）；多参考协议 refImages 优先，
+                    // 两条链路都取发送顺序的完整参考图列表（首张为主参考）
                     image:
                       generationMode === 'video' && builtContext.context.images.length > 0
                         ? builtContext.context.images[0].dataUrl ||
                           builtContext.context.images[0].url
+                        : undefined,
+                    refImages:
+                      generationMode === 'video' && imageReferences.length > 0
+                        ? imageReferences
                         : undefined,
                     voice: typeof meta.voice === 'string' ? meta.voice : undefined,
                     format: typeof meta.format === 'string' ? meta.format : undefined,

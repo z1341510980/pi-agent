@@ -261,4 +261,61 @@ describe('画布媒体路由的资产路径归一化', () => {
     const payload = JSON.parse(String(init.body)) as { image?: string }
     expect(payload.image).toBe(PNG_DATA_URL)
   })
+
+  it('generate-media：refImages 全部归一化并按 ref_image_N 走 /v1/videos 多参考协议', async () => {
+    const assetPath = await uploadAsset()
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ url: 'https://cdn.example.com/ref-out.mp4' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const reply = replyMock()
+    await routeFor('POST', '/projects/:projectId/generate-media').handler(
+      {
+        params: { projectId },
+        body: { mode: 'video', prompt: '多参考生成', refImages: [assetPath, PNG_DATA_URL] }
+      },
+      reply
+    )
+
+    expect(reply.statusCode).toBe(200)
+    const [endpoint, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    // 多参考协议：提交端点切换为 POST {base}/v1/videos
+    expect(endpoint).toBe('https://video.test/v1/videos')
+    const payload = JSON.parse(String(init.body)) as Record<string, unknown>
+    // 资产路径已归一化成 data URL；data URL 原样透传
+    expect(payload.ref_image_0).toBe(PNG_DATA_URL)
+    expect(payload.ref_image_1).toBe(PNG_DATA_URL)
+    // 协议不带文档协议的 image 字段
+    expect(payload.image).toBeUndefined()
+  })
+
+  it('generate-media：refImages 过滤非字符串项并封顶 8 张', async () => {
+    const refImages = [
+      ...Array.from({ length: 9 }, (_, index) => `data:image/png;base64,${index}`),
+      42,
+      ''
+    ]
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ url: 'https://cdn.example.com/capped.mp4' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const reply = replyMock()
+    await routeFor('POST', '/projects/:projectId/generate-media').handler(
+      {
+        params: { projectId },
+        body: { mode: 'video', prompt: '封顶校验', refImages }
+      },
+      reply
+    )
+
+    expect(reply.statusCode).toBe(200)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const payload = JSON.parse(String(init.body)) as Record<string, unknown>
+    const refKeys = Object.keys(payload).filter((key) => key.startsWith('ref_image_'))
+    expect(refKeys).toHaveLength(8)
+    expect(payload.ref_image_7).toBe('data:image/png;base64,7')
+    expect(payload.ref_image_8).toBeUndefined()
+  })
 })

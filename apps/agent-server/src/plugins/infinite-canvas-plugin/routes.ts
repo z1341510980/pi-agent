@@ -8,6 +8,7 @@ import type { MediaProviderRow } from './media/adapter.js'
 import type { MediaProviderStore } from './media/media-provider-store.js'
 import type { CanvasAssetStore, MediaLogStore } from './canvas-assets.js'
 import { ASSET_PATH_PREFIX, imageMimeFromBytes } from './canvas-assets.js'
+import { NEWAPI_VIDEO_MAX_REF_IMAGES } from './media/adapters/newapi-video.js'
 import {
   canvasImageDataUrls,
   formatCanvasGenerationContext,
@@ -61,7 +62,12 @@ export type CanvasMediaGenerateHandler = (input: {
   speed?: number
   size?: string
   seconds?: number
+  /** 图生视频的单张参考图（文档协议 image 字段）。 */
   image?: string
+  /** 多参考图（ref_image_N 协议）：按发送顺序，首张为主参考，上限 8 张。 */
+  refImages?: string[]
+  /** 多参考协议的分辨率串（如 '768p竖'），原样透传。 */
+  resolution?: string
   generateAudio?: boolean
   watermark?: boolean
   signal?: AbortSignal
@@ -207,9 +213,7 @@ export function createInfiniteCanvasRoutes(
             .send(readFileSync(asset.filePath))
         }
         if (asset.sourceUrl) {
-          return reply
-            .header('Access-Control-Allow-Origin', '*')
-            .redirect(asset.sourceUrl, 302)
+          return reply.header('Access-Control-Allow-Origin', '*').redirect(asset.sourceUrl, 302)
         }
         return reply.code(404).send({ ok: false, error: '画布资产不存在' })
       }
@@ -241,7 +245,10 @@ export function createInfiniteCanvasRoutes(
           })
           if (!response.ok) return reply.code(response.status).send()
           const buffer = Buffer.from(await response.arrayBuffer())
-          const contentType = imageMimeFromBytes(buffer, response.headers.get('content-type') ?? 'image/png')
+          const contentType = imageMimeFromBytes(
+            buffer,
+            response.headers.get('content-type') ?? 'image/png'
+          )
           if (!contentType.startsWith('image/')) {
             return reply.code(400).send({ ok: false, error: '非图片资源' })
           }
@@ -262,8 +269,12 @@ export function createInfiniteCanvasRoutes(
       path: '/media-config',
       handler: async (request, reply) => {
         const mediaProviders = getMediaProviders?.()
-        if (!mediaProviders) return reply.code(503).send({ ok: false, error: '媒体配置服务未初始化' })
-        return success(canvasMediaStatusFromRow(mediaProviders.resolveDefault('image')), request.traceId)
+        if (!mediaProviders)
+          return reply.code(503).send({ ok: false, error: '媒体配置服务未初始化' })
+        return success(
+          canvasMediaStatusFromRow(mediaProviders.resolveDefault('image')),
+          request.traceId
+        )
       }
     },
     {
@@ -275,7 +286,8 @@ export function createInfiniteCanvasRoutes(
       bodyLimit: 4096,
       handler: async (request, reply) => {
         const mediaProviders = getMediaProviders?.()
-        if (!mediaProviders) return reply.code(503).send({ ok: false, error: '媒体配置服务未初始化' })
+        if (!mediaProviders)
+          return reply.code(503).send({ ok: false, error: '媒体配置服务未初始化' })
         const input = body(request)
         const protocol = optionalString(input.imageProtocol)
         const adapter = protocol === 'apimart' ? 'apimart' : 'openai-images'
@@ -291,14 +303,22 @@ export function createInfiniteCanvasRoutes(
         const current = mediaProviders.resolveDefault('image')
         if (current) {
           mediaProviders.update(current.id, {
-            ...(optionalString(input.imageBaseUrl) !== undefined ? { baseUrl: optionalString(input.imageBaseUrl) } : {}),
-            ...(optionalString(input.imageModel) !== undefined ? { model: optionalString(input.imageModel) } : {}),
+            ...(optionalString(input.imageBaseUrl) !== undefined
+              ? { baseUrl: optionalString(input.imageBaseUrl) }
+              : {}),
+            ...(optionalString(input.imageModel) !== undefined
+              ? { model: optionalString(input.imageModel) }
+              : {}),
             // 仅显式携带 imageProtocol 才写 adapter：缺省保留行内现协议，
             // 避免旧客户端把 apimart 行静默改写为 openai-images
             ...(protocol !== undefined ? { adapter } : {}),
-            ...(Object.keys(patchParams).length ? { params: { ...current.params, ...patchParams } } : {}),
+            ...(Object.keys(patchParams).length
+              ? { params: { ...current.params, ...patchParams } }
+              : {}),
             // 空/缺省 Key 由 store.update 保留旧值
-            ...(optionalString(input.imageApiKey) !== undefined ? { apiKey: optionalString(input.imageApiKey) } : {})
+            ...(optionalString(input.imageApiKey) !== undefined
+              ? { apiKey: optionalString(input.imageApiKey) }
+              : {})
           })
         } else {
           // 旧弹窗「先配置再生图」流程在全新库上的兜底：创建首行并设为模态默认
@@ -314,7 +334,10 @@ export function createInfiniteCanvasRoutes(
           })
           mediaProviders.setDefault(created.id)
         }
-        return success(canvasMediaStatusFromRow(mediaProviders.resolveDefault('image')), request.traceId)
+        return success(
+          canvasMediaStatusFromRow(mediaProviders.resolveDefault('image')),
+          request.traceId
+        )
       }
     },
     {
@@ -351,7 +374,8 @@ export function createInfiniteCanvasRoutes(
       method: 'GET',
       path: '/prompt-sources',
       handler: async (request, reply) => {
-        if (!promptSources) return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
+        if (!promptSources)
+          return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
         return success(promptSources.listSources(), request.traceId)
       }
     },
@@ -359,7 +383,8 @@ export function createInfiniteCanvasRoutes(
       method: 'GET',
       path: '/prompt-items',
       handler: async (request, reply) => {
-        if (!promptSources) return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
+        if (!promptSources)
+          return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
         const query = request.query as { sourceId?: string }
         return success(promptSources.listItems(query.sourceId || undefined), request.traceId)
       }
@@ -368,7 +393,8 @@ export function createInfiniteCanvasRoutes(
       method: 'GET',
       path: '/prompt-tags',
       handler: async (request, reply) => {
-        if (!promptSources) return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
+        if (!promptSources)
+          return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
         return success(promptSources.listTags(), request.traceId)
       }
     },
@@ -379,7 +405,8 @@ export function createInfiniteCanvasRoutes(
       path: '/prompt-sources/refresh',
       bodyLimit: 1024,
       handler: async (request, reply) => {
-        if (!promptSources) return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
+        if (!promptSources)
+          return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
         try {
           const result = await promptSources.refreshAll()
           return success(result, request.traceId)
@@ -401,10 +428,14 @@ export function createInfiniteCanvasRoutes(
       path: '/prompt-sources/:sourceId/toggle',
       bodyLimit: 1024,
       handler: async (request, reply) => {
-        if (!promptSources) return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
+        if (!promptSources)
+          return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
         const input = body(request)
         promptSources.toggleSource(request.params.sourceId, Boolean(input.enabled))
-        return success({ id: request.params.sourceId, enabled: Boolean(input.enabled) }, request.traceId)
+        return success(
+          { id: request.params.sourceId, enabled: Boolean(input.enabled) },
+          request.traceId
+        )
       }
     },
     {
@@ -594,10 +625,16 @@ export function createInfiniteCanvasRoutes(
               // 透传全部字符串引用，由插件层统一归一化成 data URL
               // （本地资产路径/远程 URL 都在这里转）
               const explicitReferences = Array.isArray(input.references)
-                ? input.references.filter((item): item is string => typeof item === 'string' && item.length > 0)
+                ? input.references.filter(
+                    (item): item is string => typeof item === 'string' && item.length > 0
+                  )
                 : []
               const structuredReferences = canvasImageDataUrls(generatedContext.resourceContext)
-              return explicitReferences.length ? explicitReferences : structuredReferences.length ? structuredReferences : extractDataUrls(generatedContext.context || '')
+              return explicitReferences.length
+                ? explicitReferences
+                : structuredReferences.length
+                  ? structuredReferences
+                  : extractDataUrls(generatedContext.context || '')
             })(),
             model: input.model === undefined ? undefined : String(input.model),
             providerId: input.providerId === undefined ? undefined : String(input.providerId),
@@ -651,7 +688,15 @@ export function createInfiniteCanvasRoutes(
             size: input.size === undefined ? undefined : String(input.size),
             seconds: input.seconds === undefined ? undefined : Number(input.seconds),
             image: optionalString(input.image),
-            generateAudio: input.generateAudio === undefined ? undefined : Boolean(input.generateAudio),
+            // ref_image_N 多参考：只收字符串项并封顶 8 张，归一化由插件层统一处理
+            refImages: Array.isArray(input.refImages)
+              ? input.refImages
+                  .filter((item): item is string => typeof item === 'string' && item.length > 0)
+                  .slice(0, NEWAPI_VIDEO_MAX_REF_IMAGES)
+              : undefined,
+            resolution: optionalString(input.resolution),
+            generateAudio:
+              input.generateAudio === undefined ? undefined : Boolean(input.generateAudio),
             watermark: input.watermark === undefined ? undefined : Boolean(input.watermark)
           })
           return success(result, request.traceId)

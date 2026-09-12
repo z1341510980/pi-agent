@@ -158,6 +158,32 @@ describe('节点面板：参考图顺序预览', () => {
     expect(screen.getByText('参考图（按发送顺序）')).toBeTruthy()
     expect(screen.getByText(/未连接图片参考/)).toBeTruthy()
   })
+
+  it('视频模式同样展示参考图顺序预览，首张标记为主参考', () => {
+    render(
+      <CanvasNodePanel
+        {...baseProps({ ...configNode(), metadata: { generationMode: 'video', prompt: '测试' } })}
+        orderedReferences={orderedReferences}
+      />
+    )
+
+    expect(screen.getByText('· 首张为生成主参考')).toBeTruthy()
+    expect(screen.getByText('第1张 · 主参考')).toBeTruthy()
+    expect(screen.getByText('风格参考.png')).toBeTruthy()
+    expect(screen.getByText('参考图2')).toBeTruthy()
+    expect(screen.getAllByRole('img')).toHaveLength(2)
+  })
+
+  it('视频模式没有参考图时提示按纯文字生成视频', () => {
+    render(
+      <CanvasNodePanel
+        {...baseProps({ ...configNode(), metadata: { generationMode: 'video', prompt: '测试' } })}
+        orderedReferences={[]}
+      />
+    )
+
+    expect(screen.getByText('未连接图片参考，将按纯文字生成视频。')).toBeTruthy()
+  })
 })
 
 describe('节点面板：图像设置弹窗（替代原比例选择器）', () => {

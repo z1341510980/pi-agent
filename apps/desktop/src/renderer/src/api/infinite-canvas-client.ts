@@ -1,6 +1,14 @@
 import { browserConfig } from '@repo/config/browser'
 import type { ApiResponse } from '@repo/shared/api'
-import { ApiClientError, apiErrorDetails, deleteApi, getApi, patchApi, postApi, putApi } from './http-client'
+import {
+  ApiClientError,
+  apiErrorDetails,
+  deleteApi,
+  getApi,
+  patchApi,
+  postApi,
+  putApi
+} from './http-client'
 
 export type CanvasNodeType = 'image' | 'text' | 'config' | 'video' | 'audio' | 'group'
 export type CanvasBackgroundMode = 'dots' | 'lines' | 'blank'
@@ -270,6 +278,8 @@ export async function generateCanvasMedia(
     providerId?: string
     /** 图生视频的首帧参考图（data URL 或服务端资产路径），取发送顺序第 1 张参考图。 */
     image?: string
+    /** 多参考图（ref_image_N 协议）：按发送顺序，首张为生成主参考（资产路径/远程 URL 由服务端归一化）。 */
+    refImages?: string[]
     voice?: string
     format?: string
     speed?: number
@@ -290,7 +300,14 @@ export async function generateCanvasMedia(
 /** 蒙版局部重绘：原图 + 涂抹蒙版交给 /images/edits。 */
 export async function editCanvasImage(
   projectId: string,
-  payload: { prompt: string; image: string; images?: string[]; mask?: string; model?: string; size?: string },
+  payload: {
+    prompt: string
+    image: string
+    images?: string[]
+    mask?: string
+    model?: string
+    size?: string
+  },
   options?: { signal?: AbortSignal }
 ): Promise<{ images: string[] }> {
   return postApi<{ images: string[] }>(
@@ -355,7 +372,10 @@ export async function listPromptTags(): Promise<PromptTagInfo[]> {
   return getApi<PromptTagInfo[]>(`${BASE}/prompt-tags`)
 }
 
-export async function refreshPromptSources(): Promise<{ successCount: number; failureCount: number }> {
+export async function refreshPromptSources(): Promise<{
+  successCount: number
+  failureCount: number
+}> {
   return postApi<{ successCount: number; failureCount: number }>(
     `${BASE}/prompt-sources/refresh`,
     {}
@@ -425,10 +445,7 @@ export async function uploadCanvasAsset(
  * 大画布序列化一次要几十毫秒，调用方复用同一份字符串做体积检查与保存，
  * 避免重复 stringify。
  */
-export async function saveCanvasGraphBody(
-  id: string,
-  bodyJson: string
-): Promise<CanvasProject> {
+export async function saveCanvasGraphBody(id: string, bodyJson: string): Promise<CanvasProject> {
   const response = await fetch(
     `${browserConfig.apiBaseUrl}${BASE}/projects/${encodeURIComponent(id)}/graph`,
     {

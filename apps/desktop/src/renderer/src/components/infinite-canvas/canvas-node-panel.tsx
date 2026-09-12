@@ -1037,9 +1037,12 @@ export function CanvasNodePanel({
           ))}
         </div>
       )}
-      {mode === 'image' && (
+      {(mode === 'image' || mode === 'video') && (
         <div className="mt-2">
-          <p className="mb-1 text-[10px] font-medium opacity-55">参考图（按发送顺序）</p>
+          <p className="mb-1 text-[10px] font-medium opacity-55">
+            参考图（按发送顺序）
+            {mode === 'video' && <span className="ml-1 opacity-70">· 首张为生成主参考</span>}
+          </p>
           <div className="flex flex-wrap items-center gap-2">
             {orderedReferences.length > 0 ? (
               <div className="flex flex-wrap gap-2">
@@ -1056,7 +1059,11 @@ export function CanvasNodePanel({
                       }}
                     />
                     <figcaption className="mt-0.5 truncate text-[10px] opacity-60">
-                      {reference.isSelf ? '第1张 · 原图' : `参考图${index + 1}`}
+                      {reference.isSelf
+                        ? mode === 'video'
+                          ? '第1张 · 主参考'
+                          : '第1张 · 原图'
+                        : `参考图${index + 1}`}
                     </figcaption>
                     <p className="truncate text-[10px] opacity-45" title={reference.title}>
                       {reference.title}
@@ -1065,9 +1072,17 @@ export function CanvasNodePanel({
                 ))}
               </div>
             ) : node.type === 'image' ? (
-              <p className="text-[10px] opacity-50">将以本节点图片作为第 1 张原图发送。</p>
+              <p className="text-[10px] opacity-50">
+                {mode === 'video'
+                  ? '将以本节点图片作为首张主参考发送。'
+                  : '将以本节点图片作为第 1 张原图发送。'}
+              </p>
             ) : (
-              <p className="text-[10px] opacity-50">未连接图片参考，将按纯文字生成。</p>
+              <p className="text-[10px] opacity-50">
+                {mode === 'video'
+                  ? '未连接图片参考，将按纯文字生成视频。'
+                  : '未连接图片参考，将按纯文字生成。'}
+              </p>
             )}
             <label
               className="inline-flex size-12 cursor-pointer items-center justify-center rounded-full border border-dashed opacity-70 transition hover:opacity-100"

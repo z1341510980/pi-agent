@@ -101,8 +101,15 @@ export function parseImages(value: unknown): string[] {
 
 export function imageJob(value: unknown): { id: string; status: string } | undefined {
   for (const candidate of recordCandidates(value)) {
-    const id = candidate.task_id ?? candidate.id
-    if (typeof id !== 'string' || !id) continue
+    const rawId = candidate.task_id ?? candidate.id
+    // 部分 NewAPI 兼容网关只回数字 id（如 data.id: 1297）：转字符串才能拼出轮询端点
+    const id =
+      typeof rawId === 'string'
+        ? rawId
+        : typeof rawId === 'number' && Number.isFinite(rawId)
+          ? String(rawId)
+          : undefined
+    if (!id) continue
     const rawStatus = candidate.status ?? candidate.state
     return { id, status: typeof rawStatus === 'string' ? rawStatus : '' }
   }
@@ -166,7 +173,7 @@ export function taskStatus(value: string | undefined): string {
 }
 
 export function isFailedStatus(status: string): boolean {
-  return ['failed', 'failure', 'error', 'blocked', 'cancelled', 'canceled'].includes(status)
+  return ['failed', 'failure', 'fail', 'error', 'blocked', 'cancelled', 'canceled'].includes(status)
 }
 
 export function isCompletedStatus(status: string): boolean {
@@ -196,7 +203,10 @@ export function delay(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-export function withAbortGuard(signal: AbortSignal | undefined, timeoutMs = 120_000): {
+export function withAbortGuard(
+  signal: AbortSignal | undefined,
+  timeoutMs = 120_000
+): {
   signal: AbortSignal
   dispose: () => void
 } {
@@ -219,11 +229,38 @@ export function withAbortGuard(signal: AbortSignal | undefined, timeoutMs = 120_
  */
 const OPENAI_IMAGE_SIZE_TIERS: string[][] = [
   // 1k
-  ['1024x1024', '1152x896', '896x1152', '1536x864', '864x1536', '1536x1024', '1024x1536', '1792x768'],
+  [
+    '1024x1024',
+    '1152x896',
+    '896x1152',
+    '1536x864',
+    '864x1536',
+    '1536x1024',
+    '1024x1536',
+    '1792x768'
+  ],
   // 2k
-  ['2048x2048', '2048x1536', '1536x2048', '2048x1152', '1152x2048', '2048x1360', '1360x2048', '2048x880'],
+  [
+    '2048x2048',
+    '2048x1536',
+    '1536x2048',
+    '2048x1152',
+    '1152x2048',
+    '2048x1360',
+    '1360x2048',
+    '2048x880'
+  ],
   // 4k
-  ['3840x3840', '3840x2880', '2880x3840', '3840x2160', '2160x3840', '3840x2560', '2560x3840', '3840x1648']
+  [
+    '3840x3840',
+    '3840x2880',
+    '2880x3840',
+    '3840x2160',
+    '2160x3840',
+    '3840x2560',
+    '2560x3840',
+    '3840x1648'
+  ]
 ]
 
 const OPENAI_IMAGE_SIZE_WHITELIST: string[] = OPENAI_IMAGE_SIZE_TIERS.flat()
@@ -239,7 +276,12 @@ export function normalizeOpenAiCompatibleSize(size: string | undefined): string 
   const height = Number(match[2])
   if (!(width > 0) || !(height > 0)) return undefined
   const maxDim = Math.max(width, height)
-  const tier = maxDim >= 3840 ? OPENAI_IMAGE_SIZE_TIERS[2] : maxDim >= 2048 ? OPENAI_IMAGE_SIZE_TIERS[1] : OPENAI_IMAGE_SIZE_TIERS[0]
+  const tier =
+    maxDim >= 3840
+      ? OPENAI_IMAGE_SIZE_TIERS[2]
+      : maxDim >= 2048
+        ? OPENAI_IMAGE_SIZE_TIERS[1]
+        : OPENAI_IMAGE_SIZE_TIERS[0]
   const aspect = Math.log(width / height)
   let best = tier[0]
   let bestDistance = Number.POSITIVE_INFINITY
@@ -264,6 +306,13 @@ export interface ImageJobPollSource {
   buildEndpoint: (jobId: string) => string
   /** 诊断日志用的端点标签，如 '/images/generations/{id}' */
   endpointLabel: string
+  /**
+   * 结果 URL 提取覆盖（缺省 parseImages）：视频任务的产物藏在
+   * data.result_url / 嵌套 results 等私有字段，图片语义的 parseImages 命中不了。
+   */
+  extractUrls?: (body: unknown) => string[]
+  /** 失败探测覆盖：返回非空文本即按任务失败抛错（如视频任务的 data.fail_reason）。 */
+  failureText?: (body: unknown) => string | undefined
 }
 
 export async function pollImageJob(
@@ -284,7 +333,7 @@ export async function pollImageJob(
       signal
     })
     const body = await readImageResponse(response, operation)
-    const images = parseImages(body)
+    const images = (source.extractUrls ?? parseImages)(body)
     const statusCandidate = recordCandidates(body).find(
       (candidate) => typeof candidate.status === 'string' || typeof candidate.state === 'string'
     )
@@ -318,6 +367,8 @@ export async function pollImageJob(
         jobStatus: job.status
       })
     }
+    const failureText = source.failureText?.(body)
+    if (failureText) throw new Error(`${operation}: ${failureText}`)
     if (!job) throw new Error(noImageMessage)
     if (isFailedStatus(status)) throw imageJobFailure(body, operation)
     if (isCompletedStatus(status)) throw new Error(noImageMessage)
@@ -334,9 +385,11 @@ export async function resolveImageResponse(
   logger?: FastifyBaseLogger,
   traceId?: string
 ): Promise<string[]> {
-  const images = parseImages(body)
+  const images = (source.extractUrls ?? parseImages)(body)
   if (images.length) return images
 
+  const failureText = source.failureText?.(body)
+  if (failureText) throw new Error(`${operation}: ${failureText}`)
   const job = imageJob(body)
   if (!job) throw new Error(noImageMessage)
   const status = taskStatus(job.status)

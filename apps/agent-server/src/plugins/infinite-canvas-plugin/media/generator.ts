@@ -56,7 +56,12 @@ export interface MediaGenerator {
     providerId?: string
     prompt: string
     model?: string
+    /** 图生视频的单张参考图（文档协议 image 字段）。 */
     image?: string
+    /** 多参考图（ref_image_N 协议，POST /v1/videos）：首张为主参考。 */
+    refImages?: string[]
+    /** 多参考协议的分辨率串（如 '768p竖'），缺省省略。 */
+    resolution?: string
     duration?: number
     width?: number
     height?: number
