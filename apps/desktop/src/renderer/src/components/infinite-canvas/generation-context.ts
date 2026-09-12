@@ -172,17 +172,3 @@ export function formatCanvasGenerationContext(context: CanvasGenerationContext):
   }
   return lines.join('\n')
 }
-
-export function withHydratedImageReferences(
-  context: CanvasGenerationContext,
-  images: string[]
-): CanvasGenerationContext {
-  const byNodeId = new Map(context.images.map((reference, index) => [reference.nodeId, images[index] || '']))
-  return {
-    ...context,
-    images: context.images.map((reference) => {
-      const dataUrl = byNodeId.get(reference.nodeId)
-      return dataUrl ? { ...reference, dataUrl, url: dataUrl } : reference
-    })
-  }
-}

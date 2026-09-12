@@ -60,3 +60,48 @@ describe('buildCanvasGenerationContext self reference', () => {
     expect(textResult.context.text).toHaveLength(0)
   })
 })
+
+describe('buildCanvasGenerationContext asset-path references', () => {
+  it('keeps an asset-path self reference in url untouched instead of hydrating base64', () => {
+    const source = imageNode('img-1', '/api/plugins/infinite-canvas/assets/abc')
+
+    const { context } = buildCanvasGenerationContext(
+      'img-1',
+      [source],
+      connections,
+      '把背景换成竹林'
+    )
+
+    expect(context.images).toHaveLength(1)
+    expect(context.images[0].url).toBe('/api/plugins/infinite-canvas/assets/abc')
+    expect(context.images[0].dataUrl).toBeUndefined()
+  })
+
+  it('passes mixed asset-path and data-url upstream references through as-is', () => {
+    const upstreamPath = imageNode('img-path', '/api/plugins/infinite-canvas/assets/xyz')
+    const upstreamData = imageNode('img-data', 'data:image/png;base64,UP')
+    const source = imageNode('img-1', '/api/plugins/infinite-canvas/assets/abc')
+
+    const { context } = buildCanvasGenerationContext(
+      'img-1',
+      [source, upstreamPath, upstreamData],
+      [
+        { id: 'c1', fromNodeId: 'img-path', toNodeId: 'img-1' },
+        { id: 'c2', fromNodeId: 'img-data', toNodeId: 'img-1' }
+      ],
+      '按参考图重画'
+    )
+
+    expect(context.images).toHaveLength(3)
+    expect(context.images.map((reference) => reference.url ?? reference.dataUrl)).toEqual([
+      '/api/plugins/infinite-canvas/assets/abc',
+      '/api/plugins/infinite-canvas/assets/xyz',
+      'data:image/png;base64,UP'
+    ])
+    expect(
+      context.images.every(
+        (reference) => reference.dataUrl === undefined || reference.url === undefined
+      )
+    ).toBe(true)
+  })
+})

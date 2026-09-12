@@ -118,7 +118,7 @@ import {
   getDesignBoardThumbnail,
   invalidateDesignBoardThumbnail
 } from './design-board/design-board-thumbnail'
-import { buildCanvasGenerationContext, withHydratedImageReferences } from './generation-context'
+import { buildCanvasGenerationContext } from './generation-context'
 import {
   buildBatchDownloadArchive,
   collectBatchDownloadItemsWithEmptyNodes,
@@ -218,15 +218,6 @@ function fileAsDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error ?? new Error('文件读取失败'))
     reader.readAsDataURL(file)
   })
-}
-
-async function imageContentAsDataUrl(content: string): Promise<string> {
-  if (content.startsWith('data:')) return content
-  // 外部 URL 直连会被 connect-src CSP 拦截，经服务端代理取回。
-  const response = await fetch(proxyExternalImageUrl(content))
-  if (!response.ok) throw new Error(`参考图片读取失败（HTTP ${response.status}）`)
-  const blob = await response.blob()
-  return fileAsDataUrl(new File([blob], 'reference-image', { type: blob.type || 'image/png' }))
 }
 
 function readMediaSize(
@@ -1243,6 +1234,9 @@ export function InfiniteCanvasWorkspace({
 
   const addDerivedImage = useCallback(
     async (source: LocalNode, dataUrl: string, title: string, index = 0): Promise<void> => {
+      // 派生产物（裁剪/拆分/放大）与 insertFile 同管线：先入库为服务端资产，
+      // 节点只存短路径，避免 base64 进入画布保存载荷；上传失败回退 data URL。
+      const uploaded = project ? await uploadCanvasAsset(dataUrl, project.id) : null
       const result = createNodeData(
         'image',
         {
@@ -1250,7 +1244,7 @@ export function InfiniteCanvasWorkspace({
           y: source.position.y + index * (source.height + 24) + source.height / 2
         },
         {
-          content: dataUrl,
+          content: uploaded ?? dataUrl,
           status: 'success',
           prompt: source.metadata?.prompt,
           mimeType: 'image/png'
@@ -1270,7 +1264,7 @@ export function InfiniteCanvasWorkspace({
       setSelectedNodeIds(new Set([result.id]))
       setPanelNodeId(null)
     },
-    [pushHistory]
+    [project, pushHistory]
   )
 
   const cropImage = useCallback(
@@ -1516,9 +1510,12 @@ export function InfiniteCanvasWorkspace({
         const imageType = item.types.find((type) => type.startsWith('image/'))
         if (imageType) {
           const blob = await item.getType(imageType)
-          const dataUrl = await fileAsDataUrl(
-            new File([blob], 'clipboard-image', { type: imageType })
+          // 与 insertFile 同管线：压缩后入库为服务端资产，失败回退 data URL。
+          const compressed = await compressImageDataUrl(
+            await fileAsDataUrl(new File([blob], 'clipboard-image', { type: imageType }))
           )
+          const uploaded = project ? await uploadCanvasAsset(compressed, project.id) : null
+          const dataUrl = uploaded ?? compressed
           const dimensions = await readMediaSize(dataUrl, 'image')
           const ratio = Math.min(
             1,
@@ -1561,7 +1558,7 @@ export function InfiniteCanvasWorkspace({
     } catch {
       // 剪贴板权限不可用或非安全上下文时静默忽略。
     }
-  }, [canvasCenter, pushHistory])
+  }, [canvasCenter, project, pushHistory])
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent): void => {
@@ -2167,20 +2164,11 @@ export function InfiniteCanvasWorkspace({
         const meta = source.metadata ?? {}
         const sizeValue =
           typeof meta.size === 'string' && meta.size !== 'auto' ? meta.size : undefined
-        const requestContext =
-          generationMode === 'image'
-            ? withHydratedImageReferences(
-                builtContext.context,
-                await Promise.all(
-                  builtContext.context.images.map((reference) =>
-                    imageContentAsDataUrl(reference.dataUrl || reference.url || '')
-                  )
-                )
-              )
-            : builtContext.context
-        const imageReferences = requestContext.images
-          .map((reference) => reference.dataUrl)
-          .filter((value): value is string => Boolean(value?.startsWith('data:image/')))
+        // 引用按原样发送（资产路径/data URL），由服务端统一读盘归一为 data URL，
+        // 客户端不再下载转 base64，也不再把 base64 双份塞进 resourceContext。
+        const imageReferences = builtContext.context.images
+          .map((reference) => reference.dataUrl || reference.url)
+          .filter((value): value is string => Boolean(value))
         const result =
           generationMode === 'image'
             ? await generateCanvasImage(
@@ -2189,7 +2177,7 @@ export function InfiniteCanvasWorkspace({
                   nodeId,
                   prompt: effectivePrompt,
                   context: builtContext.contextText,
-                  resourceContext: requestContext,
+                  resourceContext: builtContext.context,
                   references: imageReferences,
                   model: typeof meta.model === 'string' ? meta.model : undefined,
                   providerId: typeof meta.providerId === 'string' ? meta.providerId : undefined,
@@ -2210,7 +2198,7 @@ export function InfiniteCanvasWorkspace({
                     mode: generationMode,
                     prompt: effectivePrompt,
                     context: builtContext.contextText,
-                    resourceContext: requestContext,
+                    resourceContext: builtContext.context,
                     model: typeof meta.model === 'string' ? meta.model : undefined,
                     providerId: typeof meta.providerId === 'string' ? meta.providerId : undefined,
                     voice: typeof meta.voice === 'string' ? meta.voice : undefined,
@@ -2234,7 +2222,7 @@ export function InfiniteCanvasWorkspace({
                     prompt: effectivePrompt,
                     mode: generationMode,
                     context: builtContext.contextText,
-                    resourceContext: requestContext
+                    resourceContext: builtContext.context
                   },
                   { signal: controller.signal }
                 )
