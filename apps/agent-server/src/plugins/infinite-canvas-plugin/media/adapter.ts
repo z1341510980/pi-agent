@@ -171,6 +171,12 @@ export interface VideoTaskPollResult {
   progress?: string
   /** success 时的视频结果 URL（多为 24h 签名 URL，调用方负责本地化）。 */
   url?: string
+  /**
+   * success 时的鉴权下载回退（api.md §5.2 文档口径）：状态响应不含视频直链，
+   * 标准下载是 GET {base}/videos/{id}/content（Bearer 字节流，支持 Range）。
+   * adapter 拼好端点与鉴权头，调用方带 headers 下载后走既有本地化管线。
+   */
+  download?: { url: string; headers?: Record<string, string> }
   /** failed 时的失败原因。 */
   error?: string
 }

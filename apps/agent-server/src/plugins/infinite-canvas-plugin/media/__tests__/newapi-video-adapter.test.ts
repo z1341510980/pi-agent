@@ -16,6 +16,7 @@ import {
  * completed+url）、失败路径透出 error.message、参数默认值与图生视频透传；
  * 以及 NewAPI 兼容网关（aimanplay 等）的真实包裹层响应形状
  * （SUCCESS + result_url + 嵌套 results）与 ref_image_N 多参考协议（/v1/videos）。
+ * 文档口径（api.md §5.1）completed 无 url 的 content 端点下载回退单独成组；
  * aimanplay 四模型档案（first-last/ref-media/text-only）的分流、duration/resolution
  * 钳制与参考素材 OSS URL 化（含内容缓存）单独成组。
  */
@@ -881,5 +882,106 @@ describe('aimanplay 模型档案（first-last / ref-media / text-only）', () =>
     const second = JSON.parse(String((submitCalls[1][1] as RequestInit).body))
     expect(first.ref_image_0).toBe(putUrls[0])
     expect(second.ref_image_0).toBe(putUrls[0])
+  })
+})
+
+describe('content 端点下载回退（api.md §5.1/§5.2 文档口径）', () => {
+  const adapter = newapiVideoAdapter
+
+  const createContext = (overrides: Partial<MediaModalityContext> = {}): MediaModalityContext => ({
+    providerId: 'video',
+    baseUrl: 'https://api.video.example',
+    apiKey: 'sk-video',
+    model: '',
+    params: {},
+    ...overrides
+  })
+
+  const jsonResponse = (body: unknown, status = 200): Response =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' }
+    })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('pollVideoTask：completed 且响应无任何 url → 返回 content 端点 + Bearer 下载回退', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    // api.md §5.1 的文档状态响应形状：不含 url 字段
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'video_doc_1',
+        object: 'video',
+        model: 'minimax_h3_zm_u24',
+        status: 'completed',
+        progress: 100,
+        created_at: 1_760_000_000
+      })
+    )
+
+    const poll = await adapter.pollVideoTask!(createContext(), {
+      taskId: 'video_doc_1',
+      protocol: 'videos'
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.video.example/v1/videos/video_doc_1')
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({
+      Authorization: 'Bearer sk-video'
+    })
+    expect(poll.status).toBe('success')
+    expect(poll.url).toBeUndefined()
+    expect(poll.download).toEqual({
+      url: 'https://api.video.example/v1/videos/video_doc_1/content',
+      headers: { Authorization: 'Bearer sk-video' }
+    })
+  })
+
+  it('pollVideoTask：网关兼容层 result_url 优先，不附带 download', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        code: 'success',
+        message: '',
+        data: {
+          task_id: 'task_live_1297',
+          status: 'SUCCESS',
+          fail_reason: '',
+          result_url: 'https://cdn.video.example/live/result.mp4?Signature=abc',
+          progress: '100%'
+        }
+      })
+    )
+
+    const poll = await adapter.pollVideoTask!(createContext(), {
+      taskId: 'task_live_1297',
+      protocol: 'videos'
+    })
+
+    expect(poll.status).toBe('success')
+    expect(poll.url).toBe('https://cdn.video.example/live/result.mp4?Signature=abc')
+    expect(poll.download).toBeUndefined()
+  })
+
+  it('generateVideo：轮询到 completed 无 url → 输出 content 端点作为产物地址', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.useFakeTimers()
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ task_id: 'v-doc', status: 'queued' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: 'v-doc', object: 'video', status: 'completed', progress: 100 })
+      )
+
+    const resultPromise = adapter.generateVideo!(createContext(), { prompt: 'x' })
+    await vi.advanceTimersByTimeAsync(2_000)
+    await expect(resultPromise).resolves.toEqual({
+      outputs: [{ url: 'https://api.video.example/v1/videos/v-doc/content', mimeType: 'video/mp4' }]
+    })
   })
 })

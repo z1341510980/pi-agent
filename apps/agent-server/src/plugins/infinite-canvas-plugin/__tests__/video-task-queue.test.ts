@@ -2,6 +2,7 @@
  * 视频异步任务队列（设计 Task 2/3 服务端）：
  * 迁移 020 任务表、generate-media 视频提交即返回（异步任务行落库）、
  * audio 同步回归、refresh 成功本地化（SUCCESS 形状 → 下载 → /assets video/mp4）、
+ * 文档口径无 url 的 content 端点回退（refresh/worker 带 Bearer 下载本地化）、
  * refresh 失败（fail_reason）、worker 超时标记 + timeout 任务恢复、
  * 以及 adapter 无 submitVideoTask 时的同步兜底。
  * 用真实 createInfiniteCanvasPlugin 装配（内存库 + 全量插件迁移 + tmpdir PI_DATA_DIR），
@@ -397,6 +398,99 @@ describe('画布视频异步任务队列（服务端）', () => {
     expect(assetReply.statusCode).toBe(200)
     expect(assetReply.headers['Content-Type']).toBe('video/mp4')
     expect(Buffer.from(assetResponse).equals(videoBytes)).toBe(true)
+  })
+
+  it('refresh 成功（文档口径无 url）：回退 content 端点带 Bearer 下载并本地化', async () => {
+    const task = videoTasks.create({
+      projectId,
+      providerId: videoProvider.id,
+      taskId: 'task-content',
+      protocol: 'videos',
+      model: 'kling-v1'
+    })
+    const videoBytes = Buffer.from('content endpoint mp4 bytes')
+    // api.md §5.1 的文档状态响应：completed 且不含任何 url 字段
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 'task-content',
+          object: 'video',
+          model: 'kling-v1',
+          status: 'completed',
+          progress: 100,
+          created_at: Math.floor(Date.now() / 1000)
+        })
+      )
+      .mockResolvedValueOnce(binaryResponse(videoBytes, 'video/mp4'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const reply = replyMock()
+    const result = (await routeFor(
+      'POST',
+      '/projects/:projectId/video-tasks/:taskId/refresh'
+    ).handler({ params: { projectId, taskId: task.id } }, reply)) as {
+      data: { task: { status: string; resultPath?: string } }
+    }
+
+    expect(reply.statusCode).toBe(200)
+    expect(result.data.task.status).toBe('success')
+    expect(result.data.task.resultPath).toBeTruthy()
+
+    // 轮询后回退 content 端点下载，且必须携带 Bearer 鉴权头（字节流端点 401 即失败）
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0][0]).toBe('https://video.test/v1/videos/task-content')
+    expect(fetchMock.mock.calls[1][0]).toBe('https://video.test/v1/videos/task-content/content')
+    expect((fetchMock.mock.calls[1][1] as RequestInit).headers).toMatchObject({
+      Authorization: 'Bearer sk-video'
+    })
+
+    const assetId = result.data.task.resultPath!.slice(ASSET_PATH_PREFIX.length + 1)
+    const assetRow = db
+      .prepare('SELECT file_path, mime FROM infinite_canvas_assets WHERE id = ?')
+      .get(assetId) as { file_path: string; mime: string }
+    expect(assetRow.mime).toBe('video/mp4')
+    expect(readFileSync(assetRow.file_path).equals(videoBytes)).toBe(true)
+  })
+
+  it('worker：completed 无 url → content 端点带 Bearer 下载本地化，行推进 success', async () => {
+    const task = videoTasks.create({
+      projectId,
+      providerId: videoProvider.id,
+      taskId: 'task-worker-content',
+      protocol: 'videos'
+    })
+    touchAllRunningTasks()
+    // 制造 stale：updated_at 回拨越过 8s 轮询阈值
+    db.prepare('UPDATE infinite_canvas_video_tasks SET updated_at = ? WHERE id = ?').run(
+      Date.now() - 9_000,
+      task.id
+    )
+    const videoBytes = Buffer.from('worker content endpoint mp4 bytes')
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ id: 'task-worker-content', object: 'video', status: 'completed' })
+      )
+      .mockResolvedValueOnce(binaryResponse(videoBytes, 'video/mp4'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await tick()
+
+    expect(videoTasks.get(task.id)!.status).toBe('success')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      'https://video.test/v1/videos/task-worker-content/content'
+    )
+    expect((fetchMock.mock.calls[1][1] as RequestInit).headers).toMatchObject({
+      Authorization: 'Bearer sk-video'
+    })
+    const row = videoTasks.get(task.id)!
+    const assetId = row.resultPath!.slice(ASSET_PATH_PREFIX.length + 1)
+    const assetRow = db
+      .prepare('SELECT file_path FROM infinite_canvas_assets WHERE id = ?')
+      .get(assetId) as { file_path: string }
+    expect(readFileSync(assetRow.file_path).equals(videoBytes)).toBe(true)
   })
 
   it('refresh 失败：fail_reason 落到行 error，状态 failed', async () => {

@@ -286,6 +286,8 @@ export async function generateCanvasMedia(
     image?: string
     /** 多参考图（ref_image_N 协议）：按发送顺序，首张为生成主参考（资产路径/远程 URL 由服务端归一化）。 */
     refImages?: string[]
+    /** 参考音频（ref_audio_0..2 协议，≤3）：按发送顺序（资产路径/data URL 由服务端归一化）。 */
+    refAudios?: string[]
     voice?: string
     format?: string
     speed?: number

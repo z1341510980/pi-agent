@@ -150,15 +150,21 @@ export function createInfiniteCanvasPlugin(): Plugin {
       /**
        * 上游视频结果下载：result_url 是 24h 签名 URL，必须本地化；
        * mime 信任服务声明，非 video/* 回落 mp4（NewAPI 视频产物即 mp4）。
+       * headers 供 content 端点回退（api.md §5.2）携带 Bearer 鉴权头 ——
+       * 签名直链不带额外头，字节流端点不带鉴权会被 401 拒绝。
        */
-      const downloadVideoResult = async (url: string): Promise<{ bytes: Buffer; mime: string }> => {
+      const downloadVideoResult = async (
+        url: string,
+        headers?: Record<string, string>
+      ): Promise<{ bytes: Buffer; mime: string }> => {
         const response = await fetch(url, {
           signal: AbortSignal.timeout(ASSET_DOWNLOAD_TIMEOUT_MS),
           redirect: 'follow',
           headers: {
             Accept: 'video/webm,video/mp4,video/*;q=0.8,*/*;q=0.5',
             'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            ...(headers ?? {})
           }
         })
         if (!response.ok) throw new Error(`视频结果下载失败：HTTP ${response.status}`)
@@ -208,13 +214,16 @@ export function createInfiniteCanvasPlugin(): Plugin {
           protocol: row.protocol
         })
         if (poll.status === 'success') {
-          if (!poll.url) {
+          // 网关兼容层直链优先（poll.url）；文档口径（api.md §5.1 响应无 url）
+          // 时回退 adapter 拼好的 content 端点 + Bearer（poll.download）
+          const target = poll.download ?? (poll.url ? { url: poll.url } : undefined)
+          if (!target) {
             return videoTasks.update(row.id, {
               status: 'failed',
               error: '任务已完成但 Provider 响应中没有视频 URL'
             })!
           }
-          const { bytes, mime } = await downloadVideoResult(poll.url)
+          const { bytes, mime } = await downloadVideoResult(target.url, target.headers)
           const resultPath = assets.storeVideoFromBytes(row.projectId, bytes, mime)
           if (!resultPath) {
             return videoTasks.update(row.id, {

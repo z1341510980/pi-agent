@@ -2231,6 +2231,15 @@ export function InfiniteCanvasWorkspace({
                       generationMode === 'video' && imageReferences.length > 0
                         ? imageReferences
                         : undefined,
+                    // 参考音频（ref_audio_0..2）：上游音频节点内容按发送顺序发出，
+                    // 客户端先封顶 3 段（服务端路由/adapter 同口径再钳一次）
+                    refAudios:
+                      generationMode === 'video' && (builtContext.context.audios?.length ?? 0) > 0
+                        ? builtContext.context.audios
+                            .map((reference) => reference.dataUrl || reference.url)
+                            .filter((value): value is string => Boolean(value))
+                            .slice(0, 3)
+                        : undefined,
                     voice: typeof meta.voice === 'string' ? meta.voice : undefined,
                     format: typeof meta.format === 'string' ? meta.format : undefined,
                     speed: Number(meta.speed) > 0 ? Number(meta.speed) : undefined,

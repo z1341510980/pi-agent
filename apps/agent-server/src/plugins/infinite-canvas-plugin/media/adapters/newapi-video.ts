@@ -27,6 +27,9 @@
  * pollVideoTask（单次状态查询，归一化 queued/in_progress/success/failed）供
  * 服务端任务队列使用；generateVideo 保留同步实现，内部复用同一 submit/poll
  * 原语（提交响应已有成品 URL 直接返回，否则按图片任务的退避节奏轮询）。
+ * 下载回退（设计 Task 3，api.md §5.1/§5.2）：状态响应不含直链（文档口径）时，
+ * success 归一化结果附带 content 端点（GET {base}/videos/{id}/content，Bearer
+ * 字节流）作为 download 字段，由 worker/refresh 带鉴权头下载并本地化。
  */
 
 import type {
@@ -572,8 +575,17 @@ async function pollVideoTaskOnce(
       })
     }
     if (isCompletedStatus(status)) {
-      // 上游判定完成但提取不出 URL：无法本地化，按失败透出可读原因
-      return withProgress({ status: 'failed', error: '视频 Provider 返回中没有视频数据' })
+      // 文档口径（api.md §5.1/§5.2）：状态响应不含视频直链，标准下载是
+      // GET {base}/videos/{id}/content（Bearer 字节流）。网关兼容层的
+      // result_url/嵌套 results 优先（上方 urls 分支），都缺失时回退
+      // content 端点，由下载方（worker/refresh）带鉴权头拉流本地化。
+      return withProgress({
+        status: 'success',
+        download: {
+          url: `${rt.baseUrl}/videos/${encodeURIComponent(input.taskId)}/content`,
+          headers: rt.headers
+        }
+      })
     }
     if (!job && !status) {
       return withProgress({ status: 'failed', error: '视频 Provider 返回中没有视频数据' })
@@ -624,7 +636,11 @@ export const newapiVideoAdapter: MediaProviderAdapter = {
           signal: guard.signal
         })
         if (poll.status === 'success') {
-          return { outputs: [{ url: poll.url!, mimeType: 'video/mp4' }] }
+          // content 端点回退（api.md §5.2）：无直链时输出鉴权下载地址，
+          // 同步链路的本地化失败会保留原始地址兜底
+          const outputUrl = poll.url ?? poll.download?.url
+          if (!outputUrl) throw new Error('视频 Provider 返回中没有视频数据')
+          return { outputs: [{ url: outputUrl, mimeType: 'video/mp4' }] }
         }
         if (poll.status === 'failed') {
           throw new Error(`视频生成失败: ${poll.error ?? '任务失败'}`)
