@@ -30,8 +30,8 @@ export function normalizeImageBaseUrl(baseUrl: string): string {
 }
 
 export const IMAGE_JOB_TIMEOUT_MS = 5 * 60_000
-/** 视频任务明显慢于图片（分钟级排队 + 渲染），轮询超时预算单独放宽到 10 分钟。 */
-export const VIDEO_JOB_TIMEOUT_MS = 10 * 60_000
+/** 视频任务明显慢于图片（排队 + 渲染，实测有 15 分钟以上才完成的任务），超时预算放宽到 30 分钟。 */
+export const VIDEO_JOB_TIMEOUT_MS = 30 * 60_000
 export const IMAGE_POLL_INITIAL_DELAY_MS = 2_000
 export const IMAGE_POLL_MAX_DELAY_MS = 10_000
 

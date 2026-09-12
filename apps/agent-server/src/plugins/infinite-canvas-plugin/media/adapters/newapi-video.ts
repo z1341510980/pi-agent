@@ -8,9 +8,9 @@
  *   completed → url 字段、failed → error.message。
  *
  * 轮询复用 shared 的 ImageJobPollSource / resolveImageResponse 机制（与图片任务
- * 同一套退避与状态判定：completed+url 被 parseImages 命中直接返回；failed 走
- * imageJobFailure 带出服务端 error.message）。视频更慢，超时预算用专用
- * VIDEO_JOB_TIMEOUT_MS（10min）。
+ *   同一套退避与状态判定：completed+url 被 parseImages 命中直接返回；failed 走
+ *   imageJobFailure 带出服务端 error.message）。视频更慢，超时预算用专用
+ *   VIDEO_JOB_TIMEOUT_MS（30min，实测存在 15min+ 才完成的任务）。
  */
 
 import type {
