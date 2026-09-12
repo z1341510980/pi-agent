@@ -19,6 +19,7 @@ import {
   FolderOpen,
   Grid2x2,
   ImageIcon,
+  ListVideo,
   Maximize2,
   Minus,
   MoreHorizontal,
@@ -111,6 +112,7 @@ import {
   upscaleDataUrl
 } from './media-dialog'
 import { CanvasAssetLibrary, saveCanvasAsset, type CanvasAsset } from './asset-library'
+import { VideoTaskQueue } from './video-task-queue'
 import { CanvasAgentPanel } from './canvas-agent-panel'
 import { MediaLogPanel } from './media-log-panel'
 import { createDesignBoardDoc, type DesignBoardDoc } from './design-board/design-board-types'
@@ -318,6 +320,9 @@ export function InfiniteCanvasWorkspace({
     open: boolean
     tab: 'assets' | 'prompts'
   }>({ open: false, tab: 'assets' })
+  const [videoQueueState, setVideoQueueState] = useState<{ open: boolean }>({ open: false })
+  const [videoTasks, setVideoTasks] = useState<CanvasVideoTask[]>([])
+  const [videoTasksLoading, setVideoTasksLoading] = useState(false)
 
   const canvasRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -349,6 +354,8 @@ export function InfiniteCanvasWorkspace({
   const handledVideoTaskIdsRef = useRef(new Set<string>())
   /** video-tasks 轮询在途标记：10s 定时器可能早于上一次请求返回。 */
   const videoTasksInFlightRef = useRef(false)
+  /** 当前轮询 tick（手动刷新复用同一迭代，保证 disposed 语义一致）。 */
+  const videoTasksTickRef = useRef<(() => Promise<void>) | null>(null)
   const pendingSelectionRef = useRef<Set<string> | null>(null)
 
   useEffect(() => {
@@ -2540,19 +2547,26 @@ export function InfiniteCanvasWorkspace({
     const tick = async (): Promise<void> => {
       if (videoTasksInFlightRef.current) return
       videoTasksInFlightRef.current = true
+      setVideoTasksLoading(true)
       try {
         const { tasks } = await listCanvasVideoTasks(project.id)
-        if (!disposed) processVideoTasks(tasks)
+        if (!disposed) {
+          setVideoTasks(tasks)
+          processVideoTasks(tasks)
+        }
       } catch {
         // 轮询失败不打扰用户：下个周期重试
       } finally {
         videoTasksInFlightRef.current = false
+        if (!disposed) setVideoTasksLoading(false)
       }
     }
+    videoTasksTickRef.current = tick
     void tick()
     const interval = setInterval(() => void tick(), VIDEO_TASK_POLL_INTERVAL_MS)
     return () => {
       disposed = true
+      videoTasksTickRef.current = null
       clearInterval(interval)
     }
   }, [project?.id, processVideoTasks])
@@ -2599,6 +2613,27 @@ export function InfiniteCanvasWorkspace({
       }
     },
     [processVideoTasks, project]
+  )
+
+  /** 任务队列「刷新」：立即执行一次轮询迭代（复用现有 tick，不另起循环）。 */
+  const refreshVideoTasks = useCallback((): void => {
+    void videoTasksTickRef.current?.()
+  }, [])
+
+  const videoNodeTitles = useMemo(
+    () => new Map(nodes.map((node) => [node.id, node.title])),
+    [nodes]
+  )
+
+  /** 队列「定位节点」：关闭面板 → 选中并打开节点面板 → 复用 focusNode 相机动画居中。 */
+  const focusVideoTaskNode = useCallback(
+    (nodeId: string): void => {
+      setVideoQueueState({ open: false })
+      setSelectedNodeIds(new Set([nodeId]))
+      setPanelNodeId(nodeId)
+      focusNode(nodeId)
+    },
+    [focusNode]
   )
 
   const generateImageFromText = useCallback(
@@ -3263,6 +3298,18 @@ export function InfiniteCanvasWorkspace({
         )}
         <button
           type="button"
+          className="absolute top-16 right-36 z-40 grid size-8 place-items-center rounded-lg border opacity-60 transition hover:opacity-100"
+          style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border }}
+          title="任务队列"
+          onClick={() => {
+            setVideoQueueState({ open: true })
+            refreshVideoTasks()
+          }}
+        >
+          <ListVideo className="size-4" />
+        </button>
+        <button
+          type="button"
           className="absolute top-16 right-24 z-40 grid size-8 place-items-center rounded-lg border opacity-60 transition hover:opacity-100"
           style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border }}
           title="我的资产 / 提示词库"
@@ -3278,6 +3325,19 @@ export function InfiniteCanvasWorkspace({
             onInsert={insertAsset}
             onUsePrompt={applyPromptFromLibrary}
             onClose={() => setAssetLibraryState((current) => ({ ...current, open: false }))}
+          />
+        )}
+        {videoQueueState.open && (
+          <VideoTaskQueue
+            theme={theme}
+            projectId={project.id}
+            tasks={videoTasks}
+            nodeTitles={videoNodeTitles}
+            loading={videoTasksLoading}
+            onRefresh={refreshVideoTasks}
+            onFocusNode={focusVideoTaskNode}
+            onRetry={retryVideoTask}
+            onClose={() => setVideoQueueState({ open: false })}
           />
         )}
         {mediaDialog &&
