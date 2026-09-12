@@ -88,6 +88,56 @@ describe('applyCompletedVideoTask', () => {
     expect(first!.connections).toHaveLength(1)
   })
 
+  it('重启模拟：handled 集合清零后靠持久化图状态幂等（子节点 content 命中资产 id）', () => {
+    const first = apply([source()], [], {})
+    expect(first).not.toBeNull()
+    expect(first!.nodes[1].metadata?.content).toContain('/assets/abc123')
+
+    // 模拟应用重启：内存 handled 集合清空，画布从持久化图恢复（任务仍在 last-100 列表）
+    const freshHandled = new Set<string>()
+    const second = apply(first!.nodes, first!.connections, {}, freshHandled)
+    expect(second).toBeNull()
+    expect(first!.nodes).toHaveLength(2)
+    expect(first!.connections).toHaveLength(1)
+    // 回写已处理集合：同一会话内后续轮询走快速路径
+    expect(freshHandled.has('task-1')).toBe(true)
+  })
+
+  it('成品资产以 metadata.images 形式（字符串 / {content} 对象）承载时同样幂等', () => {
+    const handledStrings = new Set<string>()
+    const stringImages = source({
+      id: 'image-strings',
+      type: 'image',
+      metadata: { images: ['http://127.0.0.1:3900/api/plugins/infinite-canvas/assets/abc123'] }
+    })
+    expect(apply([source(), stringImages], [], {}, handledStrings)).toBeNull()
+    expect(handledStrings.has('task-1')).toBe(true)
+
+    const handledObjects = new Set<string>()
+    const objectImages = source({
+      id: 'image-objects',
+      type: 'image',
+      metadata: {
+        images: [
+          {
+            id: 'img-1',
+            status: 'success',
+            content: 'http://127.0.0.1:3900/api/plugins/infinite-canvas/assets/abc123'
+          }
+        ]
+      }
+    })
+    expect(apply([source(), objectImages], [], {}, handledObjects)).toBeNull()
+    expect(handledObjects.has('task-1')).toBe(true)
+  })
+
+  it('resultPath 非本地资产路径时无法做内容级幂等，回落 handled 集合照常落图', () => {
+    const handled = new Set<string>()
+    const result = apply([source()], [], { resultPath: 'https://cdn.example.com/v.mp4' }, handled)
+    expect(result).not.toBeNull()
+    expect(handled.has('task-1')).toBe(true)
+  })
+
   it('未提供 handledTaskIds 时直接追加（由调用方负责幂等）', () => {
     const result = apply([source()])
     expect(result).not.toBeNull()

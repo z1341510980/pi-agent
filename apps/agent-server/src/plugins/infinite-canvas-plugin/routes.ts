@@ -233,6 +233,8 @@ export function createInfiniteCanvasRoutes(
   videoTaskQueue?: {
     list: CanvasVideoTaskListHandler
     refresh: CanvasVideoTaskRefreshHandler
+    /** 项目删除时清理任务行（表无外键级联，先于项目行删除调用）。 */
+    deleteForProject?: (projectId: string) => void
   }
 ): RouteDefinition[] {
   return [
@@ -544,9 +546,10 @@ export function createInfiniteCanvasRoutes(
       method: 'DELETE',
       path: '/projects/:projectId',
       handler: async (request, reply) => {
-        // 必须先清资产（拿文件列表删盘上的文件），再删项目行——
-        // 项目行一删，外键级联会把资产行一起带走
+        // 必须先清资产（拿文件列表删盘上的文件）与视频任务行（表无外键级联），
+        // 再删项目行——项目行一删，外键级联会把资产行一起带走
         assets?.deleteForProject(request.params.projectId)
+        videoTaskQueue?.deleteForProject?.(request.params.projectId)
         if (!store.deleteProject(request.params.projectId))
           return reply.code(404).send({ ok: false, error: '画布项目不存在' })
         return success({ id: request.params.projectId, deleted: true }, request.traceId)

@@ -164,6 +164,11 @@ export class CanvasVideoTaskStore {
     return (this.stmtListByProject.all(projectId) as VideoTaskDbRow[]).map((row) => rowToTask(row))
   }
 
+  /** 项目删除时清理任务行（表无外键级联，与资产清理同一时机、先于项目行删除）。 */
+  deleteForProject(projectId: string): void {
+    this.db.prepare('DELETE FROM infinite_canvas_video_tasks WHERE project_id = ?').run(projectId)
+  }
+
   /** 全部 running 任务（worker 扫描输入，最旧优先）。 */
   listRunning(): CanvasVideoTaskRecord[] {
     return (this.stmtListRunning.all('running') as VideoTaskDbRow[]).map((row) => rowToTask(row))

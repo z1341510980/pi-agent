@@ -32,6 +32,7 @@ import type {
   VideoTaskProtocol,
   VideoTaskSubmission
 } from '../adapter.js'
+import { mediaDiag } from '../../../../core/config/media-diag.js'
 import {
   IMAGE_POLL_INITIAL_DELAY_MS,
   VIDEO_JOB_TIMEOUT_MS,
@@ -259,7 +260,8 @@ async function submitVideoRequest(
 /**
  * 单次任务状态查询（pollVideoTask 与 generateVideo 轮询循环共用）：GET 任务端点
  * 一次，把上游形状归一化成 queued/in_progress/success/failed；HTTP 层错误直接
- * 抛出（worker 记日志后下轮重试，refresh 路由按 502 透出）。
+ * 抛出（worker 记日志后下轮重试，refresh 路由按 502 透出）。每次轮询落一条
+ * job-poll 诊断事件（镜像 shared.pollImageJob），live 网关排查不盲。
  */
 async function pollVideoTaskOnce(
   rt: VideoRuntime,
@@ -277,9 +279,7 @@ async function pollVideoTaskOnce(
     const withProgress = (result: VideoTaskPollResult): VideoTaskPollResult =>
       progress ? { ...result, progress } : result
     const urls = extractVideoUrls(body)
-    if (urls.length) return withProgress({ status: 'success', url: urls[0] })
     const failureText = source.failureText?.(body)
-    if (failureText) return withProgress({ status: 'failed', error: failureText })
     const statusCandidate = recordCandidates(body).find(
       (candidate) => typeof candidate.status === 'string' || typeof candidate.state === 'string'
     )
@@ -287,6 +287,13 @@ async function pollVideoTaskOnce(
     const job = imageJob(body)
     const rawStatus = job?.status ?? (typeof fallbackStatus === 'string' ? fallbackStatus : '')
     const status = taskStatus(rawStatus)
+    mediaDiag.event('job-poll', {
+      provider: providerLabel(rt),
+      jobId: input.taskId,
+      jobStatus: rawStatus
+    })
+    if (urls.length) return withProgress({ status: 'success', url: urls[0] })
+    if (failureText) return withProgress({ status: 'failed', error: failureText })
     if (isFailedStatus(status)) {
       return withProgress({
         status: 'failed',

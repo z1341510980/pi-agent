@@ -244,6 +244,10 @@ export function createInfiniteCanvasPlugin(): Plugin {
         if (!row || row.projectId !== input.projectId) {
           return { ok: false as const, statusCode: 404, message: '视频任务不存在' }
         }
+        // 已本地化的 success 任务直接返回现值：结果不会再变，重复轮询/下载纯属浪费
+        if (row.status === 'success' && row.resultPath) {
+          return { ok: true as const, task: toVideoTaskApiView(row) }
+        }
         try {
           return { ok: true as const, task: toVideoTaskApiView(await pollVideoTaskRow(row)) }
         } catch (error) {
@@ -641,7 +645,8 @@ export function createInfiniteCanvasPlugin(): Plugin {
         {
           list: (projectId) =>
             videoTasks.listByProject(projectId).map((task) => toVideoTaskApiView(task)),
-          refresh: refreshVideoTask
+          refresh: refreshVideoTask,
+          deleteForProject: (projectId) => videoTasks.deleteForProject(projectId)
         }
       ))
         context.registerRoute(route)

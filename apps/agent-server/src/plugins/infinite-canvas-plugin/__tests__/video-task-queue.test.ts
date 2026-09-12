@@ -405,6 +405,60 @@ describe('画布视频异步任务队列（服务端）', () => {
     expect(reply.payload).toMatchObject({ ok: false, error: '视频任务不存在' })
   })
 
+  it('refresh 短路：已 success 且带 result_path 的任务直接返回现值，不重复轮询/下载', async () => {
+    const task = videoTasks.create({
+      projectId,
+      providerId: videoProvider.id,
+      taskId: 'task-done',
+      protocol: 'videos'
+    })
+    videoTasks.update(task.id, {
+      status: 'success',
+      resultPath: '/api/plugins/infinite-canvas/assets/already-stored'
+    })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const reply = replyMock()
+    const result = (await routeFor(
+      'POST',
+      '/projects/:projectId/video-tasks/:taskId/refresh'
+    ).handler({ params: { projectId, taskId: task.id } }, reply)) as {
+      data: { task: { id: string; status: string; resultPath?: string } }
+    }
+
+    expect(reply.statusCode).toBe(200)
+    expect(result.data.task).toMatchObject({
+      id: task.id,
+      status: 'success',
+      resultPath: '/api/plugins/infinite-canvas/assets/already-stored'
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('DELETE /projects/:projectId 级联清理视频任务行（表无外键，防孤儿行）', async () => {
+    const created = (await routeFor('POST', '/projects').handler(
+      { body: { title: '待删除画布' } },
+      replyMock()
+    )) as { data: { id: string } }
+    const doomedProjectId = created.data.id
+    const task = videoTasks.create({
+      projectId: doomedProjectId,
+      providerId: videoProvider.id,
+      taskId: 'task-orphan',
+      protocol: 'videos'
+    })
+    expect(videoTasks.get(task.id)).toBeTruthy()
+
+    const reply = replyMock()
+    await routeFor('DELETE', '/projects/:projectId').handler(
+      { params: { projectId: doomedProjectId } },
+      reply
+    )
+    expect(reply.statusCode).toBe(200)
+    expect(videoTasks.get(task.id)).toBeUndefined()
+  })
+
   it('worker：created_at 超预算的 running 任务标 timeout；timeout 任务 refresh 可恢复 success', async () => {
     touchAllRunningTasks()
     const task = videoTasks.create({
