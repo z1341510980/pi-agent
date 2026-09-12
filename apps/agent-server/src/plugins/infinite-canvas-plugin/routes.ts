@@ -19,6 +19,10 @@ import {
 // 参数校验（400）/服务未就绪（503）/资源缺失（404）保持裸 {ok:false,error}，
 // 客户端 apiErrorDetails 会回退 code='API_ERROR'（proxy-image 的二进制代理 502 除外）。
 
+// 承载图片数据（参考图/蒙版/反推原图/图 JSON）的请求体上限：
+// 本机回环服务，放宽到 128MB；参考图 base64 多张聚合后很容易超过 32MB（已实际发生）。
+const MEDIA_BODY_LIMIT = 128 * 1024 * 1024
+
 export type CanvasGenerateHandler = (input: {
   projectId: string
   nodeId?: string
@@ -472,7 +476,7 @@ export function createInfiniteCanvasRoutes(
       // 放宽单路由体积上限。
       method: 'PUT',
       path: '/projects/:projectId/graph',
-      bodyLimit: 32 * 1024 * 1024,
+      bodyLimit: MEDIA_BODY_LIMIT,
       handler: async (request, reply) => {
         try {
           const input = body(request)
@@ -570,7 +574,7 @@ export function createInfiniteCanvasRoutes(
     {
       method: 'POST',
       path: '/projects/:projectId/generate-image',
-      bodyLimit: 32 * 1024 * 1024,
+      bodyLimit: MEDIA_BODY_LIMIT,
       handler: async (request, reply) => {
         if (!generateImage)
           return reply.code(503).send({ ok: false, error: '图片 Provider 尚未配置' })
@@ -620,7 +624,7 @@ export function createInfiniteCanvasRoutes(
     {
       method: 'POST',
       path: '/projects/:projectId/generate-media',
-      bodyLimit: 8 * 1024 * 1024,
+      bodyLimit: MEDIA_BODY_LIMIT,
       handler: async (request, reply) => {
         if (!generateMedia)
           return reply.code(503).send({ ok: false, error: '媒体 Provider 尚未配置' })
@@ -667,7 +671,7 @@ export function createInfiniteCanvasRoutes(
     {
       method: 'POST',
       path: '/projects/:projectId/edit-image',
-      bodyLimit: 32 * 1024 * 1024,
+      bodyLimit: MEDIA_BODY_LIMIT,
       handler: async (request, reply) => {
         if (!editImage)
           return reply.code(503).send({ ok: false, error: '图像编辑 Provider 尚未配置' })
@@ -710,7 +714,7 @@ export function createInfiniteCanvasRoutes(
     {
       method: 'POST',
       path: '/projects/:projectId/reverse-prompt',
-      bodyLimit: 32 * 1024 * 1024,
+      bodyLimit: MEDIA_BODY_LIMIT,
       handler: async (request, reply) => {
         if (!reversePrompt)
           return reply.code(503).send({ ok: false, error: '视觉理解 Provider 尚未配置' })
