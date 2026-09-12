@@ -268,6 +268,8 @@ export async function generateCanvasMedia(
     resourceContext?: CanvasGenerationContext
     model?: string
     providerId?: string
+    /** 图生视频的首帧参考图（data URL 或服务端资产路径），取发送顺序第 1 张参考图。 */
+    image?: string
     voice?: string
     format?: string
     speed?: number

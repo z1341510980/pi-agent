@@ -2201,6 +2201,11 @@ export function InfiniteCanvasWorkspace({
                     resourceContext: builtContext.context,
                     model: typeof meta.model === 'string' ? meta.model : undefined,
                     providerId: typeof meta.providerId === 'string' ? meta.providerId : undefined,
+                    image:
+                      generationMode === 'video' && builtContext.context.images.length > 0
+                        ? builtContext.context.images[0].dataUrl ||
+                          builtContext.context.images[0].url
+                        : undefined,
                     voice: typeof meta.voice === 'string' ? meta.voice : undefined,
                     format: typeof meta.format === 'string' ? meta.format : undefined,
                     speed: Number(meta.speed) > 0 ? Number(meta.speed) : undefined,
