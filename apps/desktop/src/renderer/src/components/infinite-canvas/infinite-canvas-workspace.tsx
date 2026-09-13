@@ -2246,13 +2246,19 @@ export function InfiniteCanvasWorkspace({
                     size: generationMode === 'video' ? sizeValue : undefined,
                     // 分辨率档位（aimanplay 档案枚举 480p竖 等）：面板 metadata.resolution 原样透传，
                     // 服务端按模型枚举校验；旧 WxH size 继续发送供未知/legacy provider 消费。
+                    // 未设置时显式下发面板显示的默认值（480p竖 / 5s）——否则服务端会按模型
+                    // 档案默认（如 v2_15s 的 15s）执行，与面板显示不一致（所见即所发）。
                     resolution:
-                      typeof meta.resolution === 'string' && meta.resolution
-                        ? meta.resolution
+                      generationMode === 'video'
+                        ? typeof meta.resolution === 'string' && meta.resolution
+                          ? meta.resolution
+                          : '480p竖'
                         : undefined,
                     seconds:
-                      generationMode === 'video' && Number(meta.seconds) > 0
-                        ? Number(meta.seconds)
+                      generationMode === 'video'
+                        ? Number(meta.seconds) > 0
+                          ? Number(meta.seconds)
+                          : 5
                         : undefined,
                     generateAudio:
                       typeof meta.generateAudio === 'boolean' ? meta.generateAudio : undefined,
