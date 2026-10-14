@@ -13,6 +13,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { Type, type Static } from 'typebox'
 import { defineTool, type ToolDefinition, type AgentToolResult } from '@earendil-works/pi-coding-agent'
+import type { ThinkingLevel } from '@earendil-works/pi-agent-core'
 import { ConcurrencyLimiter, type ConcurrencyLimits, type ReleaseFunction } from './concurrency-limiter.js'
 import { AgentChannel } from './agent-channel.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
@@ -31,6 +32,8 @@ export interface AgentConfig {
   model?: {
     provider: string
     modelId: string
+    /** 可选思考强度；未设置时使用模型/SDK 默认值。 */
+    thinkingLevel?: ThinkingLevel | null
   }
   /** 系统提示词覆盖 */
   systemPrompt?: string

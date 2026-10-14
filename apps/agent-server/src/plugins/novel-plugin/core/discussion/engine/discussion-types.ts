@@ -262,6 +262,8 @@ export interface DiscussionOptions {
   emit: AgUiEventSink
   onCheckpoint: (checkpoint: DiscussionCheckpoint) => Promise<'approve' | 'reject' | 'revise' | string>
   onProgress: (event: DiscussionFlowEvent) => void
+  /** checkpoint 决策期间提交的用户意见，由路由层写入，决策恢复后注入 transcript。 */
+  checkpointFeedback?: string[]
   signal?: AbortSignal
   /**
    * 本次运行的成员模型覆盖。优先级高于工种 Agent 配置；角色成员也使用该模型。

@@ -79,6 +79,13 @@ function makeMockServices(): NovelServices {
       get: vi.fn(),
       getLatestResumable: vi.fn(),
     } as any,
+    workflowEventStore: {
+      append: vi.fn(),
+      list: vi.fn(() => []),
+      lastSeq: vi.fn(() => 0),
+      findActiveRun: vi.fn(),
+      reconcileOrphanRuns: vi.fn(() => 0),
+    } as any,
     chapterChatStore: {
       add: vi.fn(),
       list: vi.fn(() => []),

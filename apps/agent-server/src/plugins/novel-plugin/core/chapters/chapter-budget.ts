@@ -15,9 +15,10 @@
  * 第 10 章一章烧掉 126 万输入 token、跑了一个小时，而用户在这一小时里只看到
  * 一条 truncate 的进度文字，既不知道花了多少，也没有任何介入点。
  *
- * `MAX_GUARD_REWRITE = 2` 只限制 PostWriteGuard 触发的重写；
- * Reviewer→Reviser→再审的循环、以及用户在检查点主动选「重写」都不受它约束，
- * 所以调用数可以一路涨到 73。
+ * 旧实现里 `MAX_GUARD_REWRITE = 2` 只限制 PostWriteGuard 触发的重写；
+ * Reviewer→Reviser→再审的循环、以及用户在检查点主动选「重写」各自计数，
+ * 可以叠加到 73 次调用。现在三类会改变正文的质量修订共用总额度，
+ * 成本闸门仍单独负责调用数、输入 token 和墙钟时间。
  *
  * ## 设计取舍：推检查点，不硬停
  *
@@ -80,6 +81,38 @@ export type ChapterBudgetCategory =
   | 'guardWriterRewrites'
   | 'reviserRuns'
   | 'reviewerRuns'
+
+/**
+ * 同一章所有“内容质量修订”共用的总额度。
+ *
+ * Reviewer 只是检查，不消耗这项额度；网络/Provider 瞬时失败由 runAgent
+ * 内部重试，也不会经过这些分类计数。三类真正改变正文的操作共用一个上限，
+ * 避免 Guard、Reviser、整章重写各自达到上限后继续叠加。
+ */
+export const DEFAULT_MAX_QUALITY_REVISIONS = 3
+
+export type QualityRevisionCategory =
+  | 'fullChapterRewrites'
+  | 'guardWriterRewrites'
+  | 'reviserRuns'
+
+export function getQualityRevisionCount(usage: ChapterBudgetUsage): number {
+  return usage.fullChapterRewrites + usage.guardWriterRewrites + usage.reviserRuns
+}
+
+export function getQualityRevisionRemaining(
+  usage: ChapterBudgetUsage,
+  maxQualityRevisions: number = DEFAULT_MAX_QUALITY_REVISIONS,
+): number {
+  return Math.max(0, maxQualityRevisions - getQualityRevisionCount(usage))
+}
+
+export function qualityRevisionAvailable(
+  usage: ChapterBudgetUsage,
+  maxQualityRevisions: number = DEFAULT_MAX_QUALITY_REVISIONS,
+): boolean {
+  return getQualityRevisionRemaining(usage, maxQualityRevisions) > 0
+}
 
 export interface ChapterBudgetCategorySnapshot {
   fullChapterRewrites: number

@@ -218,7 +218,8 @@ describe('novel_ask_story policy', () => {
       agentCallLogger: { record: (entry: Record<string, unknown>) => universalLogs.push(entry) },
       createAgUiSession: vi.fn(async () => ({
         sessionId: 'session-1',
-        session: { sessionId: 'session-1', subscribe: () => () => {}, prompt: async () => 'result' },
+        // Writer 输出现在严格遵守中文正文协议；其它 Agent 仍只关心调用审计字段。
+        session: { sessionId: 'session-1', subscribe: () => () => {}, prompt: async () => '这是用于策略审计的中文正文。' },
         streamEmitter: { finishTextMessage: vi.fn() },
         messageId: 'message-1',
         dispose: vi.fn(),

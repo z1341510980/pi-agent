@@ -2647,5 +2647,25 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
     // 保存已完成场次正文及其有效预算/重试次数，续跑从下一个未完成场次继续。
     id: '123_add_workflow_writer_scenes',
     sql: `ALTER TABLE novel_workflow_runs ADD COLUMN writer_scenes TEXT;`
+  },
+  {
+    // 124: 章节工作流事件溯源：create-flow 脱离 HTTP 生命周期。
+    //
+    // 与 novel_discussion_events（121）同构：append-only，seq 在 run 内单调，
+    // 前端以 seq 为游标做 tail 重连。表结构完全一致，仅领域不同，
+    // 因此两边共用 RunEventStore 实现。
+    id: '124_create_workflow_events',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_workflow_events (
+        run_id     TEXT NOT NULL,
+        seq        INTEGER NOT NULL,
+        type       TEXT NOT NULL,
+        payload    TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (run_id, seq)
+      );
+      CREATE INDEX IF NOT EXISTS idx_novel_workflow_events_run
+        ON novel_workflow_events(run_id, seq);
+    `
   }
 ]

@@ -92,6 +92,7 @@ const flow = vi.hoisted(() => ({
   reRevise: vi.fn(),
   keepDraft: vi.fn(),
   takeArrangedCharacterFunctions: vi.fn(),
+  peekArrangedCharacterFunctions: vi.fn(),
 }))
 
 vi.mock('@/hooks/use-novel-creation-flow', () => ({
@@ -273,7 +274,12 @@ function resetStores() {
     rightPanelView: 'conversation',
     focusMode: false,
   })
-  useNovelUiStore.setState({ playheadChapter: 1, creationMode: null })
+  useNovelUiStore.setState({
+    playheadChapter: 1,
+    creationMode: null,
+    selectedAgentModel: null,
+    projectModelSelections: {},
+  })
 }
 
 function renderWorkspace() {
@@ -285,6 +291,7 @@ function renderWorkspace() {
   )
   return {
     view,
+    queryClient: client,
     rerender: () => {
       view.rerender(
         <QueryClientProvider client={client}>
@@ -307,6 +314,7 @@ beforeEach(() => {
   resetStores()
   flow.phase = 'idle'
   flow.isRunning = false
+  flow.agentOutputs = []
 })
 
 afterEach(() => {
@@ -334,6 +342,7 @@ describe('ensureChapterExists（建章辅助，模块级直测）', () => {
     })
     expect(upsertChapter).toHaveBeenCalledWith(makeChapter(5))
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['novel-project-data', PROJECT.id] })
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['novel', 'matrix-aggregation', PROJECT.id] })
   })
 
   it('建章失败（网络错误/后端冲突）：返回 false 且不写本地 store', async () => {
@@ -353,6 +362,17 @@ describe('ensureChapterExists（建章辅助，模块级直测）', () => {
 // ── /写 N、/重写 N 命令的 workspace 分发 ──
 
 describe('NovelWorkspace 输入框命令启动（真实面板输入 → workspace 分发）', () => {
+  it('Agent 数据变更时同时刷新矩阵聚合缓存', async () => {
+    const { queryClient, rerender } = renderWorkspace()
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
+    flow.agentOutputs = [{ messageId: 'memory-output', dataChanged: true }]
+    rerender()
+
+    await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['novel', 'matrix-aggregation', PROJECT.id],
+    }))
+  })
+
   it('调用诊断使用单一入口打开，并可在轨迹、缓存页签间切换', async () => {
     renderWorkspace()
 
@@ -395,6 +415,23 @@ describe('NovelWorkspace 输入框命令启动（真实面板输入 → workspac
     // 成功 toast 在建章成功后弹出（修复 4：不先弹「已启动」）
     expect(toasts.toastSuccess).toHaveBeenCalledWith('已启动第 5 章创作', expect.any(String))
     expect(toasts.toastError).not.toHaveBeenCalled()
+  })
+
+  it('启动工作流时传入当前项目统一模型的思考强度', async () => {
+    useNovelDataStore.setState({ chapters: [makeChapter(5)] })
+    const projectModel = { provider: 'openai', modelId: 'gpt-5', thinkingLevel: 'high' as const }
+    useNovelUiStore.getState().setProjectModelSelection(PROJECT.id, projectModel)
+
+    renderWorkspace()
+    submitCommand('/写 5')
+
+    await waitFor(() => {
+      expect(flow.startCreation).toHaveBeenCalledWith(
+        PROJECT.id,
+        5,
+        expect.objectContaining({ modelId: projectModel }),
+      )
+    })
   })
 
   it('/重写 N 章节不存在：toastError 提示且不建章、不启动', () => {
@@ -443,5 +480,70 @@ describe('NovelWorkspace 输入框命令启动（真实面板输入 → workspac
     expect(api.createChapter).not.toHaveBeenCalled()
     expect(flow.startCreation).not.toHaveBeenCalled()
     expect(toasts.toastSuccess).not.toHaveBeenCalled()
+  })
+
+  it('读取矩阵实体期间不提前消费角色功能位，第二条命令被同一把启动锁拦截', async () => {
+    let resolveEntities!: (value: {
+      projectId: string
+      chapterNumber: number
+      source: string
+      arrangedEntities: typeof EMPTY_ARRANGED
+      alternativeSource: string
+      alternative: typeof EMPTY_ARRANGED
+      divergence: Record<string, unknown>
+    }) => void
+    api.getChapterArrangedEntities.mockReturnValueOnce(new Promise((resolve) => {
+      resolveEntities = resolve
+    }))
+    flow.peekArrangedCharacterFunctions.mockReturnValue([
+      { characterId: 'char-1', function: '推动冲突' },
+    ])
+    useNovelDataStore.setState({ chapters: [makeChapter(5)] })
+
+    renderWorkspace()
+    submitCommand('/写 5')
+    submitCommand('/写 6')
+
+    expect(api.getChapterArrangedEntities).toHaveBeenCalledTimes(1)
+    expect(flow.peekArrangedCharacterFunctions).not.toHaveBeenCalled()
+
+    resolveEntities({
+      projectId: PROJECT.id,
+      chapterNumber: 5,
+      source: 'entity-fields',
+      arrangedEntities: EMPTY_ARRANGED,
+      alternativeSource: 'ledger',
+      alternative: EMPTY_ARRANGED,
+      divergence: {},
+    })
+
+    await waitFor(() => {
+      expect(flow.peekArrangedCharacterFunctions).toHaveBeenCalledWith(5)
+      expect(flow.startCreation).toHaveBeenCalledTimes(1)
+    })
+    expect(flow.startCreation).toHaveBeenCalledWith(
+      PROJECT.id,
+      5,
+      expect.objectContaining({
+        arrangedEntities: expect.objectContaining({
+          characterFunctions: [{ characterId: 'char-1', function: '推动冲突' }],
+        }),
+      }),
+    )
+  })
+
+  it('启动失败后立即释放统一启动锁，下一次命令可以重试', async () => {
+    useNovelDataStore.setState({ chapters: [makeChapter(5)] })
+    flow.startCreation
+      .mockRejectedValueOnce(new Error('start failed'))
+      .mockResolvedValue(undefined)
+
+    renderWorkspace()
+    submitCommand('/写 5')
+
+    await waitFor(() => expect(flow.startCreation).toHaveBeenCalledTimes(1))
+    submitCommand('/写 5')
+
+    await waitFor(() => expect(flow.startCreation).toHaveBeenCalledTimes(2))
   })
 })

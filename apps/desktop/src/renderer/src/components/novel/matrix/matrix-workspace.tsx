@@ -32,6 +32,7 @@ import {
   updateForeshadow,
   updateItem,
   updateLocation,
+  updateNarrative,
   updateMarker,
   type ForeshadowBeatType,
   type NovelForeshadow,
@@ -206,8 +207,8 @@ export function MatrixWorkspace({
   // 既供工具栏「补全历史」使用，也用于把这些实体作为「未上线」行补进矩阵，
   // 否则它们在矩阵里完全不可见（buildGroups 会跳过无跨度的实体）。
   const pool = useMemo(
-    () => buildPool({ characters, conflicts, clues, foreshadows, factions, locations, items, characterHistory }),
-    [characters, conflicts, clues, foreshadows, factions, locations, items, characterHistory],
+    () => buildPool({ characters, conflicts, clues, foreshadows, factions, locations, items, narratives, characterHistory }),
+    [characters, conflicts, clues, foreshadows, factions, locations, items, narratives, characterHistory],
   )
 
   const matrixData = useMemo(
@@ -495,6 +496,11 @@ export function MatrixWorkspace({
         if (!it) return false
         return (it.chapterSpans ?? []).some(([s, e]) => chapter >= s && chapter <= e)
       }
+      case 'narrative': {
+        const narrative = narratives.find((x) => x.id === entityId)
+        if (!narrative) return false
+        return narrative.chapterSpans.some(([s, e]) => chapter >= s && chapter <= e)
+      }
       case 'location': {
         const l = locations.find((x) => x.id === entityId)
         return !!l?.appearChapters?.includes(chapter)
@@ -504,19 +510,22 @@ export function MatrixWorkspace({
       default:
         return false
     }
-  }, [characterHistory, conflicts, clues, factions, foreshadows, locations])
+  }, [characterHistory, conflicts, clues, factions, foreshadows, locations, narratives])
 
   /** 该单元格是否支持「删除出场」操作（端点型实体中间格不可删） */
   const isCellRemovable = useCallback((entityId: string, kind: MatrixEntityKind, chapter: number): boolean => {
     switch (kind) {
       case 'conflict':
       case 'faction':
-      case 'item': {
+      case 'item':
+      case 'narrative': {
         const e = kind === 'conflict'
           ? conflicts.find((x) => x.id === entityId)
           : kind === 'faction'
             ? factions.find((x) => x.id === entityId)
-            : useNovelDataStore.getState().items.find((x) => x.id === entityId)
+            : kind === 'item'
+              ? useNovelDataStore.getState().items.find((x) => x.id === entityId)
+              : narratives.find((x) => x.id === entityId)
         if (!e) return false
         // 用 findSpanAt 定位 chapter 所在段，仅段首/段尾可删（中间格不可挖洞）
         const span = findSpanAt(e.chapterSpans ?? [], chapter)
@@ -533,7 +542,7 @@ export function MatrixWorkspace({
       default:
         return true
     }
-  }, [conflicts, factions, foreshadows])
+  }, [conflicts, factions, foreshadows, narratives])
 
   const handleContextMenuCell = useCallback((entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => {
     const editable = isCellEditable(entityType)
@@ -632,6 +641,15 @@ export function MatrixWorkspace({
           invalidateNovelData()
           break
         }
+        case 'narrative': {
+          const narrative = useNovelDataStore.getState().narratives.find((item) => item.id === entityId)
+          if (!narrative || findSpanAt(narrative.chapterSpans, chapter) != null) break
+          const chapterSpans = mergeSpanIntoList(narrative.chapterSpans, [chapter, chapter])
+          const updated = await updateNarrative(entityId, { chapterSpans })
+          useNovelDataStore.getState().upsertNarrative(updated)
+          invalidateNovelData()
+          break
+        }
         case 'foreshadow': {
           const f = foreshadows.find((x) => x.id === entityId)
           if (!f) {
@@ -661,6 +679,7 @@ export function MatrixWorkspace({
       }
     } catch (err) {
       console.error('[MatrixWorkspace] 标记出场失败:', err)
+      toastError('标记出场失败', err instanceof Error ? err.message : String(err))
     }
   }, [currentProjectId, characterHistory, conflicts, clues, factions, foreshadows, locations, setCharacterHistory, queryClient])
 
@@ -796,6 +815,26 @@ export function MatrixWorkspace({
           invalidateNovelData()
           break
         }
+        case 'narrative': {
+          const narrative = narratives.find((item) => item.id === entityId)
+          if (!narrative) return
+          const span = findSpanAt(narrative.chapterSpans, chapter)
+          if (span == null) return
+          let chapterSpans: Array<[number, number]>
+          if (span[0] === span[1]) {
+            chapterSpans = narrative.chapterSpans.filter((item) => item !== span)
+          } else if (chapter === span[0]) {
+            chapterSpans = narrative.chapterSpans.map((item) => item === span ? [span[0] + 1, span[1]] as [number, number] : item)
+          } else if (chapter === span[1]) {
+            chapterSpans = narrative.chapterSpans.map((item) => item === span ? [span[0], span[1] - 1] as [number, number] : item)
+          } else {
+            return
+          }
+          const updated = await updateNarrative(entityId, { chapterSpans })
+          useNovelDataStore.getState().upsertNarrative(updated)
+          invalidateNovelData()
+          break
+        }
         case 'world_element':
           break
       }
@@ -803,7 +842,7 @@ export function MatrixWorkspace({
       console.error('[MatrixWorkspace] 删除出场失败:', err)
       toastError('删除出场失败', err instanceof Error ? err.message : String(err))
     }
-  }, [currentProjectId, characterHistory, conflicts, clues, factions, foreshadows, locations, setCharacterHistory, queryClient])
+  }, [currentProjectId, characterHistory, conflicts, clues, factions, foreshadows, locations, narratives, setCharacterHistory, queryClient])
 
   const handleMarkForeshadowBeat = useCallback(async (
     entityId: string,
@@ -910,6 +949,19 @@ export function MatrixWorkspace({
           invalidateNovelData()
           break
         }
+        case 'narrative': {
+          const narrative = useNovelDataStore.getState().narratives.find((x) => x.id === entityId)
+          if (!narrative) return
+          const span = narrative.chapterSpans[spanIndex]
+          if (!span) return
+          const nextStart = end === 'start' ? Math.min(chapter, span[1]) : span[0]
+          const nextEnd = end === 'end' ? Math.max(chapter, span[0]) : span[1]
+          const chapterSpans = narrative.chapterSpans.map((sp, i) => i === spanIndex ? [nextStart, nextEnd] as [number, number] : sp)
+          const updated = await updateNarrative(entityId, { chapterSpans })
+          useNovelDataStore.getState().upsertNarrative(updated)
+          invalidateNovelData()
+          break
+        }
         case 'foreshadow': {
           // 伏笔端点拖拽移动完整 beat，保留该节点的 note。
           const f = useNovelDataStore.getState().foreshadows.find((x) => x.id === entityId)
@@ -941,7 +993,7 @@ export function MatrixWorkspace({
   // ── 拖动整段色带：保持跨度时长平移；与其他段相交时自动合并 ──
   const handleMoveSpan = useCallback(async (
     entityId: string,
-    entityType: 'conflict' | 'faction' | 'item',
+    entityType: 'conflict' | 'faction' | 'item' | 'narrative',
     spanIndex: number,
     startChapter: number,
     endChapter: number,
@@ -962,13 +1014,20 @@ export function MatrixWorkspace({
         const chapterSpans = mergeSpanIntoList(otherSpans, [startChapter, endChapter])
         const updated = await updateFaction(entityId, { chapterSpans })
         useNovelDataStore.getState().upsertFaction(updated)
-      } else {
+      } else if (entityType === 'item') {
         const entity = useNovelDataStore.getState().items.find((item) => item.id === entityId)
         if (!entity?.chapterSpans?.[spanIndex]) return
         const otherSpans = entity.chapterSpans.filter((_, index) => index !== spanIndex)
         const chapterSpans = mergeSpanIntoList(otherSpans, [startChapter, endChapter])
         const updated = await updateItem(entityId, { chapterSpans })
         useNovelDataStore.getState().upsertItem(updated)
+      } else {
+        const entity = useNovelDataStore.getState().narratives.find((item) => item.id === entityId)
+        if (!entity?.chapterSpans?.[spanIndex]) return
+        const otherSpans = entity.chapterSpans.filter((_, index) => index !== spanIndex)
+        const chapterSpans = mergeSpanIntoList(otherSpans, [startChapter, endChapter])
+        const updated = await updateNarrative(entityId, { chapterSpans })
+        useNovelDataStore.getState().upsertNarrative(updated)
       }
       invalidateNovelData()
     } catch (err) {
@@ -1149,6 +1208,13 @@ export function MatrixWorkspace({
           const newSpans = mergeSpanIntoList(existing, [firstChapter, lastChapter])
           const updated = await updateItem(entity.entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertItem(updated)
+          break
+        }
+        case 'narrative': {
+          const existing = entity.chapterSpans ?? []
+          const newSpans = mergeSpanIntoList(existing, [firstChapter, lastChapter])
+          const updated = await updateNarrative(entity.entityId, { chapterSpans: newSpans })
+          useNovelDataStore.getState().upsertNarrative(updated)
           break
         }
         case 'foreshadow': {

@@ -21,7 +21,7 @@ import {
   tensionToLabel,
 } from '../matrix-logic'
 import { buildGroups } from '../matrix-model'
-import type { NovelChapter, NovelCharacter, NovelConflict, NovelClue, NovelCharacterHistory, NovelForeshadow, NovelFaction, NovelLocation, NovelWorldElement } from '@/api/novel-client'
+import type { NovelChapter, NovelCharacter, NovelConflict, NovelClue, NovelCharacterHistory, NovelForeshadow, NovelFaction, NovelLocation, NovelWorldElement, NovelNarrative } from '@/api/novel-client'
 
 // ── 测试夹具 ──
 
@@ -104,6 +104,13 @@ function makeWorldElement(id: string): NovelWorldElement {
   return {
     id, projectId: 'p', category: 'history' as never, name: id, description: '', parentId: null,
     attributes: {}, createdAt: 0, updatedAt: 0,
+  }
+}
+
+function makeNarrative(id: string, chapterSpans: Array<[number, number]>): NovelNarrative {
+  return {
+    id, projectId: 'p', description: id, type: 'advance', chapterSpans,
+    status: 'active', createdAt: 0, updatedAt: 0,
   }
 }
 
@@ -490,6 +497,15 @@ describe('buildPool', () => {
     })
     expect(pool.poolLocations.map((l) => l.id)).toEqual(['l1'])
   })
+
+  it('returns narratives without chapter spans', () => {
+    const pool = buildPool({
+      characters: [], conflicts: [], clues: [], foreshadows: [], factions: [], locations: [], items: [],
+      narratives: [makeNarrative('n1', []), makeNarrative('n2', [[2, 3]])],
+      characterHistory: [],
+    })
+    expect(pool.poolNarratives.map((n) => n.id)).toEqual(['n1'])
+  })
 })
 
 // ── appendPendingEntities ──
@@ -499,7 +515,7 @@ describe('buildPool', () => {
 // 这里覆盖它们被补回各自分组、且不破坏既有行的行为。
 
 describe('appendPendingEntities', () => {
-  function buildWith(characters: NovelCharacter[], characterHistory: NovelCharacterHistory[]) {
+  function buildWith(characters: NovelCharacter[], characterHistory: NovelCharacterHistory[]): ReturnType<typeof appendPendingEntities> {
     const built = buildGroups({
       chapters: [], characters, conflicts: [], clues: [], foreshadows: [], factions: [],
       locations: [], worldElements: [], items: [], characterHistory,
@@ -536,6 +552,24 @@ describe('appendPendingEntities', () => {
     expect(pending.pending).toBe(true)
     expect(pending.characterSpans).toBeUndefined()
     expect(computeCellSymbol(pending, 1)).toEqual({ type: 'empty' })
+  })
+
+  it('未放置的剧情实体补进剧情分组', () => {
+    const narratives = [makeNarrative('n1', [])]
+    const built = buildGroups({
+      chapters: [], characters: [], conflicts: [], clues: [], foreshadows: [], factions: [],
+      locations: [], worldElements: [], items: [], narratives, characterHistory: [],
+    })
+    const pool = buildPool({
+      characters: [], conflicts: [], clues: [], foreshadows: [], factions: [], locations: [], items: [],
+      narratives, characterHistory: [],
+    })
+    const narrative = appendPendingEntities(built.groups, pool)
+      .find((group) => group.id === 'narrative')?.entities[0]
+
+    expect(narrative?.entityId).toBe('n1')
+    expect(narrative?.pending).toBe(true)
+    expect(computeCellSymbol(narrative!, 1)).toEqual({ type: 'empty' })
   })
 
   it('kind 保持原样，五处平行 switch 无需改动', () => {

@@ -21,6 +21,7 @@ import type {
   NovelLocation,
   NovelItem,
   NovelCharacterHistory,
+  NovelNarrative,
   ForeshadowBeatType,
 } from '@/api/novel-client'
 
@@ -100,10 +101,10 @@ export interface EndpointDragData {
   spanIndex: number
 }
 
-/** 拖动整段跨度（conflict/faction/item 保持时长平移） */
+/** 拖动整段跨度（conflict/faction/item/narrative 保持时长平移） */
 export interface SpanDragData {
   source: 'span'
-  entityType: 'conflict' | 'faction' | 'item'
+  entityType: 'conflict' | 'faction' | 'item' | 'narrative'
   entityId: string
   spanIndex: number
   startChapter: number
@@ -410,6 +411,7 @@ export function computeForeshadowLine(
   recover: number | null,
   _maxChapter: number,
 ): { start: number; end: number; recovered: boolean } | null {
+  void _maxChapter
   if (first == null) return null
   if (recover == null) {
     return { start: first, end: first, recovered: false }
@@ -509,6 +511,7 @@ export interface MatrixPool {
   poolFactions: NovelFaction[]
   poolLocations: NovelLocation[]
   poolItems: NovelItem[]
+  poolNarratives: NovelNarrative[]
 }
 
 /**
@@ -522,9 +525,10 @@ export function buildPool(params: {
   factions: NovelFaction[]
   locations: NovelLocation[]
   items: NovelItem[]
+  narratives?: NovelNarrative[]
   characterHistory: NovelCharacterHistory[]
 }): MatrixPool {
-  const { characters, conflicts, clues, foreshadows, factions, locations, items, characterHistory } = params
+  const { characters, conflicts, clues, foreshadows, factions, locations, items, narratives = [], characterHistory } = params
   const poolCharacters: NovelCharacter[] = []
   for (const c of characters) {
     const history = characterHistory.filter((h) => h.characterId === c.id)
@@ -543,6 +547,7 @@ export function buildPool(params: {
     poolFactions: factions.filter((f) => f.chapterSpans.length === 0),
     poolLocations: locations.filter((l) => !l.appearChapters || l.appearChapters.length === 0),
     poolItems: items.filter((it) => !it.chapterSpans || it.chapterSpans.length === 0),
+    poolNarratives: narratives.filter((n) => !n.chapterSpans || n.chapterSpans.length === 0),
   }
 }
 
@@ -573,6 +578,7 @@ export function appendPendingEntities(groups: MatrixGroup[], pool: MatrixPool): 
     faction: pool.poolFactions.map((f) => ({ id: f.id, name: f.name })),
     location: pool.poolLocations.map((l) => ({ id: l.id, name: l.name })),
     item: pool.poolItems.map((it) => ({ id: it.id, name: it.name })),
+    narrative: pool.poolNarratives.map((n) => ({ id: n.id, name: n.description })),
   }
 
   return groups.map((group) => {

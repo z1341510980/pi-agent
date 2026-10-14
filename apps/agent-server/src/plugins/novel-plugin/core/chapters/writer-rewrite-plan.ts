@@ -200,7 +200,7 @@ export function buildWriterRewritePlan(params: BuildRewritePlanParams): WriterRe
         `上一稿无效：${reason}${details ? `（${details}）` : ''}。`,
         '上一稿不作为参考，请从头写。',
         '',
-        '立即输出完整章节正文，不要输出核对过程、计划或重写说明。',
+        '请调用 novel_submit_prose 工具提交完整章节正文（content 只放正文），不要输出核对过程、计划或重写说明。',
       ].join('\n'),
     }
   }
@@ -222,7 +222,7 @@ export function buildWriterRewritePlan(params: BuildRewritePlanParams): WriterRe
       '',
       '## 输出要求',
       '',
-      '输出修改后的**完整**章节正文（含未改动的段落），不要输出差异说明、修改清单或核对过程。',
+      '请调用 novel_submit_prose 工具提交修改后的**完整**章节正文（含未改动的段落；content 只放正文），不要输出差异说明、修改清单或核对过程。',
     ].join('\n'),
   }
 }
@@ -253,7 +253,7 @@ export function buildSceneRewritePlan(params: BuildSceneRewritePlanParams): Scen
       '',
       text,
       '',
-      '输出修改后的完整本场正文，不要输出说明、差异或核对过程。',
+      '请调用 novel_submit_prose 工具提交修改后的完整本场正文（content 只放正文），不要输出说明、差异或核对过程。',
     ].join('\n'),
   }
 }

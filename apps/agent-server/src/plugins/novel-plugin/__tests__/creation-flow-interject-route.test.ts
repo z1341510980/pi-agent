@@ -107,6 +107,13 @@ function interjectRequest(flowId: string, body: unknown = { content: '打斗戏�
   return createRequest({ params: { projectId: PROJECT_ID, flowId }, body })
 }
 
+/** 后台 run 化之后，插话状态回显走事件流（type='agui'，payload 即原 AG-UI 事件）。 */
+function collectWorkflowUserMessageEvents(store: { events: Array<{ type: string; payload: Record<string, unknown> }> }) {
+  return store.events
+    .filter(event => event.type === 'agui' && event.payload?.name === 'novel:user-message')
+    .map(event => event.payload.value as Record<string, unknown>)
+}
+
 /** 复刻任务 1 钉死的 orchestrator 插话契约（enqueue 追加 / drain 定向取走并触发 hooks / 启动清陈旧）。 */
 function createMockOrchestrator() {
   const hooks = createInterjectDispatchHooks()
@@ -146,7 +153,26 @@ function createServices(mockOrchestrator: ReturnType<typeof createMockOrchestrat
     },
     orchestrator: mockOrchestrator as any,
     chapterChatStore: { add: chapterChatAdd ?? vi.fn() },
+    workflowEventStore: createWorkflowEventStore(),
   } as any
+}
+
+/**
+ * create-flow 已改为后台 run：进度（含插话状态回显）不再写 SSE，
+ * 而是镜像进 novel_workflow_events。测试用这个替身同时完成"捕获 + 读取"。
+ */
+function createWorkflowEventStore() {
+  const events: Array<{ runId: string; type: string; payload: Record<string, unknown> }> = []
+  return {
+    events,
+    append: vi.fn((runId: string, type: string, payload: Record<string, unknown> = {}) => {
+      events.push({ runId, type, payload })
+    }),
+    list: vi.fn(() => []),
+    lastSeq: vi.fn(() => 0),
+    findActiveRun: vi.fn(),
+    reconcileOrphanRuns: vi.fn(() => 0),
+  }
 }
 
 describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => {
@@ -472,7 +498,7 @@ describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => 
   })
 })
 
-describe('create-flow 路由级插话接线（SSE write 捕获）', () => {
+describe('create-flow 路由级插话接线（后台 run + 事件流）', () => {
   let seededTask: { lockKey: string; task: ActiveNovelChapterTask } | undefined
   let seededFlowKey: string | undefined
 
@@ -485,7 +511,7 @@ describe('create-flow 路由级插话接线（SSE write 捕获）', () => {
     seededFlowKey = undefined
   })
 
-  it('create-flow 启动即登记 publisher：插话事件落到 SSE write；flow 终态注销后再插话 409', async () => {
+  it('create-flow 启动即登记 publisher：插话状态落事件流；flow 终态注销后再插话 409', async () => {
     const mockOrchestrator = createMockOrchestrator()
     let resolveFlow!: (value: unknown) => void
     const createChapterWithFlow = vi.fn(() => new Promise(resolve => { resolveFlow = resolve }))
@@ -497,9 +523,9 @@ describe('create-flow 路由级插话接线（SSE write 捕获）', () => {
     const createFlowRoute = routes.find(r => r.path === CREATE_FLOW_PATH)! as { handler: (request: any, reply: any) => Promise<any> }
     const interjectRoute = routes.find(r => r.path === INTERJECT_PATH)! as { handler: (request: any, reply: any) => Promise<any> }
 
-    // 启动 create-flow（SSE）：orchestrator 挂起模拟运行中
-    const sseReply = createSseReply()
-    const flowPromise = createFlowRoute.handler({
+    // 启动 create-flow：orchestrator 挂起模拟后台运行中
+    const acceptedReply = createSseReply()
+    await createFlowRoute.handler({
       params: { projectId: PROJECT_ID, chapterNumber: String(CHAPTER) },
       body: {},
       headers: {},
@@ -507,10 +533,16 @@ describe('create-flow 路由级插话接线（SSE write 捕获）', () => {
       traceId: 'trace-flow',
       raw: { socket: { setNoDelay: vi.fn() } },
       log: { error: vi.fn(), warn: vi.fn() },
-    } as any, sseReply as any)
-    // handler 同步段已执行到 createChapterWithFlow（注册表登记先于调用）
+    } as any, acceptedReply as any)
+
+    // T8：受理即 202 + runId，执行转后台（不再占用本请求）
+    expect(acceptedReply.statusCode).toBe(202)
+    expect(acceptedReply.payload).toMatchObject({
+      ok: true,
+      runId: expect.any(String),
+      eventsPath: expect.stringContaining('/workflow-runs/'),
+    })
     expect(createChapterWithFlow).toHaveBeenCalledTimes(1)
-    expect(sseReply.raw.write).toHaveBeenCalled()
     const activeTask = activeNovelChapterTasks.get(LOCK_KEY)
     expect(activeTask?.kind).toBe('workflow')
     expect(activeTask?.flowId).toEqual(expect.any(String))
@@ -518,18 +550,14 @@ describe('create-flow 路由级插话接线（SSE write 捕获）', () => {
     // 启动路径接线陈旧插话清理：清上一 flow 竞态窗口残留（本例无残留 → 空）
     expect(mockOrchestrator.clearStaleInterjectMessages).toHaveBeenCalledWith(seededFlowKey)
 
-    // 运行中插话：201，且 queued 事件经登记的 publisher 落到本 SSE 连接的 write
+    // 运行中插话：201，且 queued 事件经登记的 publisher 落到本 run 的事件流
     const reply = createReply()
     await interjectRoute.handler(createRequest({ params: { projectId: PROJECT_ID, flowId: activeTask!.flowId }, body: { content: '中途反馈' } }), reply)
     expect(reply.statusCode).toBe(201)
 
-    const written = sseReply.raw.write.mock.calls.map(([data]) => String(data))
-    const userMessageEvents = written
-      .filter(line => line.startsWith('data: '))
-      .map(line => JSON.parse(line.slice('data: '.length)))
-      .filter(event => event?.name === 'novel:user-message')
+    const userMessageEvents = collectWorkflowUserMessageEvents(services.workflowEventStore)
     expect(userMessageEvents).toHaveLength(1)
-    expect(userMessageEvents[0].value).toMatchObject({
+    expect(userMessageEvents[0]).toMatchObject({
       flowId: activeTask!.flowId,
       messageId: (reply.payload as { data: { messageId: string } }).data.messageId,
       content: '中途反馈',
@@ -539,8 +567,7 @@ describe('create-flow 路由级插话接线（SSE write 捕获）', () => {
 
     // flow 到达终态：注册表注销（finishNovelChapterTask + unregisterInterjectFlow）
     resolveFlow({ status: 'completed', stateChanges: [] })
-    await flowPromise
-    expect(sseReply.raw.end).toHaveBeenCalled()
+    await vi.waitFor(() => expect(activeNovelChapterTasks.has(LOCK_KEY)).toBe(false))
 
     // 终态后再插话 → 409（无运行中 workflow）
     const afterReply = createReply()
@@ -570,6 +597,7 @@ describe('群聊插话端点（kind=discussion）', () => {
       orchestrator: createMockOrchestrator() as any,
       chapterChatStore: { add: chapterChatAdd },
       discussionEventStore: { append: vi.fn(), list: vi.fn(() => []), lastSeq: vi.fn(() => 0) },
+      workflowEventStore: createWorkflowEventStore(),
     } as any
     route = createCreationFlowRoutes(services).find(r => r.path === INTERJECT_PATH)! as typeof route
   })

@@ -271,7 +271,10 @@ describe('ChapterContentEditor', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
     await waitFor(() =>
-      expect(api.updateChapter).toHaveBeenCalledWith('chapter-1', { content: '用户修改后的正文' })
+      expect(api.updateChapter).toHaveBeenCalledWith('chapter-1', {
+        content: '用户修改后的正文',
+        expectedUpdatedAt: 101
+      })
     )
     await waitFor(() => expect(screen.getByText('已保存')).not.toBeNull())
     expect(uiStore.clearUnsavedChapterDraft).toHaveBeenCalledWith('chapter-1')

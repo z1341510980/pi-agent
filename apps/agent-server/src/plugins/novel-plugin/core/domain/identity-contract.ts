@@ -12,7 +12,10 @@ import type { NovelAgentType } from './novel-agents.js'
 /** 每 Agent 身份必须包含的协议标记（模板回归防漂移锚点） */
 export const AGENT_IDENTITY_MARKERS: Readonly<Record<NovelAgentType, readonly string[]>> = {
   director: ['novel_submit_narrative_task', '绝不创作章节正文'],
-  writer: ['只输出完整章节正文'],
+  // 2026-10：Writer 的正文交付改走 novel_submit_prose 工具（tool_calls 通道，
+  // 与 content 物理隔离）。锚点从"只输出完整章节正文"换成工具名 + 参数边界，
+  // 防止模板改版时退回"直接在对话里输出正文"——那条路会被网关的 inline thinking 污染。
+  writer: ['novel_submit_prose', 'content 参数只放完整章节正文'],
   reviewer: ['不创作正文', '检查'],
   reviser: ['局部修订'],
   memory: ['绝不创作正文', '状态'],

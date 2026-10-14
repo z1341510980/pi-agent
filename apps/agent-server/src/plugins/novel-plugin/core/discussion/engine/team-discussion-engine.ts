@@ -27,6 +27,7 @@ import type { PluginSessionOptions } from '../../../../../core/plugin/plugin-typ
 import type { AgUiEventSink } from '@repo/protocol/events'
 import { AgentChannel } from '../../../../../core/agent/agent-channel.js'
 import { getAssistantTerminalError } from '../../../../../core/plugin/plugin-session-outcome.js'
+import { createNovelSubmitProseTool, type ProseDraftHolder } from '../../tools/submit.js'
 import { runToolPayloadStep, throwIfAborted } from './step-executor.js'
 import {
   ACTING_POLICY,
@@ -404,6 +405,7 @@ export class TeamDiscussionEngine {
   private async raiseCheckpoint(
     options: DiscussionOptions,
     checkpoint: Parameters<DiscussionOptions['onCheckpoint']>[0],
+    history?: DiscussionMessage[],
   ): Promise<'approve' | 'reject' | 'revise' | string> {
     this.emitEvent(options, 'checkpoint_raised', {
       phase: checkpoint.phase,
@@ -411,6 +413,19 @@ export class TeamDiscussionEngine {
       question: checkpoint.question,
     })
     const reply = await options.onCheckpoint(checkpoint)
+    const feedback = options.checkpointFeedback?.splice(0) ?? []
+    if (history && feedback.length > 0) {
+      for (const content of feedback) {
+        history.push({
+          id: `user-checkpoint-feedback-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          fromId: 'user',
+          fromName: '用户',
+          content: `【检查点用户意见】\n${content}`,
+          timestamp: Date.now(),
+          type: 'user',
+        })
+      }
+    }
     this.emitEvent(options, 'checkpoint_resolved', { phase: checkpoint.phase, reply })
     return reply
   }
@@ -563,7 +578,7 @@ export class TeamDiscussionEngine {
             choices: ['重试导演规划', '中止群聊'],
           },
           options: ['approve', 'reject'],
-        })
+        }, history)
         history.push({
           id: `user-checkpoint-${Date.now()}`,
           fromId: 'user',
@@ -679,7 +694,7 @@ export class TeamDiscussionEngine {
       question,
       data: { message: question, choices: ['继续编织（Writer 独立成文）', '中止群聊'] },
       options: ['approve', 'reject'],
-    })
+    }, history)
     history.push({
       id: `user-weave-gate-${Date.now()}`,
       fromId: 'user',
@@ -1582,6 +1597,33 @@ export class TeamDiscussionEngine {
   }
 
   /**
+   * Writer 编织正文（2026-10 正文通道隔离）。
+   *
+   * 与 create-flow 的 Writer 同源问题：上游网关把 Gemini 的 thought 摘要拍平进
+   * `delta.content`，讨论模式此前**完全没有**清洗，脏文本会直接进正文与后续守卫。
+   * 这里把正文改由 `novel_submit_prose` 工具提交（`tool_calls` 通道，与 content
+   * 物理隔离），文本结果只作兜底——兜底行为与改造前逐字一致，不会更差。
+   */
+  private async invokeProseWriter(
+    writer: DiscussionMember,
+    prompt: string,
+    options: DiscussionOptions,
+    ctx: { phase: DiscussionPhase; sceneId?: number },
+  ): Promise<string> {
+    const draft: ProseDraftHolder = { submissions: 0 }
+    const text = await this.invokeMember(writer, prompt, [], options, {
+      ...ctx,
+      extraTools: [createNovelSubmitProseTool(draft)],
+    })
+    if (draft.content) return draft.content
+    this.context.logger.info(
+      { memberId: writer.id, submissions: draft.submissions, rejection: draft.lastRejection },
+      '群聊 Writer 未通过工具提交正文，回落文本兜底',
+    )
+    return text
+  }
+
+  /**
    * 调用成员发言（通过 createAgUiSession 工厂）
    */  private async invokeMember(
     member: DiscussionMember,
@@ -2001,7 +2043,7 @@ ${listed}
 
 字数硬约束不变。`
     try {
-      const rewritten = await this.invokeMember(writer, rewritePrompt, [], options, { phase: 'chapter_weaving' })
+      const rewritten = await this.invokeProseWriter(writer, rewritePrompt, options, { phase: 'chapter_weaving' })
       const guarded = await this.guardAndMaybeRewrite(
         rewritten, writer, rewritePrompt, options, goal.targetWords, goal.requiredMentions,
       )
@@ -2064,10 +2106,9 @@ ${listed}
     )
 
     const rewritePrompt = `${originalPrompt}\n\n---\n\n## 上一次输出问题（请避免）\n\n- ${guard.reason}：${guard.details ?? ''}\n\n请重新编织完整章节正文，确保本次输出完整、字数达标、无重复或拒绝内容。`
-    const rewritten = await this.invokeMember(
+    const rewritten = await this.invokeProseWriter(
       writer,
       rewritePrompt,
-      [],
       options,
       { phase: 'chapter_weaving' },
     )
@@ -2146,7 +2187,7 @@ ${listed}
         ? `正文必须控制在 ${Math.round(goal.targetWords * 0.80)}-${Math.round(goal.targetWords * 1.35)} 字，目标约 ${goal.targetWords} 字。生成后自行计数并删减或补足。`
         : ''
       const fallbackPrompt = `请基于群聊记录产出完整章节正文。${targetHint}`
-      const result = await this.invokeMember(writer, fallbackPrompt, [], options, { phase: 'chapter_weaving' })
+      const result = await this.invokeProseWriter(writer, fallbackPrompt, options, { phase: 'chapter_weaving' })
       // PostWriteGuard：模型退化/字数失控检测，命中则让 Writer 重写一次
       const guardedFallback = await this.guardAndMaybeRewrite(
         result, writer, fallbackPrompt, options, goal.targetWords, goal.requiredMentions,
@@ -2196,7 +2237,7 @@ ${writerContract ? `\n${writerContract}\n` : ''}
 7. 绝不使用长横线破折号
 8. **优先保证剧情推进和信息密度**：每个段落都应推进事件、暴露信息或改变角色状态；若剧情已在更短篇幅内完整表达，宁可缩短正文也不要用"他深吸一口气""她看向远方"等空转描写凑字数`
 
-    const result = await this.invokeMember(writer, prompt, [], options, { phase: 'chapter_weaving' })
+    const result = await this.invokeProseWriter(writer, prompt, options, { phase: 'chapter_weaving' })
     // PostWriteGuard：模型退化/字数失控检测，命中则让 Writer 重写一次
     const guarded = await this.guardAndMaybeRewrite(
       result, writer, prompt, options, goal.targetWords, goal.requiredMentions,
@@ -2297,7 +2338,7 @@ ${content}${proseQualityReport ? `\n\n---\n\n${proseQualityReport}` : ''}\n\n---
       question: '完整章节审稿已完成，请确认是否采用或修订。',
       options: ['approve', 'revise', 'reject'],
       context: report,
-    })
+    }, history)
     // review_completed = 审稿阶段定账（决策已知）。reject 的终态由 run_finished 承载。
     this.emitEvent(options, 'review_completed', { decision })
     if (decision === 'reject') return { status: 'cancelled', content, review: reviewOutcome ?? undefined }

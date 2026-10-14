@@ -15,6 +15,10 @@ import {
   recordChapterBudgetCategory,
   shouldPromptBudgetCheckpoint,
   DEFAULT_CHAPTER_BUDGET,
+  DEFAULT_MAX_QUALITY_REVISIONS,
+  getQualityRevisionCount,
+  getQualityRevisionRemaining,
+  qualityRevisionAvailable,
   tryRecordFullChapterRewrite,
   type ChapterBudgetUsage,
 } from '../core/chapters/chapter-budget.js'
@@ -202,6 +206,28 @@ describe('分类预算', () => {
       maxFullChapterRewrites: 1,
       fullChapterRewriteAvailable: false,
     })
+  })
+
+  it('Guard、Reviser、整章重写共享质量修订总额度', () => {
+    let usage = createChapterBudgetUsage(T0)
+    usage = recordChapterBudgetCategory(usage, 'guardWriterRewrites')
+    usage = recordChapterBudgetCategory(usage, 'reviserRuns')
+    expect(getQualityRevisionCount(usage)).toBe(2)
+    expect(getQualityRevisionRemaining(usage)).toBe(DEFAULT_MAX_QUALITY_REVISIONS - 2)
+    expect(qualityRevisionAvailable(usage)).toBe(true)
+
+    usage = recordChapterBudgetCategory(usage, 'fullChapterRewrites')
+    expect(getQualityRevisionCount(usage)).toBe(DEFAULT_MAX_QUALITY_REVISIONS)
+    expect(getQualityRevisionRemaining(usage)).toBe(0)
+    expect(qualityRevisionAvailable(usage)).toBe(false)
+  })
+
+  it('Reviewer 运行不消耗质量修订总额度', () => {
+    let usage = createChapterBudgetUsage(T0)
+    usage = recordChapterBudgetCategory(usage, 'reviewerRuns')
+    usage = recordChapterBudgetCategory(usage, 'reviewerRuns')
+    expect(getQualityRevisionCount(usage)).toBe(0)
+    expect(qualityRevisionAvailable(usage)).toBe(true)
   })
 })
 

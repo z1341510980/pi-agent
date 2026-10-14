@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   addLlmUsage,
+  createNovelWriterEventBuffer,
   extractLlmUsageFromMessage,
+  normalizeNovelWriterOutput,
   sanitizeNovelProse,
 } from '../core/agent-run-utils.js'
 import {
@@ -144,5 +146,94 @@ describe('agent-run-utils - prose sanitization', () => {
 
   it('保留普通连字符', () => {
     expect(sanitizeNovelProse('版本 v1-2 与 A-B 组')).toBe('版本 v1-2 与 A-B 组')
+  })
+})
+
+describe('agent-run-utils - Writer output normalization', () => {
+  it('剥离英文思考和自检，只保留中文正文', () => {
+    const result = normalizeNovelWriterOutput([
+      'The scene needs to be concise.',
+      '',
+      'Analysis confirms the core scene elements are present.',
+      '',
+      '厚重的档案室铁门猛然推开。',
+      '',
+      '“远儿！”一声哭喊撕裂杂音。',
+      '',
+      'Analysis confirms the emotional climax is present.',
+    ].join('\n'))
+
+    expect(result.rejected).toBe(false)
+    expect(result.strippedReasoning).toBe(true)
+    expect(result.content).toContain('厚重的档案室铁门猛然推开')
+    expect(result.content).not.toContain('Analysis confirms')
+    expect(result.chineseRatio).toBeGreaterThan(0.18)
+  })
+
+  it('没有中文正文时拒绝把英文计划交给写作循环', () => {
+    const result = normalizeNovelWriterOutput('The task is to write a short scene. Analysis confirms it is complete.')
+    expect(result.rejected).toBe(true)
+    expect(result.content).toBe('')
+  })
+
+  it('跳过中文分析标题，并截断中文自检段', () => {
+    const result = normalizeNovelWriterOutput([
+      '写作思路：先完成情感通话，再交代两界收束。',
+      '正文如下：',
+      '铁门在老陈手下轰然打开，叶母的哭声穿过青芒。',
+      '叶明远攥紧玉佩，告诉父亲自己还活着。',
+      '字数检查：正文已满足本场硬上限，所有事件均已覆盖。',
+    ].join('\n'))
+
+    expect(result.rejected).toBe(false)
+    expect(result.content).toContain('铁门在老陈手下轰然打开')
+    expect(result.content).not.toContain('写作思路')
+    expect(result.content).not.toContain('字数检查')
+  })
+
+  it('保留与第一句正文同行的正文前缀之后内容', () => {
+    const result = normalizeNovelWriterOutput('正文如下：铁门轰然打开，哭声穿过青芒。\n叶明远应声抬头，攥紧了玉佩。')
+    expect(result.rejected).toBe(false)
+    expect(result.content).toContain('铁门轰然打开')
+  })
+
+  it('保留 Director pushback 控制协议', () => {
+    const result = normalizeNovelWriterOutput('[DIRECTOR_PUSHBACK] 角色动机与章纲存在硬冲突')
+    expect(result.rejected).toBe(false)
+    expect(result.content).toContain('[DIRECTOR_PUSHBACK]')
+  })
+})
+
+describe('agent-run-utils - Writer event buffering', () => {
+  it('缓冲原始文本事件，flush 时只发布规范化正文并继续转发非文本事件', () => {
+    const emitted: Array<{ type: string; [key: string]: unknown }> = []
+    const buffer = createNovelWriterEventBuffer((event) => {
+      emitted.push(event as { type: string; [key: string]: unknown })
+    })
+
+    buffer.emit({ type: 'TEXT_MESSAGE_START', messageId: 'raw', role: 'assistant' } as never)
+    buffer.emit({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'raw', delta: 'The scene needs analysis.' } as never)
+    buffer.emit({ type: 'STEP_STARTED', stepName: 'pi:tool' } as never)
+    buffer.emit({ type: 'REASONING_MESSAGE_CONTENT', messageId: 'reasoning', delta: '思考' } as never)
+
+    expect(emitted.map((event) => event.type)).toEqual([
+      'STEP_STARTED',
+      'REASONING_MESSAGE_CONTENT',
+    ])
+
+    buffer.flush('normalized', '中文正文。')
+
+    expect(emitted.map((event) => event.type)).toEqual([
+      'STEP_STARTED',
+      'REASONING_MESSAGE_CONTENT',
+      'TEXT_MESSAGE_START',
+      'TEXT_MESSAGE_CONTENT',
+      'TEXT_MESSAGE_END',
+    ])
+    expect(emitted.find((event) => event.type === 'TEXT_MESSAGE_CONTENT')).toMatchObject({
+      messageId: 'normalized',
+      delta: '中文正文。',
+    })
+    expect(emitted.some((event) => event.delta === 'The scene needs analysis.')).toBe(false)
   })
 })

@@ -42,6 +42,7 @@ import { VolumeBeatPlanner } from './core/chapters/beat-plan-generator.js'
 import { DiscussionRunStore } from './core/discussion/discussion-run-store.js'
 import { DiscussionEventStore } from './core/discussion/discussion-event-store.js'
 import { WorkflowRunStore } from './core/workflow-run-store.js'
+import { WorkflowEventStore } from './core/workflow-event-store.js'
 import { DiscussionSettingsStore } from './core/discussion/engine/discussion-settings-store.js'
 import { ConsistencyAuditor } from './core/analysis/consistency-auditor.js'
 import { RelationshipGraph } from './core/analysis/novel-relationship-graph.js'
@@ -118,6 +119,8 @@ export interface NovelServices {
   /** 群聊事件溯源存储（append-only 事件日志 + fold；T4） */
   discussionEventStore: DiscussionEventStore
   workflowRunStore: WorkflowRunStore
+  /** 章节工作流（create-flow）事件流：run 脱离 HTTP 后，进度与终态的唯一出口。 */
+  workflowEventStore: WorkflowEventStore
   /** 章节聊天消息存储（按章节持久化用户输入与 Agent 回复） */
   chapterChatStore: ChapterChatStore
   /** 章节级自由聊天 Runner */
@@ -276,12 +279,21 @@ export function createNovelServices(context: PluginContext): NovelServices {
   const discussionRunStore = new DiscussionRunStore(db)
   const discussionEventStore = new DiscussionEventStore(db)
   const workflowRunStore = new WorkflowRunStore(db)
+  const workflowEventStore = new WorkflowEventStore(db)
   // 启动即回收：此刻不可能有在跑流程，残留 running 必为上次进程退出的孤儿。
   // 标记为 error（phase 保留为续跑入口），防止前端把死 run 当进行中永远转圈。
   const orphanRuns =
     workflowRunStore.reconcileOrphanRunning('服务重启导致创作流程中断；可从断点继续')
   if (orphanRuns > 0) {
     context.logger.warn({ count: orphanRuns }, '已回收上次进程残留的创作流程运行记录')
+  }
+  // create-flow 后台化后的同类回收：事件流缺 run_finished 的 run，前端 tail 会
+  // 一直轮询等终态。必须补终态事件，否则"断线重连"变成"永远转圈"。
+  const orphanWorkflowStreams = workflowEventStore.reconcileOrphanRuns(
+    '服务重启导致创作流程中断；可从断点继续',
+  )
+  if (orphanWorkflowStreams > 0) {
+    context.logger.warn({ count: orphanWorkflowStreams }, '已回收上次进程残留的工作流事件流')
   }
   // 群聊事件流孤儿回收（T6）：后台 run 不再随 HTTP 结束，进程退出可能留下
   // 没有 run_finished 终态的事件流；启动时补终态，续跑定位仍由事件推导。
@@ -388,6 +400,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
     discussionRunStore,
     discussionEventStore,
     workflowRunStore,
+    workflowEventStore,
     chapterChatStore,
     chapterChatRunner,
     outlineGenerator,

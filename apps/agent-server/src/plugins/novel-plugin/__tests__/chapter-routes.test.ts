@@ -212,6 +212,16 @@ describe('PATCH /chapters/:id wordCount 重算', () => {
     expect(body.data.status).toBe('drafting')
   })
 
+  it('正文保存支持更新时间乐观锁，拒绝覆盖较新的正文', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { content: '新正文', expectedUpdatedAt: 0 },
+    })
+    expect(res.statusCode).toBe(409)
+    expect(store.getChapterById(chapterId)?.content).toBe('')
+  })
+
   it('不传 content 时 wordCount 保持不变', async () => {
     // 先用 store 直接写入 content + wordCount，建立基线
     store.updateChapterContent(chapterId, '初始正文内容', 6)

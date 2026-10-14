@@ -9,8 +9,21 @@ const { parseSseStreamMock, fetchMock, submitCheckpointDecisionMock, sendFlowMes
   sendFlowMessageMock: vi.fn()
 }))
 
+/**
+ * create-flow / 群聊已后台化：`parseSseStream` 消费的是事件 tail
+ * （`{ type, seq, payload }`），AG-UI 事件挂在 `agui` 类型的 payload 里。
+ * 用例仍按旧写法直接产 AG-UI 事件，这里在 mock 边界统一包一层；
+ * 已经是 tail 形状的（如群聊用例手写的 `{ type: 'agui', payload }`）透传。
+ */
+const tailAware = (onEvent: (event: unknown) => void) => (event: unknown): void => {
+  const maybeTail = event as { type?: string } | undefined
+  const isTail = maybeTail?.type === 'agui' || maybeTail?.type === 'run_finished'
+  onEvent(isTail ? event : { type: 'agui', seq: 1, payload: event })
+}
+
 vi.mock('@/api/agui-client', () => ({
-  parseSseStream: parseSseStreamMock
+  parseSseStream: (body: unknown, onEvent: (event: unknown) => void) =>
+    parseSseStreamMock(body, tailAware(onEvent))
 }))
 
 vi.mock('@/api/novel-client', () => ({
@@ -23,8 +36,23 @@ vi.mock('@repo/config/browser', () => ({
   browserConfig: { apiBaseUrl: 'http://test.local' }
 }))
 
+/** 后台 run 的受理响应（T8：create-flow 返回 202 + runId + eventsPath）。 */
+function acceptedRunResponse(runId: string, eventsPath: string) {
+  return new Response(
+    JSON.stringify({ ok: true, runId, eventsPath }),
+    { status: 202, headers: { 'Content-Type': 'application/json' } }
+  )
+}
+
 beforeEach(() => {
-  fetchMock.mockResolvedValue(new Response('ok', { status: 200 }))
+  fetchMock.mockImplementation(async (input: unknown) => {
+    const url = String(input)
+    // create-flow（含断点续跑）：POST 只受理，执行转后台，进度走 events tail
+    if (url.includes('/create-flow') && !url.includes('/workflow-runs/')) {
+      return acceptedRunResponse('workflow-run-1', '/projects/project-1/workflow-runs/workflow-run-1/events')
+    }
+    return new Response('ok', { status: 200 })
+  })
   sendFlowMessageMock.mockResolvedValue({ messageId: 'interject-1', status: 'queued' })
   vi.stubGlobal('fetch', fetchMock)
   parseSseStreamMock.mockImplementation(
@@ -136,6 +164,44 @@ describe('useNovelCreationFlow progress', () => {
     expect(result.current.progressMessage).toBe('导演 Agent 正在等待 LLM 响应...（已等待 20s）')
     expect(result.current.agentOutputs).toHaveLength(0)
     expect(result.current.events).toHaveLength(2)
+  })
+
+  it('群聊断点续跑使用后台事件 tail', async () => {
+    const eventsPath = '/projects/project-1/discussion-runs/resumed-run/events'
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input)
+      if (url.includes('/create-discussion/failed-run/resume')) {
+        return acceptedRunResponse('resumed-run', eventsPath)
+      }
+      return new Response('events', { status: 200 })
+    })
+    parseSseStreamMock.mockImplementationOnce(
+      async (_body: unknown, onEvent: (event: BaseEvent) => void) => {
+        onEvent({
+          type: 'run_finished',
+          seq: 1,
+          payload: { status: 'completed', content: '续写正文', discussionRunId: 'resumed-run' },
+        } as unknown as BaseEvent)
+      },
+    )
+
+    const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
+    const { result } = renderHook(() => useNovelCreationFlow())
+
+    await act(async () => {
+      await result.current.resumeDiscussion('project-1', 7, 'failed-run')
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test.local/api/plugins/novel/projects/project-1/chapters/7/create-discussion/failed-run/resume',
+      expect.objectContaining({ method: 'POST', signal: expect.any(AbortSignal) }),
+    )
+    expect(fetchMock).toHaveBeenCalledWith(
+      `http://test.local/api/plugins/novel${eventsPath}`,
+      expect.objectContaining({ headers: { Accept: 'text/event-stream' }, signal: expect.any(AbortSignal) }),
+    )
+    expect(result.current.phase).toBe('completed')
+    expect(result.current.chapterContent).toBe('续写正文')
   })
 
   it('提交决策后保留已处理的检查点和选择', async () => {

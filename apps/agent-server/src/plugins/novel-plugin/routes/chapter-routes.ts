@@ -140,6 +140,7 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
     /** AI 章纲草稿采用时的乐观锁控制字段，不会写入 novel_chapters。 */
     expectedOutlineHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     expectedContentRevisionId: z.string().nullable().optional(),
+    expectedUpdatedAt: z.number().int().nonnegative().optional(),
     outlineGenerationId: z.string().uuid().optional(),
   })
 
@@ -154,6 +155,7 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
       const {
         expectedOutlineHash,
         expectedContentRevisionId,
+        expectedUpdatedAt,
         outlineGenerationId,
         ...chapterInput
       } = input
@@ -182,6 +184,11 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
         if (currentContentRevisionId !== expectedContentRevisionId) {
           throw new AppError(ErrorCode.CONFLICT, '章节正文版本已经变化，请重新生成章纲', 409)
         }
+      }
+      if (expectedUpdatedAt !== undefined
+        && chapterInput.content !== undefined
+        && existing.updatedAt !== expectedUpdatedAt) {
+        throw new AppError(ErrorCode.CONFLICT, '章节正文已经被其他操作修改，请重新加载后再保存', 409)
       }
       if (existing.status === 'published' && (
         chapterInput.content !== undefined

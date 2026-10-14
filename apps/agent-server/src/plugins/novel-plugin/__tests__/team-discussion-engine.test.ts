@@ -988,8 +988,11 @@ new AgentChannel(),
     const ctx = {
       // 复现 2026-08-26 diag 日志实证序列：模型第一轮调用 novel_submit_scene_plan
       // 工具（SDK 执行成功），工具结果回传后的第二轮返回空 stop → prompt() 得到空串
-      createAgUiSession: vi.fn().mockImplementation(async (opts: { tools?: Array<{ execute?: (id: string, args: unknown) => Promise<unknown> }> }) => {
-        if (opts.tools && opts.tools.length > 0) directorCall++
+      //
+      // ⚠️ 计数口径：Director 的会话 = 带 novel_submit_scene_plan 工具的会话。
+      // 不能用"有工具就算 Director"——Writer 的正文通道也挂了 novel_submit_prose。
+      createAgUiSession: vi.fn().mockImplementation(async (opts: { tools?: Array<{ name?: string; execute?: (id: string, args: unknown) => Promise<unknown> }> }) => {
+        if (opts.tools?.some(tool => tool.name === 'novel_submit_scene_plan')) directorCall++
         return {
           session: {
             prompt: vi.fn().mockImplementation(async () => {

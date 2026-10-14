@@ -8,12 +8,110 @@ import { Type } from 'typebox'
 import { defineTool, type ToolDefinition, type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import type { CharacterTurn, SubmittedSceneInput } from '../discussion/engine/discussion-types.js'
 import { resolveWordBudget } from '../chapters/word-budget-resolver.js'
+import { normalizeNovelWriterOutput } from '../agent-run-utils.js'
 import type {
   NarrativeTask,
   NarrativeTaskScene,
   ChapterPositioning,
   NovelChapterReview
 } from '@repo/shared/novel'
+
+/**
+ * Writer 正文草稿持有者（2026-10 正文通道隔离）。
+ *
+ * ## 为什么 Writer 也要走工具
+ *
+ * 上游网关（实测灵算 edge.lingsuan.org 的 gemini-3.8-flash-high）把 Gemini 的
+ * thought 摘要拍平进 `delta.content`：既不给 `reasoning_content` 字段，usage 里也没有
+ * `reasoning_tokens` 明细，而思考与草稿是**逐句交替**的（"墨蓝色的天幕低垂，……
+ * This forms the initial setting, focusing on…"）。因此在 content 通道里，
+ * "思考"与"正文"在字段级、增量级都无法区分，只能靠 `\n\n\n` 之类的结构启发式猜，
+ * 而模型用中文写思考摘要时连启发式也会失效（实测 ch7 两次 writer 输出原样带思考）。
+ *
+ * 工具调用走 `delta.tool_calls[].function.arguments`，与 `content` 物理隔离，
+ * 网关怎么混都进不来。代价是正文变成 JSON 字符串（转义开销可忽略），
+ * 换来的是"正文边界不再需要猜"。
+ *
+ * ⚠️ 与 narrative_task / review 工具一致：不进入全局 createNovelTools 列表，
+ * 由 orchestrator 在调用 Writer 时通过 extraTools 动态注入。闭包持有 draft、
+ * 其他 Agent 不可见、不污染 STATIC 层 schema 的跨 Agent 缓存。
+ *
+ * 文本通道仍然保留为兜底（provider 不支持工具、模型漏调用），
+ * 由 orchestrator 侧 `normalizeNovelWriterOutput` 处理——比工具通道脆弱，但不会更差。
+ */
+export interface ProseDraftHolder {
+  /** Writer 提交并通过规范化校验的正文。undefined 表示尚未成功提交。 */
+  content?: string
+  /** 工具被调用的次数（模型可能多次提交，最后一次通过校验的为准）。 */
+  submissions: number
+  /** 最近一次被拒的原因，供 orchestrator 诊断（不写正文）。 */
+  lastRejection?: string
+}
+
+const SubmitProseParams = Type.Object({
+  content: Type.String({
+    minLength: 1,
+    description:
+      '正文全文。只放小说正文本身：不要放分析、写作思路、字数核对、修改说明、' +
+      'Markdown 代码围栏，也不要写"正文如下："之类的前缀。' +
+      '正文中的段落换行请用真实换行。',
+  }),
+})
+
+export function createNovelSubmitProseTool(
+  draft: ProseDraftHolder,
+): ToolDefinition<typeof SubmitProseParams> {
+  return defineTool({
+    name: 'novel_submit_prose',
+    label: '提交正文',
+    description:
+      '提交本场/本章的小说正文。Writer 必须调用此工具来交稿，' +
+      '不要在对话文本中输出正文——对话文本不会被采用，只会浪费一轮。' +
+      'content 参数只放正文本身（不需要标题、分析、字数核对或围栏）。' +
+      '可以多次调用，最后一次通过校验的提交生效。',
+    promptSnippet: '提交正文全文（只放正文，不放分析或说明）',
+    parameters: SubmitProseParams,
+    async execute(_toolCallId, params): Promise<AgentToolResult<undefined>> {
+      draft.submissions += 1
+
+      // 与文本通道共用同一套规范化与校验：模型若把思考/说明塞进参数里，
+      // 这里同样会裁掉或拒收，不因为"走了工具"就免检。
+      const normalized = normalizeNovelWriterOutput(params.content ?? '')
+      if (normalized.rejected) {
+        const reason = normalized.reason ?? '正文格式未通过校验'
+        draft.lastRejection = reason
+        return {
+          content: [{
+            type: 'text',
+            text:
+              `正文未提交：${reason}。\n` +
+              '请把正文本身放进 content 参数后重新调用本工具：只提交中文小说正文，' +
+              '不要提交分析、写作思路、字数核对、修改说明或 Markdown 围栏。',
+          }],
+          details: undefined,
+        }
+      }
+
+      draft.content = normalized.content
+      draft.lastRejection = undefined
+      const length = normalized.content.replace(/\s/g, '').length
+      return {
+        content: [{
+          type: 'text',
+          text:
+            `正文已提交：${length} 字。\n` +
+            (normalized.strippedReasoning
+              ? '（提交内容中夹带的思考/说明已被系统裁掉，本次以裁后的正文为准。）\n'
+              : '') +
+            '对话文本中的内容不会被采用，无需再重复输出正文。',
+        }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+
 
 export interface RevisionDraftHolder {
   /** 当前正文状态。工具每次调用会更新此字段，多次调用累积修改。 */
@@ -168,6 +266,13 @@ const NarrativeSceneParams = Type.Object({
   consequence: Type.String({ minLength: 2, maxLength: 200, description: '选择造成的即时后果（不可逆变化）' }),
 })
 
+const ChapterMemoryAnchorParams = Type.Object({
+  title: Type.String({ minLength: 4, maxLength: 80, description: '本章记忆点短标题，说明读者记住的核心变化' }),
+  image: Type.String({ minLength: 8, maxLength: 180, description: '正文中必须出现的具体画面、动作、物件或关键台词' }),
+  irreversibleChange: Type.String({ minLength: 8, maxLength: 220, description: '本章结束后不可逆的状态、关系、认知或资源变化' }),
+  emotionalPayoff: Type.Optional(Type.String({ maxLength: 160, description: '读者应获得的情绪回报，不能替代不可逆变化' })),
+})
+
 const SubmitNarrativeTaskParams = Type.Object({
   taskType: NarrativeTaskTypeEnum,
   priority: Type.Union([Type.Literal('high'), Type.Literal('medium'), Type.Literal('low')]),
@@ -176,6 +281,7 @@ const SubmitNarrativeTaskParams = Type.Object({
     maxLength: 800,
     description: '给 Writer 看的整章级任务说明（核心目标、情节点、约束说明，建议 180-400 字）。逐场的入口/阻力/选择/后果与字数预算由 scenes[] 承载，narrativeTask 只写跨场景的整章契约。',
   }),
+  memoryAnchor: Type.Optional(ChapterMemoryAnchorParams),
   scenes: Type.Optional(Type.Array(NarrativeSceneParams, {
     minItems: 1,
     maxItems: 5,
@@ -319,6 +425,17 @@ export function createNovelSubmitNarrativeTaskTool(
         priority: params.priority,
       }
 
+      if (params.memoryAnchor) {
+        task.memoryAnchor = {
+          title: params.memoryAnchor.title.trim().slice(0, 80),
+          image: params.memoryAnchor.image.trim().slice(0, 180),
+          irreversibleChange: params.memoryAnchor.irreversibleChange.trim().slice(0, 220),
+          ...(params.memoryAnchor.emotionalPayoff?.trim()
+            ? { emotionalPayoff: params.memoryAnchor.emotionalPayoff.trim().slice(0, 160) }
+            : {}),
+        }
+      }
+
       if (params.secondaryTasks && params.secondaryTasks.length > 0) {
         // 过滤掉与主任务相同的次要任务
         task.secondaryTasks = params.secondaryTasks.filter(t => t !== params.taskType)
@@ -387,6 +504,9 @@ export function createNovelSubmitNarrativeTaskTool(
         `- 场景数：${task.sceneCount ?? '（未指定）'}\n` +
         `- 章节定位：${task.positioning ?? '（未指定）'}\n` +
         `- 章尾钩子：${task.chapterEndingHook ?? '（未指定）'}\n` +
+        (task.memoryAnchor
+          ? `- 记忆锚点：${task.memoryAnchor.title}（${task.memoryAnchor.irreversibleChange}）\n`
+          : '') +
         `- 时间线偏移：${task.timeOffset ?? 0} 天\n` +
         (task.scenes?.length
           ? `- 结构化场景计划：${task.scenes.length} 场（核心 ${task.scenes.filter((s) => s.emphasis === 'core').length} 个，预算 ${task.scenes.map((s) => s.targetWords).join(' + ')} = ${task.scenes.reduce((acc, s) => acc + s.targetWords, 0)} 字）\n`

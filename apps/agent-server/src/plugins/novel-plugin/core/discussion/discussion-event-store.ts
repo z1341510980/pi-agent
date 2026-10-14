@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { RunEventStore, type RunEvent } from '../run-event-store.js'
 
 /**
  * 群聊事件溯源 store（2026-08-28 控制平面重排 T4）。
@@ -10,6 +11,9 @@ import type Database from 'better-sqlite3'
  *
  * 首迭代与 novel_discussion_runs 快照并存：新 run 逐条追加事件，快照行仍按
  * 旧路径写（只读兼容），下迭代再退化 run 行为索引 + 游标。
+ *
+ * 追加/游标/活跃 run/孤儿回收等与领域无关的部分已上提到 `RunEventStore`，
+ * 与章节工作流（`workflow-event-store.ts`）共用同一实现。
  */
 
 /** 首版事件类型。新增类型时同步更新 foldDiscussionEvents 的判定。 */
@@ -31,111 +35,15 @@ export type DiscussionEventType =
   | 'degraded'
   | 'run_finished'
 
-export interface DiscussionEvent {
-  runId: string
-  /** run 内单调递增，从 1 开始；续跑/SSE 重连以它为游标。 */
-  seq: number
-  type: DiscussionEventType
-  payload: Record<string, unknown>
-  createdAt: number
-}
+export type DiscussionEvent = RunEvent<DiscussionEventType>
 
-interface DiscussionEventRow {
-  run_id: string
-  seq: number
-  type: string
-  payload: string
-  created_at: number
-}
-
-export class DiscussionEventStore {
-  private readonly stmtAppend: Database.Statement
-  private readonly stmtLastSeq: Database.Statement
-  private readonly stmtList: Database.Statement
-
-  constructor(private readonly db: Database.Database) {
-    this.stmtAppend = db.prepare(`
-      INSERT INTO novel_discussion_events (run_id, seq, type, payload, created_at)
-      VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM novel_discussion_events WHERE run_id = ?), ?, ?, ?)
-    `)
-    this.stmtLastSeq = db.prepare(`
-      SELECT COALESCE(MAX(seq), 0) AS seq FROM novel_discussion_events WHERE run_id = ?
-    `)
-    this.stmtList = db.prepare(`
-      SELECT run_id, seq, type, payload, created_at
-        FROM novel_discussion_events
-       WHERE run_id = ? AND seq >= ?
-       ORDER BY seq ASC
-    `)
-  }
-
-  /** 追加一条事件；seq 由数据库侧保证 run 内单调。写入失败向上抛（事件不能静默丢）。 */
-  append(runId: string, type: DiscussionEventType, payload: Record<string, unknown> = {}): DiscussionEvent {
-    const now = Math.floor(Date.now() / 1000)
-    this.stmtAppend.run(runId, runId, type, JSON.stringify(payload), now)
-    const seq = (this.stmtLastSeq.get(runId) as { seq: number }).seq
-    return { runId, seq, type, payload, createdAt: now * 1000 }
-  }
-
-  /** 读取 run 的事件流；fromSeq 默认 1（全量重放），SSE tail 传上次游标 + 1。 */
-  list(runId: string, fromSeq = 1): DiscussionEvent[] {
-    const rows = this.stmtList.all(runId, fromSeq) as DiscussionEventRow[]
-    return rows.map(row => ({
-      runId: row.run_id,
-      seq: row.seq,
-      type: row.type as DiscussionEventType,
-      payload: JSON.parse(row.payload) as Record<string, unknown>,
-      createdAt: row.created_at * 1000,
-    }))
-  }
-
-  lastSeq(runId: string): number {
-    return (this.stmtLastSeq.get(runId) as { seq: number }).seq
-  }
-
-  /**
-   * 查找该项目 + 章节仍在进行（有 run_started、无 run_finished）的群聊 run（T7）。
-   * 供"面板重开后再点开始"场景重连事件 tail：POST 收到 409 时前端据此取回
-   * runId 转入 tail 观看，而不是报错。返回 undefined 表示没有在跑的 run。
-   */
-  findActiveRun(projectId: string, chapterNumber: number): { runId: string; cursorSeq: number } | undefined {
-    return this.db.prepare(`
-      SELECT rs.run_id AS runId,
-             (SELECT MAX(seq) FROM novel_discussion_events WHERE run_id = rs.run_id) AS cursorSeq
-        FROM novel_discussion_events rs
-       WHERE rs.type = 'run_started'
-         AND json_extract(rs.payload, '$.projectId') = ?
-         AND json_extract(rs.payload, '$.chapterNumber') = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM novel_discussion_events rf
-            WHERE rf.run_id = rs.run_id AND rf.type = 'run_finished'
-         )
-       ORDER BY rs.created_at DESC, rs.seq DESC
-       LIMIT 1
-    `).get(projectId, chapterNumber) as { runId: string; cursorSeq: number } | undefined
-  }
-
-  /**
-   * 孤儿事件流回收（T6）：run 脱离 HTTP 后台执行后，进程退出/崩溃可能留下
-   * 永远没有 run_finished 终态的事件流（fold 停在 running）。服务启动时调用：
-   * 此刻不可能有在跑的 run，所有缺终态的流一律补 run_finished(error)，
-   * phase 信息在事件里，续跑定位不受影响。
-   *
-   * @returns 被回收的 run 数
-   */
-  reconcileOrphanRuns(message: string): number {
-    const rows = this.db.prepare(`
-      SELECT run_id AS runId, type
-        FROM novel_discussion_events
-       WHERE seq = (SELECT MAX(seq) FROM novel_discussion_events WHERE run_id = novel_discussion_events.run_id)
-    `).all() as Array<{ runId: string; type: string }>
-    let recovered = 0
-    for (const row of rows) {
-      if (row.type === 'run_finished') continue
-      this.append(row.runId, 'run_finished', { status: 'error', error: message, interrupted: true })
-      recovered++
-    }
-    return recovered
+export class DiscussionEventStore extends RunEventStore<DiscussionEventType> {
+  constructor(db: Database.Database) {
+    super(db, {
+      table: 'novel_discussion_events',
+      startedType: 'run_started',
+      finishedType: 'run_finished',
+    })
   }
 }
 

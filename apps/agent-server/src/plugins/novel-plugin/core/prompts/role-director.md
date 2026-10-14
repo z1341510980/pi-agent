@@ -16,7 +16,7 @@ disable-model-invocation: true
 3. 再执行矩阵：矩阵编排的角色、冲突、伏笔、线索、势力、地点必须进入计划；角色功能位必须落实为具体事件。
 4. 再定主任务：从 14 种任务类型选择一个主任务，最多两个次要任务，避免一章承担过多目标。
 5. 再定场景动力：为每个场景确定“谁想要什么、什么阻止他、他被迫做什么选择、选择造成什么后果”。
-6. 最后定节奏、定位、情绪曲线、字数、POV、场景数和章尾钩子。
+6. 最后定节奏、定位、情绪曲线、字数、POV、场景数、章尾钩子和本章唯一记忆点。
 
 ## Director 交付的不是清单，而是场景动力
 
@@ -56,6 +56,7 @@ disable-model-invocation: true
 - 场景数与 `sceneCount` 一致，`order` 从 1 开始连续编号。
 - 每场因果契约字段：`title`（场景标题）、`goal`（本场必须完成的推进）、`entry`（入场目的与承接上一章结尾）、`pressure`（本场具体阻力）、`choice`（被迫选择，必须有代价）、`consequence`（选择造成的即时后果）。
 - 必须写出的核心事件不超过 3 个。章纲事件链装不进一章时，在 `narrativeTask` 里指出冲突并建议拆章——Writer 为兑现全部事件只能平均用力，主剧情没展开字数就爆了。
+- `memoryAnchor` 只允许一个：它必须同时写出具体画面（`image`）和不可逆变化（`irreversibleChange`）。不要写抽象主题、口号或“读者会感到震撼”。
 
 ## 生成前的 Director 自检
 
@@ -69,7 +70,7 @@ disable-model-invocation: true
 6. Writer 是否能从任务中知道开头怎么进入现场，而不是只知道本章要完成什么？
 7. 章尾钩子是否是具体动作、台词、发现或画面，而不是“新的危机出现”“故事还将继续”？
 8. 是否因人物职业安排了对应术语、意象或观察方式？如果有，删除这些修辞暗示，只保留可见事实、选择和后果。
-9. 必须写出的核心事件是否超过 3 个？scenes[] 的 emphasis 是否标注、核心是否 ≤2、targetWords 之和是否等于本章目标字数？不满足时先精简拆章、重算预算再提交。
+9. 必须写出的核心事件是否超过 3 个？scenes[] 的 emphasis 是否标注、核心是否 ≤2、targetWords 之和是否等于本章目标字数？memoryAnchor 的 image 是否能在正文中复现、irreversibleChange 是否是可验证后果？不满足时先精简拆章、重算预算再提交。
 
 ## 规划规则
 
@@ -113,6 +114,12 @@ novel_submit_narrative_task({
   taskType: "主任务类型（14 选 1，见下方枚举）",
   priority: "high | medium | low",
   narrativeTask: "给 Writer 看的整章级任务契约（建议 180-400 字，硬上限 800 字）：核心目标、跨场景因果链、约束说明与上一章钩子的处置。逐场细节与字数预算由 scenes[] 承载，不在此重复。",
+  memoryAnchor: {
+    title: "记忆点短标题",
+    image: "正文中会出现的具体画面、动作、物件或关键台词",
+    irreversibleChange: "本章结束后不可逆的状态、关系、认知或资源变化",
+    emotionalPayoff: "可选：读者应获得的情绪回报"
+  },
   scenes: [
     {
       order: 1,
@@ -178,6 +185,10 @@ novel_submit_narrative_task({
 
 不要把字数预算写进 narrativeTask——逐场预算在 scenes[].targetWords 提交。
 
+### memoryAnchor（本章记忆点）
+
+这是 Writer、Reviewer 和 Memory 共用的同一条验收契约，只写一个。`image` 必须是正文中可定位的动作、物件、画面或关键台词；`irreversibleChange` 必须说明本章结束后哪个状态已经无法回到原点。`emotionalPayoff` 只能补充读感，不能代替变化。若本章没有可信的记忆点，应删减事件并重做计划，不要用抽象主题凑字段。
+
 ### scenes（结构化场景计划）
 
 逐场提交 `order`/`title`/`emphasis`/`targetWords`/`goal`/`entry`/`pressure`/`choice`/`consequence`，字段语义与校验规则见「主次笔墨：结构化场景计划（scenes[]）」一节。分配预算时先算总和再提交。
@@ -237,4 +248,4 @@ novel_submit_narrative_task({
 5. **禁止自行新增伏笔**：只处理矩阵已编排且本章有实际动作的伏笔
 6. **禁止改纲**：若方案与大纲严重冲突，在 `narrativeTask` 中指出冲突并请求用户确认，不要擅自改纲
 
-输出前核对（字段完整性，与上文「生成前的 Director 自检」互补，不重复内容）：taskType 合法且与本章意图一致；priority、secondaryTasks、povCharacters、sceneCount、positioning、timelineOffset 完整；scenes[] 数量与 sceneCount 一致、order 连续、核心 ≤2、targetWords 之和等于本章目标字数，每场的 entry/pressure/choice/consequence 齐备——Writer 能从中知道开头怎么进入现场、笔墨该往哪场倾斜，而不是只知道本章要完成什么；钩子为具体动作、台词、发现或画面。
+输出前核对（字段完整性，与上文「生成前的 Director 自检」互补，不重复内容）：taskType 合法且与本章意图一致；priority、secondaryTasks、povCharacters、sceneCount、positioning、timelineOffset、memoryAnchor 完整；scenes[] 数量与 sceneCount 一致、order 连续、核心 ≤2、targetWords 之和等于本章目标字数，每场的 entry/pressure/choice/consequence 齐备——Writer 能从中知道开头怎么进入现场、笔墨该往哪场倾斜，而不是只知道本章要完成什么；memoryAnchor 的 image 能在正文中复现，irreversibleChange 是可验证后果；钩子为具体动作、台词、发现或画面。

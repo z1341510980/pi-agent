@@ -242,12 +242,23 @@ export class ChapterFinalizer {
         : '记忆 Agent 正在提取状态变更...',
     })
     const beforeState = this.captureEntityState(projectId)
+    // Director 的记忆锚点与正文、Writer、Reviewer 使用同一份契约。
+    // 作为只读核对信息传给 Memory，要求它确认正文证据，而不是凭抽象主题造状态。
+    const memoryOptions = directorTask?.memoryAnchor
+      ? {
+          ...options,
+          memoryFocus: [
+            ...(options.memoryFocus ?? []),
+            `本章唯一记忆点（只读核对）：标题=${directorTask.memoryAnchor.title}；具体画面=${directorTask.memoryAnchor.image}；不可逆变化=${directorTask.memoryAnchor.irreversibleChange}${directorTask.memoryAnchor.emotionalPayoff ? `；情绪回报=${directorTask.memoryAnchor.emotionalPayoff}` : ''}`,
+          ],
+        }
+      : options
     const deferredMemory = historicalRewrite
       ? {
           summary: '中间章节正文已更新；为避免污染后续章节，全局实体状态未自动改写',
           apply: null,
         }
-      : await this.analyzeMemoryForFinalization(projectId, chapterNumber, cleanedContent, options)
+      : await this.analyzeMemoryForFinalization(projectId, chapterNumber, cleanedContent, memoryOptions)
     let memoryResult = deferredMemory.summary
     let memoryEvents: MemoryEvent[] = []
 

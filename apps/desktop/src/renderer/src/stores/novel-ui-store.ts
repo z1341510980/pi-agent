@@ -62,6 +62,8 @@ export interface NovelUiState {
 
   // ── 小说会话偏好（跨右栏 Tab / 应用重启保留）──
   selectedAgentModel: NovelAgentModelRef | null
+  /** 项目统一模型（包含思考强度）；服务端 novelModelId 只保存 provider/modelId。 */
+  projectModelSelections: Record<string, NovelAgentModelRef>
 
   // ── 矩阵视图折叠分组（与 NovelSidebar 共享）──
   // 用 string[] 而非 MatrixEntityKind[] 是因为 NovelSidebar 还有一个 'chapter' 分组
@@ -106,6 +108,7 @@ export interface NovelUiState {
   clearUnsavedChapterDraft: (chapterId?: string) => void
   setCreationMode: (mode: 'manual' | 'ai-arrange' | null) => void
   setSelectedAgentModel: (model: NovelAgentModelRef | null) => void
+  setProjectModelSelection: (projectId: string, model: NovelAgentModelRef | null) => void
   toggleCollapsedGroup: (kind: string) => void
   toggleExpandedVolume: (id: string) => void
   setMatrixScrollTarget: (target: { chapter: number; ts: number } | null) => void
@@ -166,6 +169,8 @@ export const useNovelUiStore = create<NovelUiState>()(
 
       selectedAgentModel: null,
 
+      projectModelSelections: {},
+
       collapsedGroups: [],
 
       expandedVolumes: [],
@@ -207,6 +212,13 @@ export const useNovelUiStore = create<NovelUiState>()(
       },
       setCreationMode: (mode) => set({ creationMode: mode }),
       setSelectedAgentModel: (model) => set({ selectedAgentModel: model }),
+      setProjectModelSelection: (projectId, model) =>
+        set((state) => {
+          const projectModelSelections = { ...state.projectModelSelections }
+          if (model) projectModelSelections[projectId] = model
+          else delete projectModelSelections[projectId]
+          return { projectModelSelections }
+        }),
 
       toggleCollapsedGroup: (kind: string) =>
         set((state) => {
@@ -313,6 +325,7 @@ export const useNovelUiStore = create<NovelUiState>()(
         expandedVolumes: state.expandedVolumes,
         matrixSidebarCollapsed: state.matrixSidebarCollapsed,
         selectedAgentModel: state.selectedAgentModel,
+        projectModelSelections: state.projectModelSelections,
       }),
       // 自定义 merge：旧版本 localStorage 没有 canvasLayoutMode 字段时填回默认值 'grouped'
       // 避免从旧数据反序列化出 undefined 导致按钮 variant 判断失效
@@ -324,6 +337,7 @@ export const useNovelUiStore = create<NovelUiState>()(
           canvasLayoutMode: p.canvasLayoutMode ?? 'grouped',
           matrixSidebarCollapsed: p.matrixSidebarCollapsed ?? false,
           selectedAgentModel: p.selectedAgentModel ?? current.selectedAgentModel,
+          projectModelSelections: p.projectModelSelections ?? current.projectModelSelections,
         }
       },
     },

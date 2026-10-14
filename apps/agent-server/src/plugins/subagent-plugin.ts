@@ -108,6 +108,9 @@ export const subagentPlugin = fp(async (app, rawOptions) => {
         if (targetModel) {
           await threadSession.session.setModel(targetModel)
         }
+        if (effectiveConfig.model.thinkingLevel) {
+          threadSession.session.setThinkingLevel(effectiveConfig.model.thinkingLevel)
+        }
       }
 
       // 注入生成参数到 provider payload（temperature / max_tokens）

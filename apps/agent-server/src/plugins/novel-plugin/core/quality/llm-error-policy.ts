@@ -77,29 +77,59 @@ export const LLM_RETRY_DELAYS_MS = [1_000, 4_000, 12_000] as const
  *
  * 按 message 子串匹配而非状态码：错误来自 Provider SDK / fetch / 自研超时包装
  * 三个不同层，没有统一的结构化字段，能稳定拿到的只有 message。
+ *
+ * ⚠️ 白名单必须与 `@earendil-works/pi-ai` 的 `utils/retry.js`
+ * （RETRYABLE_PROVIDER_ERROR_PATTERN）保持同口径。两者是先后两道闸：
+ * SDK 先自己退避重试，用尽后把错误抛给我们；我们的分类器若把 SDK 判为
+ * 「可重试」的错误判成 `unknown`，就会出现「SDK 试了 3 次，我们一次都不补」
+ * 的断档 —— 实测 `LLM 调用失败: Connection error.` 正是这样废掉整章
+ * create-flow 的（2026-09-30 第 6 章，Director 阶段，4 次往返后直接 failedPhase=directing）。
  */
 const TRANSIENT_PATTERNS: readonly RegExp[] = [
   // 网关与上游不可用
-  /\b50[234]\b/,
+  /\b50[0-5]\b/,
+  /\b524\b/,
   /service temporarily unavailable/i,
   /bad gateway/i,
   /gateway timeout/i,
   /\b429\b/,
   /rate limit/i,
+  /overloaded/i,
+  /server error/i,
+  /internal error/i,
+  // 部分网关（OpenRouter 系）把上游故障包成 "Provider returned error"
+  /provider returned error/i,
   // 超时：SDK 的 "Request timed out" 与自研的 "LLM 调用超时（120s）"
   /timed?\s*out/i,
   /timeout/i,
   /调用超时/,
   // 流被掐断：拿到了部分内容但没有终止原因
   /stream ended without finish_reason/i,
+  /ended without/i,
+  /stream ended before/i,
   /premature close/i,
+  /http\/?2 request did not get a response/i,
   // undici 在响应体被上游/代理中途销毁时抛 `TypeError: terminated`（实测 Writer 111s 后失败整章作废）
   /\bterminated\b/i,
-  // 连接层
+  // 连接层。`connection error` 是 AI SDK / 网关在 TCP 层失败时的固定文案，
+  // 也是实测出现频率最高的一种（本项目 2026-09-30 那次故障的全部 4 次返回都是它）。
+  /connection error/i,
+  /connection refused/i,
+  /connection lost/i,
+  /connection reset/i,
+  /other side closed/i,
+  /socket connection was closed/i,
+  /upstream connect/i,
+  /reset before headers/i,
   /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE/,
   /socket hang up/i,
   /fetch failed/i,
   /network error/i,
+  /getaddrinfo/i,
+  // 网关显式要求重试
+  /you can retry your request/i,
+  /try your request again/i,
+  /please retry your request/i,
 ]
 
 /** 账户/凭据问题 */

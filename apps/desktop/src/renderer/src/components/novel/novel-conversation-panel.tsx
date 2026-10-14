@@ -452,7 +452,11 @@ export function NovelConversationPanel({
   const effectiveStyleExpertIds = selectedStyleExpertIds ?? []
   // 右栏会话面板在切换到详情/设置时会卸载；模型偏好放在持久化 store，
   // 避免切页后回到会话又回到“默认模型”。
-  const creationModelRef = useNovelUiStore((state) => state.selectedAgentModel)
+  const selectedAgentModel = useNovelUiStore((state) => state.selectedAgentModel)
+  const projectModelSelection = useNovelUiStore((state) => projectId
+    ? state.projectModelSelections[projectId] ?? null
+    : null)
+  const creationModelRef = selectedAgentModel ?? projectModelSelection
   const [interjectTarget, setInterjectTarget] = useState<NovelInterjectTargetAgent | 'next'>('next')
   const isArrangeMode = flowType === 'arrange'
   const isReverseMode = flowType === 'reverse'

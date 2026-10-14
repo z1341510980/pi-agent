@@ -199,7 +199,7 @@ describe('ChapterChatRunner', () => {
       title: '第一章', content: '正文', wordCount: 2, status: 'review', narrativeTask: '', outline: '',
       volumeId: null, acceptanceResult: null,
     } as any)
-    const configuredModel = { provider: 'agent', modelId: 'writer-model' }
+    const configuredModel = { provider: 'agent', modelId: 'writer-model', thinkingLevel: 'high' as const }
     const createAgUiSession = vi.fn().mockResolvedValue({
       session: { prompt: vi.fn().mockResolvedValue('写作回复') },
       streamEmitter: { finishTextMessage: vi.fn() }, messageId: 'reply', dispose: vi.fn(),

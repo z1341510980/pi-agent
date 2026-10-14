@@ -49,6 +49,48 @@ describe('classifyLlmFailure：瞬时故障（实测占 Director 失败的 23/29
   })
 })
 
+/**
+ * 2026-09-30 回归：第 6 章 create-flow 在 Director 阶段被
+ * `LLM 调用失败: Connection error.` 整章作废。
+ *
+ * Pi SDK 自己的 `utils/retry.js` 把 `connection error` 视为可重试并试了 3 次，
+ * 但我们的分类器不认识这个词形 → `unknown` → 应用层一次都不补，
+ * 于是「SDK 重试耗尽」直接等于「整章失败」。这一组用例把 SDK 白名单里
+ * 我们曾经漏掉的词形钉住，防止再次断档。
+ */
+describe('classifyLlmFailure：连接层与网关词形（与 pi-ai retry.js 同口径）', () => {
+  const connectionMessages = [
+    'LLM 调用失败: Connection error.',
+    'Connection error.',
+    'connect ECONNREFUSED 127.0.0.1:443',
+    'connection lost before response',
+    'other side closed',
+    'socket connection was closed unexpectedly',
+    'upstream connect error or disconnect/reset before headers',
+    'HTTP/2 request did not get a response',
+    'Provider returned error',
+    'Anthropic stream ended before message_stop',
+    'The server is overloaded, please try again',
+    'Internal server error',
+    'getaddrinfo ENOTFOUND api.example.com',
+    'You can retry your request later',
+  ]
+
+  for (const message of connectionMessages) {
+    it(`可重试：${message}`, () => {
+      const result = classifyLlmFailure(new Error(message))
+      expect(result.kind).toBe('transient')
+      expect(result.retryable).toBe(true)
+    })
+  }
+
+  it('连接层词形不会抢走账户类判定', () => {
+    const result = classifyLlmFailure(new Error('402 Insufficient Balance: connection error'))
+    expect(result.kind).toBe('account')
+    expect(result.retryable).toBe(false)
+  })
+})
+
 describe('classifyLlmFailure：账户类（重试无用，必须立刻告诉用户）', () => {
   it('402 余额不足 → 明确提示充值', () => {
     const result = classifyLlmFailure(new Error('402 Insufficient Balance'))

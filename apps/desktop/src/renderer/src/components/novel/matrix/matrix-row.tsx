@@ -537,7 +537,7 @@ interface DraggablePresentCellProps {
   onPlayheadChange?: (chapter: number) => void
 }
 
-function DraggablePresentCell({ entity, chapter, cellWidth, left, isProtagonist, onContextMenu }: DraggablePresentCellProps): ReactElement {
+function DraggablePresentCell({ entity, chapter, cellWidth, left, isProtagonist, onContextMenu, onPlayheadChange }: DraggablePresentCellProps): ReactElement {
   const meta = GROUP_META[entity.kind]
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `cell:${entity.entityId}:${chapter}`,
@@ -560,6 +560,11 @@ function DraggablePresentCell({ entity, chapter, cellWidth, left, isProtagonist,
         const down = downPosRef.current
         downPosRef.current = null
         if (down && (Math.abs(e.clientX - down.x) > 4 || Math.abs(e.clientY - down.y) > 4)) return
+        onPlayheadChange?.(chapter)
+      }}
+      onDoubleClick={(e) => {
+        e.stopPropagation()
+        onPlayheadChange?.(chapter)
       }}
       onContextMenu={onContextMenu}
       {...hc(entity.name, chapter, { after: entity.kind === 'character' ? '出场（可拖动换章）' : '出场（可拖动换章）', color: meta.color })}
@@ -643,7 +648,8 @@ function EntityMainEncoding({
 
     case 'conflict':
     case 'faction':
-    case 'item': {
+    case 'item':
+    case 'narrative': {
       const spans = entity.chapterSpans ?? []
       return (
         <>
@@ -796,7 +802,7 @@ interface SpanBandProps {
 }
 
 /**
- * 跨度色带（conflict/faction/item）。
+ * 跨度色带（conflict/faction/item/narrative）。
  *
  * 每个实体可能有多段跨度，且内部含两个可拖拽端点把手 —— 单个实例的 DOM 成本
  * 高于 HitCell，长篇下重建开销明显。
@@ -805,7 +811,7 @@ const SpanBand = memo(function SpanBand({
   entity, spanIndex, startChapter, endChapter, cellWidth, isSelected, onEntityClick, onEditEntity, onEditSpan, onContextMenuCell,
 }: SpanBandProps): ReactElement {
   const meta = GROUP_META[entity.kind]
-  const entityType = entity.kind as 'conflict' | 'faction' | 'item'
+  const entityType = entity.kind as 'conflict' | 'faction' | 'item' | 'narrative'
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, isDragging } = useDraggable({
     id: `span:${entity.entityId}:${spanIndex}`,
     data: {

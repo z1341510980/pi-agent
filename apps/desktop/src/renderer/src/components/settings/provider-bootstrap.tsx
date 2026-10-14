@@ -101,6 +101,7 @@ export function ProviderBootstrap(): ReactElement {
       })
 
       // Provider 变更后，使模型列表缓存失效，让对话界面的模型选择器重新获取
+      void queryClient.invalidateQueries({ queryKey: ['providers'] })
       void queryClient.invalidateQueries({ queryKey: ['agui-models'] })
 
       const nextSettings = { ...settings, id }

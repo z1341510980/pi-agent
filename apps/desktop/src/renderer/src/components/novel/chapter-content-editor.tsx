@@ -175,7 +175,10 @@ export function ChapterContentEditor({
     setSaveState('saving')
     setErrorMsg(null)
     try {
-      const updated = await updateChapter(baseline.chapterId, { content })
+      const updated = await updateChapter(baseline.chapterId, {
+        content,
+        expectedUpdatedAt: baseline.version
+      })
       upsertChapter(updated)
 
       if (updated.derivedState?.isMiddleRewrite) {
@@ -194,25 +197,38 @@ export function ChapterContentEditor({
           .chapters.find(
             (chapter) => chapter.chapterNumber === useNovelUiStore.getState().playheadChapter
           )?.id === baseline.chapterId
-      if (!stillCurrent) return true
+      // 请求可能在切章后才返回：旧章节确实已保存，但不能让当前章节的
+      // 反推等后续动作把它当作“当前正文已保存”继续执行。
+      if (!stillCurrent) return false
 
+      const savedContent = updated.content ?? ''
+      const savedHash = hashContent(savedContent)
+      const currentContent = readEditorMarkdown()
+      if (hashContent(currentContent) === contentHash && savedContent !== currentContent && editor) {
+        applyingLoadRef.current = {
+          token: saveToken,
+          expectedHash: savedHash
+        }
+        editor.commands.setContent(savedContent, { emitUpdate: false })
+        setDraftContent(savedContent)
+      }
       baselineRef.current = {
         chapterId: updated.id,
         version: updated.updatedAt ?? 0,
-        contentHash,
-        content
+        contentHash: savedHash,
+        content: savedContent
       }
-      const currentContent = readEditorMarkdown()
-      if (hashContent(currentContent) === contentHash) {
+      const displayedContent = readEditorMarkdown()
+      if (hashContent(displayedContent) === savedHash) {
         clearUnsavedChapterDraft(updated.id)
         saveStateRef.current = 'saved'
         setSaveState('saved')
       } else {
-        setDraftContent(currentContent)
+        setDraftContent(displayedContent)
         setUnsavedChapterDraft({
           chapterId: updated.id,
           chapterNumber: currentChapter.chapterNumber,
-          content: currentContent
+          content: displayedContent
         })
         saveStateRef.current = 'dirty'
         setSaveState('dirty')
@@ -242,10 +258,32 @@ export function ChapterContentEditor({
     if (saved) onReverseArrange()
   }, [flushSave, isCreationActive, onReverseArrange, readEditorMarkdown])
 
-  // 历史版本应用由单章接口重新读取，避免非章节响应成为新的正文基线。
-  const handleVersionApplied = useCallback(() => {
-    setChapterLoadRevision((revision) => revision + 1)
-  }, [])
+  // 历史版本应用先用接口返回正文更新编辑器，再后台重读章节补齐服务端元数据。
+  const handleVersionApplied = useCallback((content: string, wordCount: number) => {
+    const chapter = useNovelDataStore
+      .getState()
+      .chapters.find((item) => item.id === baselineRef.current?.chapterId)
+    if (!chapter || !editor) {
+      setChapterLoadRevision((revision) => revision + 1)
+      return
+    }
+    const token = loadTokenRef.current
+    const contentHash = hashContent(content)
+    applyingLoadRef.current = { token, expectedHash: contentHash }
+    baselineRef.current = {
+      chapterId: chapter.id,
+      version: chapter.updatedAt,
+      contentHash,
+      content
+    }
+    setDraftContent(content)
+    saveStateRef.current = 'saved'
+    setSaveState('saved')
+    clearUnsavedChapterDraft(chapter.id)
+    editor.commands.setContent(content, { emitUpdate: false })
+    upsertChapter({ ...chapter, content, wordCount })
+    void getChapter(chapter.id).then(upsertChapter).catch(() => undefined)
+  }, [clearUnsavedChapterDraft, editor, upsertChapter])
 
   // ── 章节切换联动（播放头驱动，单向）──
   useEffect(() => {

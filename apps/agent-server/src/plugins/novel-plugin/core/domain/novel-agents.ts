@@ -16,6 +16,8 @@
  * 供本插件内部模块沿用 './novel-agents.js' 路径引入。
  */
 
+import type { ThinkingLevel } from '@earendil-works/pi-agent-core'
+
 // 创作流程事件协议类型 re-export（定义在 @repo/shared/novel）
 export type {
   CreationPhase,
@@ -227,12 +229,13 @@ export function updateNovelAgentTemperatures(
 export interface NovelAgentModelSelection {
   provider: string
   modelId: string
+  thinkingLevel?: ThinkingLevel | null
 }
 
 /** 模型读写所需的 AgentManager 子集 */
 type AgentModelManagerLike = {
-  getAgent(id: string): { model?: { provider: string; modelId: string } } | undefined
-  updateAgent(id: string, patch: { model?: { provider: string; modelId: string } }): unknown
+  getAgent(id: string): { model?: NovelAgentModelSelection } | undefined
+  updateAgent(id: string, patch: { model?: NovelAgentModelSelection }): unknown
 }
 
 /**

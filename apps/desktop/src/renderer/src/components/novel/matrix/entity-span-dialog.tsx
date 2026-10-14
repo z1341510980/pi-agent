@@ -54,6 +54,8 @@ function fieldLabels(kind: MatrixEntity['kind']): { first: string; last: string;
     case 'conflict':
     case 'faction':
       return { first: '起始章', last: '结束章', desc: '修改实体起止章节' }
+    case 'narrative':
+      return { first: '起始章', last: '结束章', desc: '修改剧情条目的起止章节' }
     default:
       return { first: '起始章', last: '结束章', desc: '' }
   }

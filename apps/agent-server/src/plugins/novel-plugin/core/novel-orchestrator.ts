@@ -57,13 +57,16 @@ import type { NovelMemoryGenerator } from './generation/novel-memory-generator.j
 import type { NovelAgentLogStatus } from './types.js'
 import {
   addLlmUsage,
+  createNovelWriterEventBuffer,
   extractLlmUsageFromMessage,
   hasLlmUsage,
+  normalizeNovelWriterOutput,
   sanitizeNovelProse,
   type LlmUsageSnapshot,
 } from './agent-run-utils.js'
 import { createNovelApplyRevisionTool, type RevisionDraftHolder } from './novel-tools.js'
 import { createNovelSubmitNarrativeTaskTool, type NarrativeTaskDraftHolder } from './novel-tools.js'
+import { createNovelSubmitProseTool, type ProseDraftHolder } from './novel-tools.js'
 import { createNovelSubmitReviewTool, type ReviewDraftHolder } from './novel-tools.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { ChapterFinalizer, type CreationOptions, type CreationResult } from './chapter-finalizer.js'
@@ -99,12 +102,16 @@ import { findModelBaseUrl, findModelMaxTokens } from '../../../core/plugin/cache
 import { getAssistantTerminalError } from '../../../core/plugin/plugin-session-outcome.js'
 import {
   createChapterBudgetUsage,
+  DEFAULT_MAX_QUALITY_REVISIONS,
   evaluateChapterBudget,
+  getQualityRevisionRemaining,
   getChapterBudgetCategorySnapshot,
+  qualityRevisionAvailable,
   recordChapterBudgetCategory,
   recordLlmCall,
   shouldPromptBudgetCheckpoint,
   tryRecordFullChapterRewrite,
+  type QualityRevisionCategory,
   type ChapterBudgetUsage,
 } from './chapters/chapter-budget.js'
 export type { CreationOptions, CreationResult } from './chapter-finalizer.js'
@@ -264,6 +271,8 @@ export function buildRevisionSeverityDirective(severities: readonly string[]): s
 export class NovelOrchestrator {
   /** PostWriteGuard 自动重写上限：超过则降级交给 Reviewer 人工判断，避免无限递归 */
   private static readonly MAX_GUARD_REWRITE = 2
+  /** Guard、Reviser、整章重写共用的质量修订总上限。 */
+  private static readonly MAX_QUALITY_REVISIONS = DEFAULT_MAX_QUALITY_REVISIONS
   /**
    * 质量门自动修订轮次上限：主 Reviser 1 轮 + 定向修补 1 轮。
    * 每轮都要烧一次 Reviser 调用，绝不做无上限循环；两轮仍改不动多半是
@@ -328,6 +337,21 @@ export class NovelOrchestrator {
    */
   setUserMessages(projectId: string, chapterNumber: number, messages: string[]): void {
     this.pendingUserMessages.set(this.runKey(projectId, chapterNumber), messages.slice())
+  }
+
+  /** 追加检查点反馈，保留同一流程中之前已经提交的意见。 */
+  appendUserMessages(projectId: string, chapterNumber: number, messages: string[]): void {
+    const key = this.runKey(projectId, chapterNumber)
+    const current = this.pendingUserMessages.get(key) ?? []
+    const additions = messages.map(message => message.trim()).filter(Boolean)
+    if (additions.length === 0) return
+    this.pendingUserMessages.set(key, [...current, ...additions])
+  }
+
+  /** 让重新规划后的下一次 Agent 调用重新读取章节上下文。 */
+  private invalidateSharedContext(): void {
+    const run = this.runStorage.getStore()
+    if (run) run.semiLayerSharedCache = null
   }
 
   /**
@@ -729,6 +753,9 @@ export class NovelOrchestrator {
           this.emitProgress(options, 'directing', 'phase_change', { message: '按修改意见重新规划叙事任务...' })
           directorToolMissedCount = 0
           isReplan = true
+          // 重新规划可能已经收到用户对章纲/实体/节奏的修改意见；不能复用
+          // 本轮 Director 生成前的 shared context，否则旧任务会继续压过反馈。
+          this.invalidateSharedContext()
           continue
         }
 
@@ -824,6 +851,7 @@ export class NovelOrchestrator {
            positioning: directorTask.positioning,
            timeOffset: directorTask.timeOffset,
            requiredReferences: directorTask.requiredReferences,
+          memoryAnchor: directorTask.memoryAnchor,
         },
       })
 
@@ -1055,7 +1083,11 @@ export class NovelOrchestrator {
         if (!bestWriterCandidate || candidateScore > bestWriterCandidate.score) {
           bestWriterCandidate = { content: writerResult, score: candidateScore }
         }
-        if (postWriteGuard.shouldRewrite && writerGuardRewriteCount < NovelOrchestrator.MAX_GUARD_REWRITE) {
+        if (
+          postWriteGuard.shouldRewrite
+          && writerGuardRewriteCount < NovelOrchestrator.MAX_GUARD_REWRITE
+          && this.qualityRevisionBudgetAvailable()
+        ) {
           // ⚠️ 检查点：PostWriteGuard 命中后让用户决策是否重写。
           // 旧逻辑直接 continue 静默重写，用户看不到 details（如"实际 1200 字，目标 3000 字 40%"），
           // 也无法选择"接受当前草稿跳过重写"或"转 Reviser 局部修订"。
@@ -1111,7 +1143,7 @@ export class NovelOrchestrator {
           }
           // rewrite（默认行为）：按原因重写 Writer
           writerGuardRewriteCount++
-          run.budget = recordChapterBudgetCategory(run.budget, 'guardWriterRewrites')
+          this.recordQualityRevision('guardWriterRewrites')
           writerGuardRewriteReason = postWriteGuard.reason
           writerGuardRewriteDetails = postWriteGuard.details ?? ''
           this.emitProgress(options, 'rewriting', 'phase_change', {
@@ -1177,8 +1209,13 @@ export class NovelOrchestrator {
               maxRewrite: NovelOrchestrator.MAX_GUARD_REWRITE,
               chapterNumber,
               budgetCategories,
+              qualityRevisionRemaining: getQualityRevisionRemaining(
+                run.budget,
+                NovelOrchestrator.MAX_QUALITY_REVISIONS,
+              ),
             },
             options: budgetCategories.fullChapterRewriteAvailable
+              && this.qualityRevisionBudgetAvailable()
               ? ['approve', 'rewrite', 'revise', 'reject']
               : ['approve', 'revise', 'reject'],
           })
@@ -1188,7 +1225,9 @@ export class NovelOrchestrator {
             return { status: 'cancelled' }
           }
           if (degradedDecision === 'rewrite') {
-            const rewrite = tryRecordFullChapterRewrite(run.budget)
+            const rewrite = this.qualityRevisionBudgetAvailable()
+              ? tryRecordFullChapterRewrite(run.budget)
+              : { usage: run.budget, allowed: false }
             if (rewrite.allowed) {
               run.budget = rewrite.usage
               this.emitProgress(options, 'rewriting', 'phase_change', { message: '用户选择从头重写整章...' })
@@ -1469,11 +1508,14 @@ export class NovelOrchestrator {
       )
       // 质量门给出 revise 时移除 approve：让"检测到严重问题"真正具有执行力。
       // 用户仍可 rewrite（整章重开）或 reject（取消），只是不能让它静默落库。
+      const qualityRevisionAvailable = this.qualityRevisionBudgetAvailable()
       const reviewCheckpointOptions: CheckpointDecision[] = mandatoryRevision
         ? (getChapterBudgetCategorySnapshot(run.budget).fullChapterRewriteAvailable
+            && qualityRevisionAvailable
             ? ['revise', 'rewrite', 'reject']
             : ['revise', 'reject'])
         : (getChapterBudgetCategorySnapshot(run.budget).fullChapterRewriteAvailable
+            && qualityRevisionAvailable
             ? ['approve', 'revise', 'rewrite', 'reject']
             : ['approve', 'revise', 'reject'])
       // ── 修订前告知：预计操作与消耗 ──
@@ -1528,7 +1570,12 @@ export class NovelOrchestrator {
               budgetCategories: getChapterBudgetCategorySnapshot(run.budget),
               // 修订操作与消耗预估（前端在「修订」按钮旁展示）
               revisionEstimate: reviewCheckpointOptions.includes('revise')
-                ? this.buildRevisionEstimate(reviewContent, reportChars, estimateFailedItems)
+                ? this.buildRevisionEstimate(
+                    reviewContent,
+                    reportChars,
+                    estimateFailedItems,
+                    getQualityRevisionRemaining(run.budget, NovelOrchestrator.MAX_QUALITY_REVISIONS),
+                  )
                 : undefined,
             },
             options: reviewCheckpointOptions,
@@ -1545,6 +1592,7 @@ export class NovelOrchestrator {
       // 旧前端、重放请求或协议漂移仍可能传入 approve；质量门命中时统一转为 revise。
       // 未知决策不再按接受处理，直接取消，避免任何未识别值绕过质量门落库。
       const fullRewriteAvailable = getChapterBudgetCategorySnapshot(run.budget).fullChapterRewriteAvailable
+        && qualityRevisionAvailable
       const effectiveReviewDecision = mandatoryRevision
         && (
           reviewDecision === 'approve'
@@ -1715,7 +1763,9 @@ export class NovelOrchestrator {
           )
         }
       } else if (effectiveReviewDecision === 'rewrite') {
-        const rewrite = tryRecordFullChapterRewrite(run.budget)
+        const rewrite = this.qualityRevisionBudgetAvailable()
+          ? tryRecordFullChapterRewrite(run.budget)
+          : { usage: run.budget, allowed: false }
         if (rewrite.allowed) {
           run.budget = rewrite.usage
           this.emitProgress(options, 'rewriting', 'phase_change', { message: '重新创作章节...' })
@@ -2032,11 +2082,14 @@ export class NovelOrchestrator {
           attempt: 1,
           maxAttempts: 1,
         })
-        const rewritten = await this.runAgent('writer', projectId, chapterNumber, plan.input, options, {
-          phase: 'rewriting',
-        })
-        if (rewritten?.trim()) {
-          content = rewritten
+        if (this.qualityRevisionBudgetAvailable()) {
+          const rewritten = await this.runAgent('writer', projectId, chapterNumber, plan.input, options, {
+            phase: 'rewriting',
+          })
+          this.recordQualityRevision('guardWriterRewrites')
+          if (rewritten?.trim()) {
+            content = rewritten
+          }
         }
         // 预重构后即干净 → 直接通过，不进 Reviser 轮
         const postSanitized = sanitizeNovelProse(content)
@@ -2066,6 +2119,9 @@ export class NovelOrchestrator {
       }
       // 上一轮未成功应用任何 patch：继续调用只是烧钱，停止
       if (round > 1 && lastAppliedPatches === 0) break
+      // Guard/整章重写可能已消耗本章全部质量修订额度；此时保留当前最佳稿，
+      // 不再启动新的 Reviser 调用。网络/Provider 瞬时重试不经过这里，不占额度。
+      if (!this.qualityRevisionBudgetAvailable()) break
 
       const prompt = buildRoundPrompt({ round, content, failedItems, report, clicheHits })
       if (round > 1) {
@@ -2103,10 +2159,22 @@ export class NovelOrchestrator {
           ].join('\n')
         },
       })
-      this.budgetRecordReviserRun()
+      this.recordQualityRevision('reviserRuns')
       const successful = draft.appliedPatches.filter(p => p.success)
       lastAppliedPatches = successful.length
-      if (successful.length > 0) content = draft.content
+      if (successful.length > 0) {
+        // 工具返回 success 但替换结果与输入相同（重复 patch、同义替换或模型
+        // 反复提交旧意见）时，继续下一轮只会产生“修订死循环”。
+        if (round > 1 && draft.content === content) {
+          this.context.logger.warn(
+            { projectId, chapterNumber, round, appliedCount: successful.length },
+            '修订内容未发生变化，停止重复修订循环',
+          )
+          lastAppliedPatches = 0
+        } else {
+          content = draft.content
+        }
+      }
       this.context.logger.info(
         {
           projectId,
@@ -2303,20 +2371,28 @@ export class NovelOrchestrator {
     content: string,
     reportChars: number,
     failedItems: QualityGateFailureItem[],
+    remainingQualityRevisions = NovelOrchestrator.MAX_AUTO_REVISION_ROUNDS,
   ): RevisionEstimate {
     return {
-      maxRounds: NovelOrchestrator.MAX_AUTO_REVISION_ROUNDS,
+      maxRounds: Math.min(NovelOrchestrator.MAX_AUTO_REVISION_ROUNDS, remainingQualityRevisions),
       callsPerRound: 1,
       estimatedTokens: this.estimateRevisionTokens(content, reportChars),
       failedItems,
     }
   }
 
-  /** 每轮修订也要计入 Reviser 预算，否则预算面板与实际调用次数不符 */
-  private budgetRecordReviserRun(): void {
+  /** 判断本章是否还可执行一次会改变正文的质量修订。 */
+  private qualityRevisionBudgetAvailable(): boolean {
+    const run = this.runStorage.getStore()
+    if (!run) return true
+    return qualityRevisionAvailable(run.budget, NovelOrchestrator.MAX_QUALITY_REVISIONS)
+  }
+
+  /** 记录一次已成功发起的质量修订；Reviewer 与网络重试不调用此方法。 */
+  private recordQualityRevision(category: QualityRevisionCategory): void {
     const run = this.runStorage.getStore()
     if (!run) return
-    run.budget = recordChapterBudgetCategory(run.budget, 'reviserRuns')
+    run.budget = recordChapterBudgetCategory(run.budget, category)
   }
 
   /**
@@ -2462,7 +2538,7 @@ export class NovelOrchestrator {
         'writer',
         projectId,
         chapterNumber,
-        `请执行第 ${scene.order} 场的已批准场景契约，直接输出本场正文。`,
+        `请执行第 ${scene.order} 场的已批准场景契约，写完调用 novel_submit_prose 工具提交本场正文。`,
         options,
         { writerScene, writerMaxWords: applied.effective },
       )
@@ -3303,10 +3379,41 @@ export class NovelOrchestrator {
           .map(t => t.name === 'novel_ask_story'
             ? this.wrapAskStoryWithLimit(t, run, agentType, projectId, chapterNumber)
             : t)
+    // Writer 正文协议（2026-10 正文通道隔离）：正文经 novel_submit_prose 工具提交，
+    // 走 `delta.tool_calls[].function.arguments`，与 `content` 物理隔离。
+    // 上游网关（实测灵算 gemini-3.8-flash-high）把 Gemini 的 thought 摘要拍平进
+    // content，字段级/增量级都无法区分思考与正文；工具通道不经过那条路。
+    // 文本通道保留兜底（provider 不支持工具、模型漏调用），由 normalizeNovelWriterOutput 处理。
+    const proseDraft: ProseDraftHolder | undefined = agentType === 'writer' && !identityOnly
+      ? { submissions: 0 }
+      : undefined
+    const submitProseTool = proseDraft ? createNovelSubmitProseTool(proseDraft) : undefined
+    /**
+     * Writer 漏调工具时的一次同会话纠正轮（与 Reviser 的 followUpPrompt 同一机制：
+     * plugin-manager 复用当前 Session、且只发一次，工具定义与闭包 draft 都还在）。
+     */
+    const writerProseFollowUp = proseDraft
+      ? (raw: string): string | undefined => {
+          if (proseDraft.content) return undefined
+          // [DIRECTOR_PUSHBACK] 是控制协议：Writer 明确拒绝本任务，不是"忘了交稿"，
+          // 再要一次正文会把推回意图顶掉。
+          if (/^\s*\[DIRECTOR_PUSHBACK\]/i.test(raw)) return undefined
+          return [
+            '上一轮你没有调用 novel_submit_prose 工具，系统没有收到正文。',
+            '请立即调用该工具提交正文：content 参数只放小说正文本身，',
+            '不要放分析、写作思路、字数核对、修改说明或 Markdown 围栏。',
+            '对话文本中的正文不会被采用。',
+          ].join('\n')
+        }
+      : undefined
     // 合并动态注入的额外工具（如 Reviser 的 novel_apply_revision）。
     // extraTools 不进 NOVEL_AGENT_CONFIGS.tools 白名单：白名单是静态配置，
     // 而 apply_revision 工具通过闭包持有 draft，每次调用都要重新创建。
-    const finalTools = [...filteredTools, ...(overrides?.extraTools ?? [])]
+    const finalTools = [
+      ...filteredTools,
+      ...(overrides?.extraTools ?? []),
+      ...(submitProseTool ? [submitProseTool] : []),
+    ]
     const toolNamesForLog = finalTools.map(t => t.name)
     // P0 埋点：tool schema 序列化（仅 name + description，与审计口径一致）
     metricCollector.add(
@@ -3425,6 +3532,10 @@ export class NovelOrchestrator {
      * 送出去的总量 —— 也正是 inputTokens 的来源。
      */
     const payloadStats = { messagesChars: 0, toolsChars: 0, toolCount: 0, totalChars: 0, roundTrips: 0 }
+    const writerEventBuffer = agentType === 'writer'
+      ? createNovelWriterEventBuffer(options.emit)
+      : undefined
+    let writerTextPublished = false
 
     // 在 try/catch/finally 中捕获结果与错误，finally 持久化到日志表
     let logStatus: NovelAgentLogStatus = 'success'
@@ -3459,8 +3570,8 @@ export class NovelOrchestrator {
           ? { skill: { name: skillConfig.name, path: skillPath } }
           : {}),
         tools: finalTools,
-        ...(overrides?.followUpPrompt
-          ? { followUpPrompt: overrides.followUpPrompt }
+        ...(overrides?.followUpPrompt ?? writerProseFollowUp
+          ? { followUpPrompt: overrides?.followUpPrompt ?? writerProseFollowUp }
           : {}),
         signal: options?.signal,
         temperature,
@@ -3487,7 +3598,11 @@ export class NovelOrchestrator {
               }),
             }
           : {}),
-        emit: options.emit,
+        // Writer 的普通文本先进入缓冲器，待 prompt() 返回并通过中文正文校验后
+        // 再发给前端；其他 Agent 保持原有实时文本流。
+        emit: writerEventBuffer
+          ? (event) => writerEventBuffer.emit(event)
+          : options.emit,
         emitRaw: false, // novel 不需要 RAW 事件（chat 才用于调试）
         onFirstText: () => {
           firstTextReceived = true
@@ -3548,10 +3663,71 @@ export class NovelOrchestrator {
         'Agent 开始调用 LLM（通过 createAgUiSession 工厂发射 AG-UI 标准事件）',
       )
 
-      // 使用 prompt() 而非 promptStream()：StreamEmitter 已由工厂订阅
-      // 实时发射 TEXT_MESSAGE_CONTENT 增量事件，prompt() 只负责触发 LLM 调用。
+      // 使用 prompt() 而非 promptStream()：StreamEmitter 已由工厂订阅事件；Writer
+      // 的普通文本由本次调用的缓冲器暂存，其他 Agent 仍实时发射增量事件。
       // 首 token 检测由 createAgUiSession 工厂的 onFirstText 回调完成（见上方调用）。
-      const result = await session.prompt()
+      const rawResult = await session.prompt()
+      // 空响应时优先保留事件流里的 provider 错误。否则 Writer 中文正文校验
+      // 会把真正的网关故障误报成“未返回中文正文”，丢掉最有用的诊断信息。
+      if (capturedLlmError && !rawResult.trim()) {
+        throw new Error(`LLM 调用失败: ${capturedLlmError}`)
+      }
+      // ── Writer 正文通道优先级：工具参数 > 文本兜底 ──
+      // 工具通道的 payload 与 content 物理隔离，是唯一不受网关 inline thinking 影响的路；
+      // 工具通道没拿到东西时（provider 不支持工具 / 模型漏调用 / 参数被拒），
+      // 回落到与旧实现完全一致的文本解析，不会比改造前更差。
+      const proseFromTool = proseDraft?.content
+        ? (() => {
+            const normalized = normalizeNovelWriterOutput(proseDraft.content!)
+            return normalized.rejected ? undefined : normalized
+          })()
+        : undefined
+      const normalizedWriter = agentType === 'writer'
+        ? (proseFromTool ?? normalizeNovelWriterOutput(rawResult))
+        : undefined
+      if (proseDraft) {
+        // 通道可观测：tool=按协议交稿；text=走了脆弱的文本兜底（含网关思考）。
+        // 这个比例决定"能否撤掉文本兜底与启发式清洗"。
+        this.context.logger.info(
+          {
+            agentType,
+            projectId,
+            chapterNumber,
+            proseSource: proseFromTool ? 'tool' : 'text',
+            submissions: proseDraft.submissions,
+            toolRejection: proseDraft.lastRejection,
+            rawTextLength: rawResult.length,
+            strippedReasoning: normalizedWriter?.strippedReasoning ?? false,
+          },
+          proseFromTool ? 'Writer 正文来自工具通道' : 'Writer 正文来自文本兜底通道',
+        )
+      }
+      if (normalizedWriter?.rejected) {
+        const reason = normalizedWriter.reason ?? 'Writer 输出未通过正文格式校验'
+        // 日志保留规范化后的可见部分和拒绝原因，不把 provider 返回的思考段
+        // 再次当作正文展示；原始响应仍通过长度与比例字段写入调试上下文。
+        logResult = normalizedWriter.content
+        this.context.logger.warn(
+          {
+            agentType,
+            projectId,
+            chapterNumber,
+            rawResultLength: rawResult.length,
+            normalizedLength: normalizedWriter.content.length,
+            chineseRatio: normalizedWriter.chineseRatio,
+            reason,
+          },
+          'Writer 输出未通过正文格式校验，拒绝进入后续修订流程',
+        )
+        writerEventBuffer?.discard(messageId)
+        writerTextPublished = true
+        throw new Error(`Writer 输出无效：${reason}`)
+      }
+      const result = normalizedWriter?.content ?? rawResult
+      if (writerEventBuffer) {
+        writerEventBuffer.flush(messageId, result)
+        writerTextPublished = true
+      }
       // provider 错误转真异常：让 catch 记录真实原因、流程错误对用户可见。
       //
       // 但**有可用产出时不作废**：Pi Session 在终答之后仍会继续往返（自动压缩等
@@ -3617,6 +3793,12 @@ export class NovelOrchestrator {
       throw err instanceof Error && rawMessage ? err : new Error(logError || 'LLM 调用失败（未知错误）')
     } finally {
       clearInterval(heartbeatTimer)
+      // prompt() 在 provider 错误或取消时可能没有返回规范化结果；关闭已被
+      // 缓冲的文本占位消息，确保前端不会一直处于 streaming 状态，也不显示原文。
+      if (writerEventBuffer && !writerTextPublished && agUiSession) {
+        writerEventBuffer.discard(agUiSession.messageId)
+        writerTextPublished = true
+      }
       // 不再需要 heartbeatUnsubscribe()：首 token 检测已下沉到 createAgUiSession 工厂，
       // 工厂内部 subscribe 在 dispose 时统一清理
       agUiSession?.dispose()

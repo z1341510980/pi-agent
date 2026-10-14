@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
-import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -28,8 +28,12 @@ import {
   listWritingStyleExperts,
   updateProject,
   parseNovelModelId,
-  type NovelMainModelRef,
 } from '@/api/novel-client'
+import {
+  getNovelAgentConfig,
+  updateNovelAgentConfig,
+  type NovelAgentType,
+} from '@/api/novel-agent-config-client'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
 import { useNovelWorkspaceLayoutStore, type RightPanelView, type WorkspaceLayoutMode } from '@/stores/novel-workspace-layout-store'
 import {
@@ -88,7 +92,7 @@ import {
 } from './chapter-task'
 import { ChapterContentEditor } from './chapter-content-editor'
 import { TimelineRebuildControl } from './timeline-rebuild-control'
-import { ModelPicker } from './model-picker'
+import { ModelPicker, type ModelRef, type NovelAgentModelOption, type NovelModelPickerMode } from './model-picker'
 import { ReferenceAnalysisWorkspace } from './reference-analysis/reference-analysis-workspace'
 import { PromptTemplatesDialog } from './prompt-templates-dialog'
 import { ErrorBoundary } from '@/components/overlays/error-boundary'
@@ -128,6 +132,24 @@ const REVIEW_TAB_OPTION: SegmentedOption<RightPanelView> = {
   title: '审校中心：剧情轨道/待审实体/待确认事件/批注/叙事修订',
 }
 
+const NOVEL_AGENT_TYPES: readonly NovelAgentType[] = ['director', 'writer', 'reviser', 'reviewer', 'memory']
+
+const NOVEL_AGENT_LABELS: Record<NovelAgentType, string> = {
+  director: '导演 Agent',
+  writer: '写作 Agent',
+  reviser: '修订 Agent',
+  reviewer: '审稿 Agent',
+  memory: '记忆 Agent',
+}
+
+const DEFAULT_NOVEL_AGENT_TEMPERATURES: Record<NovelAgentType, number> = {
+  director: 0.5,
+  writer: 0.9,
+  reviser: 0.7,
+  reviewer: 0.3,
+  memory: 0.2,
+}
+
 
 export interface NovelWorkspaceProps {
   onClose: () => void
@@ -145,6 +167,11 @@ export interface NovelWorkspaceProps {
 export interface EnsureChapterExistsDeps {
   upsertChapter: (chapter: NovelChapter) => void
   queryClient: QueryClient
+}
+
+function invalidateNovelProjectQueries(queryClient: QueryClient, projectId: string): void {
+  void queryClient.invalidateQueries({ queryKey: ['novel-project-data', projectId] })
+  void queryClient.invalidateQueries({ queryKey: ['novel', 'matrix-aggregation', projectId] })
 }
 
 /**
@@ -170,7 +197,7 @@ export async function ensureChapterExists(
       },
     })
     deps.upsertChapter(chapter)
-    void deps.queryClient.invalidateQueries({ queryKey: ['novel-project-data', projectId] })
+    invalidateNovelProjectQueries(deps.queryClient, projectId)
     return true
   } catch {
     return false
@@ -248,6 +275,8 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
   // 全局创作模型：顶栏选择器唯一入口，所有 AI 调用（编排/章纲/正文/群聊等）统一遵守
   const selectedAgentModel = useNovelUiStore((s) => s.selectedAgentModel)
   const setSelectedAgentModel = useNovelUiStore((s) => s.setSelectedAgentModel)
+  const projectModelSelections = useNovelUiStore((s) => s.projectModelSelections)
+  const setProjectModelSelection = useNovelUiStore((s) => s.setProjectModelSelection)
   const upsertProject = useNovelDataStore((s) => s.upsertProject)
 
   // ── 全局快捷键：撤销/重做（编辑器内由 Tiptap 自行处理）──
@@ -261,6 +290,24 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
   useNovelWorkspaceShortcuts({ enabled: active })
 
   const queryClient = useQueryClient()
+
+  // 小说 Agent 模型配置与设置页共用同一个全局查询缓存。
+  const novelAgentConfigQuery = useQuery({
+    queryKey: ['novel-agent-config'],
+    queryFn: getNovelAgentConfig,
+    enabled: Boolean(currentProjectId),
+  })
+
+  const updateNovelAgentConfigMutation = useMutation({
+    mutationFn: updateNovelAgentConfig,
+    onSuccess: () => {
+      toastSuccess('Agent 模型已更新', '设置页中的小说 Agent 配置已同步')
+    },
+    onError: (err: Error) => {
+      toastError('保存 Agent 模型失败', err.message)
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['novel-agent-config'] }),
+  })
 
   // 创作流程
   const session = useNovelSession()
@@ -367,18 +414,45 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
 
   const currentProject = projects.find((p) => p.id === currentProjectId) ?? null
 
+  const [modelMode, setModelMode] = useState<NovelModelPickerMode>('per-agent')
+
+  // 项目切换时按项目主模型初始化模式；同一项目内的切换由用户操作控制。
+  useEffect(() => {
+    if (!currentProject?.id) return
+    const savedSelection = useNovelUiStore.getState().projectModelSelections[currentProject.id]
+    setModelMode(selectedAgentModel || savedSelection || currentProject.novelModelId ? 'unified' : 'per-agent')
+  }, [currentProject?.id])
+
+  const agentModelOptions = useMemo<NovelAgentModelOption[]>(() => {
+    const configByType = new Map((novelAgentConfigQuery.data ?? []).map((item) => [item.agentType, item]))
+    return NOVEL_AGENT_TYPES.map((agentType) => ({
+      agentType,
+      label: NOVEL_AGENT_LABELS[agentType],
+      model: configByType.get(agentType)?.model ?? null,
+    }))
+  }, [novelAgentConfigQuery.data])
+
   // ── 创作主模型：header 唯一设置入口 ──
   // 显示优先级：本次覆盖（selectedAgentModel，即将被淘汰的旧机制）> 项目主模型。
   // 选择即写入项目 novelModelId 并清掉本次覆盖 —— 后端解析链为
   // 「per-call 覆盖 > 项目主模型 > Agent 配置」，清掉覆盖后 header 的选择就是唯一事实源。
-  const headerModelValue: NovelMainModelRef | null =
-    selectedAgentModel
-      ? { provider: selectedAgentModel.provider, modelId: selectedAgentModel.modelId }
-      : parseNovelModelId(currentProject?.novelModelId)
+  const currentProjectModelSelection: ModelRef | null = currentProject
+    ? projectModelSelections[currentProject.id] ?? parseNovelModelId(currentProject.novelModelId)
+    : null
+  const activeModelSelection = selectedAgentModel ?? currentProjectModelSelection
 
-  const handleHeaderModelChange = useCallback(async (ref: NovelMainModelRef | null) => {
+  const headerModelValue: ModelRef | null =
+    modelMode === 'unified' && selectedAgentModel
+      ? selectedAgentModel
+      : modelMode === 'unified' ? currentProjectModelSelection : null
+
+  const handleHeaderModelChange = useCallback(async (ref: ModelRef | null) => {
+    const previousMode = modelMode
+    const previousSelection = currentProjectModelSelection
+    setModelMode(ref ? 'unified' : 'per-agent')
     setSelectedAgentModel(null)
     if (!currentProject?.id) return
+    setProjectModelSelection(currentProject.id, ref)
     try {
       const updated = await updateProject(currentProject.id, {
         novelModelId: ref ? `${ref.provider}:${ref.modelId}` : null,
@@ -389,9 +463,47 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
         ref ? `本章之后的所有创作流程将使用 ${ref.provider}/${ref.modelId}` : '已恢复各 Agent 各自配置'
       )
     } catch (err) {
+      setProjectModelSelection(currentProject.id, previousSelection)
+      setModelMode(previousMode)
       toastError('保存创作主模型失败', err instanceof Error ? err.message : '未知错误')
     }
-  }, [currentProject?.id, setSelectedAgentModel, upsertProject])
+  }, [currentProject?.id, currentProjectModelSelection, modelMode, setProjectModelSelection, setSelectedAgentModel, upsertProject])
+
+  const handleModelModeChange = useCallback(async (nextMode: NovelModelPickerMode): Promise<void> => {
+    setModelMode(nextMode)
+    if (nextMode !== 'per-agent' || !currentProject?.id) return
+
+    setSelectedAgentModel(null)
+    const previousSelection = currentProjectModelSelection
+    setProjectModelSelection(currentProject.id, null)
+    if (!currentProject.novelModelId) return
+    try {
+      const updated = await updateProject(currentProject.id, { novelModelId: null })
+      upsertProject(updated)
+      toastSuccess('已切换为按 Agent 配置', '小说创作将使用各角色在设置页配置的模型')
+    } catch (err) {
+      setProjectModelSelection(currentProject.id, previousSelection)
+      setModelMode('unified')
+      toastError('切换模型模式失败', err instanceof Error ? err.message : '未知错误')
+    }
+  }, [currentProject, currentProjectModelSelection, setProjectModelSelection, setSelectedAgentModel, upsertProject])
+
+  const handleAgentModelChange = useCallback((
+    agentType: NovelAgentType,
+    model: { provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null,
+  ): void => {
+    const currentConfig = novelAgentConfigQuery.data
+    if (!currentConfig) {
+      toastError('保存 Agent 模型失败', 'Agent 配置尚未加载完成，请稍后重试')
+      return
+    }
+    const existing = currentConfig.find((item) => item.agentType === agentType)
+    updateNovelAgentConfigMutation.mutate([{
+      agentType,
+      temperature: existing?.temperature ?? DEFAULT_NOVEL_AGENT_TEMPERATURES[agentType],
+      model,
+    }])
+  }, [novelAgentConfigQuery.data, updateNovelAgentConfigMutation])
 
   // 拉取当前项目的全部实体数据
   const projectDataQuery = useQuery({
@@ -609,7 +721,7 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
       }
 
       // 后台刷新项目数据，确保 edges/关联表等也同步
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      invalidateNovelProjectQueries(queryClient, currentProjectId)
       setSimilarityDialogOpen(false)
       similarityScan.reset()
       if (result.totalMerged > 0) {
@@ -709,7 +821,10 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
     setCreationChapterNumber(task.chapterNumber)
 
     // 任务启动即快照全局模型：运行期间用户切换顶栏选择器不影响本次任务
-    const creationModelId = useNovelUiStore.getState().selectedAgentModel ?? undefined
+    const modelState = useNovelUiStore.getState()
+    const creationModelId = modelState.selectedAgentModel
+      ?? modelState.projectModelSelections[task.projectId]
+      ?? undefined
 
     if (task.kind === 'arrange') {
       await creationFlow.aiArrange(task.projectId, task.chapterNumber, { modelId: creationModelId })
@@ -720,19 +835,42 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
       return
     }
 
-    // 功能位（本章作用）不落库，只能从紧邻的那次 AI 编排结果里取。
-    // 取不到就退化为原行为（Writer 只看到角色短卡，没有"本章作用"行）。
-    const characterFunctions = creationFlow.takeArrangedCharacterFunctions(task.chapterNumber)
+    // 先完成实体读取，再消费功能位（本章作用）。功能位不落库，只能从紧邻的
+    // 那次 AI 编排结果里取；若实体读取失败/启动链路未受理，不能在异步等待前
+    // 提前清空缓存，否则重试时 Writer 会丢掉本章角色作用。
+    const arranged = await resolveArrangedEntities(task.projectId, task.chapterNumber)
+    const characterFunctions = creationFlow.peekArrangedCharacterFunctions(task.chapterNumber)
     const arrangedEntities = {
-      ...(await resolveArrangedEntities(task.projectId, task.chapterNumber)),
+      ...arranged,
+      // 取不到就退化为原行为（Writer 只看到角色短卡，没有"本章作用"行）。
       ...(characterFunctions ? { characterFunctions } : {}),
     }
     if (task.kind === 'discussion') {
       await session.startDiscussion(task.projectId, task.chapterNumber, { arrangedEntities, styleExpertIds: selectedStyleExpertIds })
+      creationFlow.takeArrangedCharacterFunctions(task.chapterNumber)
       return
     }
     await session.startWorkflow(task.projectId, task.chapterNumber, { arrangedEntities, modelId: creationModelId, styleExpertIds: selectedStyleExpertIds })
+    creationFlow.takeArrangedCharacterFunctions(task.chapterNumber)
   }, [chapters, creationFlow, resolveArrangedEntities, setCreationMode])
+
+  /**
+   * 所有会启动/恢复创作流的入口共用同一把立即生效的互斥锁。
+   *
+   * `creationFlow.isRunning` 是 React state，在 setState 到下一次 render 前仍可能为
+   * false；ref 负责覆盖整个异步启动链（建章、读矩阵、恢复历史、消费事件流），让
+   * 快速双击或多个入口同时触发时只有第一个请求能继续。锁只在操作完成/失败后释放，
+   * 因此失败仍可从错误态重试。
+   */
+  const withCreationStartLock = useCallback(async (operation: () => Promise<void>): Promise<void> => {
+    if (!currentProjectId || creationFlow.isRunning || startCreationLockRef.current) return
+    startCreationLockRef.current = true
+    try {
+      await operation()
+    } finally {
+      startCreationLockRef.current = false
+    }
+  }, [currentProjectId, creationFlow.isRunning])
 
   /**
    * 编辑器 footer「反推实体」入口（P1-2a 统一路径）：
@@ -740,18 +878,14 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
    * （isCreationActive effect 会自动切到会话 Tab）。
    */
   const handleReverseFromEditor = useCallback((): void => {
-    if (!currentProjectId || creationFlow.isRunning || startCreationLockRef.current) return
-    const playhead = useNovelUiStore.getState().playheadChapter
-    void runChapterTask({ kind: 'reverse', projectId: currentProjectId, chapterNumber: playhead })
-  }, [currentProjectId, creationFlow.isRunning, runChapterTask])
+    void withCreationStartLock(async () => {
+      const playhead = useNovelUiStore.getState().playheadChapter
+      await runChapterTask({ kind: 'reverse', projectId: currentProjectId!, chapterNumber: playhead })
+    })
+  }, [currentProjectId, runChapterTask, withCreationStartLock])
 
   const handleStartCreation = useCallback(async (mode: 'manual' | 'ai-arrange', chapterNumber?: number) => {
-    if (!currentProjectId || creationFlow.isRunning) return
-    // ref 级互斥锁：creationFlow.isRunning 是 React state（setState 异步生效），
-    // 快速双击时第二次点击仍读到 false；用 ref 在 try 块执行期间（含 await）立即拦截
-    if (startCreationLockRef.current) return
-    startCreationLockRef.current = true
-    try {
+    await withCreationStartLock(async () => {
       // 优先用入参 chapterNumber（来自大纲树右键直接传值），回退到 playheadChapter
       // 修复 React state 闭包陷阱：setPlayheadChapter 后同步连调 onStartCreation 时，
       // 闭包内的 playheadChapter 还是旧值，必须用入参绕开
@@ -760,49 +894,49 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
       if (!chapter) return
       await runChapterTask({
         kind: resolveChapterTaskKind(flowType, mode),
-        projectId: currentProjectId,
+        projectId: currentProjectId!,
         chapterNumber: playhead,
       })
-    } catch (err) {
+    }).catch((err) => {
       console.error('[NovelWorkspace] 启动创作失败:', err)
       setCreationMode(null)
       setCreationChapterNumber(undefined)
-    } finally {
-      startCreationLockRef.current = false
-    }
-  }, [currentProjectId, chapters, runChapterTask, setCreationMode, playheadChapter, flowType])
+    })
+  }, [chapters, runChapterTask, setCreationMode, playheadChapter, flowType, withCreationStartLock, currentProjectId])
 
   // 重新创作已有章节：右键章节节点触发，章节已存在无需 createChapter，
   // 直接以原章节号启动创作流程（覆盖旧内容）
   // ⚠️ 必须传入 arrangedEntities：重新生成时 Writer 仍需看到矩阵本章列的编排约束，
   // 否则 Writer 完全不知道哪些角色/冲突/伏笔必须出场，导致剧情错乱。
   const handleRegenerateChapter = useCallback(async (chapterNumber: number) => {
-    if (!currentProjectId || creationFlow.isRunning) return
-    const chapter = chapters.find((c) => c.chapterNumber === chapterNumber)
-    if (!chapter) return
-    await runChapterTask({
-      kind: resolveWritingTaskKind(flowType),
-      projectId: currentProjectId,
-      chapterNumber,
+    await withCreationStartLock(async () => {
+      const chapter = chapters.find((c) => c.chapterNumber === chapterNumber)
+      if (!chapter) return
+      await runChapterTask({
+        kind: resolveWritingTaskKind(flowType),
+        projectId: currentProjectId!,
+        chapterNumber,
+      })
     })
-  }, [currentProjectId, chapters, creationFlow.isRunning, flowType, runChapterTask])
+  }, [chapters, flowType, runChapterTask, withCreationStartLock, currentProjectId])
 
   // 从指定章节开始新创作流程（用于时间轴右键菜单"从此章开始创作"）
   // 若该章节号不存在，先创建空章节再启动流程
   const handleStartCreationAt = useCallback(async (chapterNumber: number) => {
-    if (!currentProjectId || creationFlow.isRunning) return
-    const existing = chapters.find((c) => c.chapterNumber === chapterNumber)
-    if (!existing) {
-      // 建章失败静默放弃（维持原行为：右键入口不打断用户）
-      const created = await ensureChapterExists(currentProjectId, chapterNumber, { upsertChapter, queryClient })
-      if (!created) return
-    }
-    await runChapterTask({
-      kind: resolveWritingTaskKind(flowType),
-      projectId: currentProjectId,
-      chapterNumber,
+    await withCreationStartLock(async () => {
+      const existing = chapters.find((c) => c.chapterNumber === chapterNumber)
+      if (!existing) {
+        // 建章失败静默放弃（维持原行为：右键入口不打断用户）
+        const created = await ensureChapterExists(currentProjectId!, chapterNumber, { upsertChapter, queryClient })
+        if (!created) return
+      }
+      await runChapterTask({
+        kind: resolveWritingTaskKind(flowType),
+        projectId: currentProjectId!,
+        chapterNumber,
+      })
     })
-  }, [currentProjectId, chapters, creationFlow.isRunning, flowType, runChapterTask, upsertChapter, queryClient])
+  }, [chapters, flowType, runChapterTask, upsertChapter, queryClient, withCreationStartLock, currentProjectId])
 
   // 收到 data_changed 事件时刷新画布（替代轮询）
   // Memory Agent 写入实体状态 + orchestrator.syncChapterDimensions 补全章节维度后，
@@ -811,7 +945,7 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
   useEffect(() => {
     const lastOutput = creationFlow.agentOutputs[creationFlow.agentOutputs.length - 1]
     if (lastOutput?.dataChanged && currentProjectId) {
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      invalidateNovelProjectQueries(queryClient, currentProjectId)
       // 角色 history 不在 projectDataQuery 范围，单独全量拉取刷新
       void listProjectCharacterHistory(currentProjectId)
         .then((history) => setCharacterHistory(history))
@@ -839,7 +973,7 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
         if (!cancelled) upsertChapter(saved)
       })
       .catch((err) => console.error('[NovelWorkspace] 同步群聊已完成章节失败:', err))
-    void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+    invalidateNovelProjectQueries(queryClient, currentProjectId)
     return () => { cancelled = true }
   }, [completedDiscussionRunId, currentProjectId, creationChapterNumber, chapters, upsertChapter, queryClient])
 
@@ -852,7 +986,7 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
     try {
       const updated = await completeChapter(targetChapter.id, { content })
       upsertChapter(updated)
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      invalidateNovelProjectQueries(queryClient, currentProjectId)
       // 保存成功后重置创作流程状态，切回节点详情面板
       creationFlow.reset()
       await chapterChatLoadHistory(currentProjectId, creationChapterNumber)
@@ -866,7 +1000,7 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
     await creationFlow.cancel()
     creationFlow.reset()
     if (currentProjectId) {
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      invalidateNovelProjectQueries(queryClient, currentProjectId)
       if (creationChapterNumber != null) {
         void chapterChatLoadHistory(currentProjectId, creationChapterNumber)
       }
@@ -874,20 +1008,21 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
   }, [creationFlow, currentProjectId, creationChapterNumber, queryClient, chapterChatLoadHistory])
 
   const handleRetryCreation = useCallback((): void => {
-    if (!currentProject || creationChapterNumber == null) return
-    const projectId = currentProject.id
-    const chapterNumber = creationChapterNumber
-    const task = resolveRetryChapterTask(
-      activeChapterTask,
-      flowType,
-      projectId,
-      chapterNumber,
-    )
-    creationFlow.reset()
-    void chapterChatLoadHistory(projectId, chapterNumber).then(() => {
-      return runChapterTask(task)
+    void withCreationStartLock(async () => {
+      if (!currentProject || creationChapterNumber == null) return
+      const projectId = currentProject.id
+      const chapterNumber = creationChapterNumber
+      const task = resolveRetryChapterTask(
+        activeChapterTask,
+        flowType,
+        projectId,
+        chapterNumber,
+      )
+      creationFlow.reset()
+      await chapterChatLoadHistory(projectId, chapterNumber)
+      await runChapterTask(task)
     })
-  }, [currentProject, creationChapterNumber, activeChapterTask, creationFlow, chapterChatLoadHistory, flowType, runChapterTask])
+  }, [currentProject, creationChapterNumber, activeChapterTask, creationFlow, chapterChatLoadHistory, flowType, runChapterTask, withCreationStartLock])
 
   const handleDismissError = useCallback((): void => {
     creationFlow.reset()
@@ -901,20 +1036,22 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
    * 直接使用失败时保留的修订稿（creationFlow.chapterContent 已在 error 结果中更新）。
    */
   const handleReRevise = useCallback((): void => {
-    if (!currentProject || creationChapterNumber == null) return
-    const content = creationFlow.chapterContent
-    if (!content.trim()) {
-      toastError('没有可修订的正文内容', '请先手动编辑正文或重新创作。')
-      return
-    }
-    const projectId = currentProject.id
-    const chapterNumber = creationChapterNumber
-    setCreationMode('manual')
-    // 与首次创作一致：点击时快照顶栏模型，运行期间切换不影响本次修订。
-    void creationFlow.reRevise(projectId, chapterNumber, content, {
-      modelId: selectedAgentModel ?? undefined,
+    void withCreationStartLock(async () => {
+      if (!currentProject || creationChapterNumber == null) return
+      const content = creationFlow.chapterContent
+      if (!content.trim()) {
+        toastError('没有可修订的正文内容', '请先手动编辑正文或重新创作。')
+        return
+      }
+      const projectId = currentProject.id
+      const chapterNumber = creationChapterNumber
+      setCreationMode('manual')
+      // 与首次创作一致：点击时快照顶栏模型，运行期间切换不影响本次修订。
+      await creationFlow.reRevise(projectId, chapterNumber, content, {
+        modelId: selectedAgentModel ?? currentProjectModelSelection ?? undefined,
+      })
     })
-  }, [currentProject, creationChapterNumber, creationFlow, selectedAgentModel, setCreationMode])
+  }, [currentProject, creationChapterNumber, creationFlow, selectedAgentModel, currentProjectModelSelection, setCreationMode, withCreationStartLock])
 
   /**
    * 质量门修订失败后「手动编辑 / 保留草稿」：内容留在编辑器（不落库不丢弃），
@@ -926,32 +1063,34 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
   }, [creationFlow])
 
   const handleResumeDiscussion = useCallback((runId: string): void => {
-    if (!currentProjectId) return
-    const chapterNumber = creationChapterNumber ?? chatChapterNumber
-    if (chapterNumber == null) return
-    setFlowType('discussion')
-    setCreationMode('manual')
-    setCreationChapterNumber(chapterNumber)
-    setActiveChapterTask({ kind: 'discussion', projectId: currentProjectId, chapterNumber })
-    creationFlow.reset()
-    void session.resumeDiscussion(currentProjectId, chapterNumber, runId)
-  }, [currentProjectId, creationChapterNumber, chatChapterNumber, creationFlow, setCreationMode])
+    void withCreationStartLock(async () => {
+      const chapterNumber = creationChapterNumber ?? chatChapterNumber
+      if (chapterNumber == null) return
+      setFlowType('discussion')
+      setCreationMode('manual')
+      setCreationChapterNumber(chapterNumber)
+      setActiveChapterTask({ kind: 'discussion', projectId: currentProjectId!, chapterNumber })
+      creationFlow.reset()
+      await session.resumeDiscussion(currentProjectId!, chapterNumber, runId)
+    })
+  }, [currentProjectId, creationChapterNumber, chatChapterNumber, creationFlow, setCreationMode, session, withCreationStartLock])
 
   /**
    * 工作流断点续跑：从失败快照恢复（跳过已完成阶段）。
    * runId='latest'（/继续 命令回退）由后端取该章最近一条可续跑快照。
    */
   const handleResumeWorkflow = useCallback((runId: string): void => {
-    if (!currentProjectId) return
-    const chapterNumber = creationChapterNumber ?? chatChapterNumber
-    if (chapterNumber == null) return
-    setFlowType('workflow')
-    setCreationMode('manual')
-    setCreationChapterNumber(chapterNumber)
-    setActiveChapterTask({ kind: 'workflow', projectId: currentProjectId, chapterNumber })
-    creationFlow.reset()
-    void session.resumeWorkflow(currentProjectId, chapterNumber, runId)
-  }, [currentProjectId, creationChapterNumber, chatChapterNumber, creationFlow, setCreationMode])
+    void withCreationStartLock(async () => {
+      const chapterNumber = creationChapterNumber ?? chatChapterNumber
+      if (chapterNumber == null) return
+      setFlowType('workflow')
+      setCreationMode('manual')
+      setCreationChapterNumber(chapterNumber)
+      setActiveChapterTask({ kind: 'workflow', projectId: currentProjectId!, chapterNumber })
+      creationFlow.reset()
+      await session.resumeWorkflow(currentProjectId!, chapterNumber, runId)
+    })
+  }, [currentProjectId, creationChapterNumber, chatChapterNumber, creationFlow, setCreationMode, session, withCreationStartLock])
 
   const handleSendMessage = useCallback((message: string) => {
     creationFlow.sendMessage(message)
@@ -1000,25 +1139,23 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
     _modelId?: { provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null,
   ) => {
     void _modelId // 仅保持与面板 onStartFlowCommand 签名兼容；模型由 runChapterTask 从全局 store 快照
-    if (!currentProjectId || creationFlow.isRunning || startCreationLockRef.current) return
-    const chapterExists = chapters.some((c) => c.chapterNumber === chapterNumber)
-    if (!chapterExists && command !== 'write') {
-      toastError(
-        `第 ${chapterNumber} 章不存在`,
-        command === 'rewrite' ? '只能重写已有章节；新章节请用 /写 N' : '群聊需要已有章节；新章节请用 /写 N',
-      )
-      return
-    }
+    void withCreationStartLock(async () => {
+      const chapterExists = chapters.some((c) => c.chapterNumber === chapterNumber)
+      if (!chapterExists && command !== 'write') {
+        toastError(
+          `第 ${chapterNumber} 章不存在`,
+          command === 'rewrite' ? '只能重写已有章节；新章节请用 /写 N' : '群聊需要已有章节；新章节请用 /写 N',
+        )
+        return
+      }
 
-    const kind = command === 'discuss' ? 'discussion' : 'workflow'
-    setFlowType(kind)
+      const kind = command === 'discuss' ? 'discussion' : 'workflow'
+      setFlowType(kind)
 
-    startCreationLockRef.current = true
-    void (async () => {
       try {
         if (!chapterExists) {
           // write 且章节不存在：先创建空章节（与 handleStartCreationAt 一致）
-          const created = await ensureChapterExists(currentProjectId, chapterNumber, { upsertChapter, queryClient })
+          const created = await ensureChapterExists(currentProjectId!, chapterNumber, { upsertChapter, queryClient })
           if (!created) {
             // 建章失败：复位创作状态，交由流程错误态展示
             setCreationMode(null)
@@ -1036,16 +1173,14 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
         } else {
           toastSuccess(`已启动第 ${chapterNumber} 章群聊`, '适合多角色谈判与高潮场景')
         }
-        await runChapterTask({ kind, projectId: currentProjectId, chapterNumber })
+        await runChapterTask({ kind, projectId: currentProjectId!, chapterNumber })
       } catch {
         // 启动失败：与 handleStartCreation 一致，静默交由流程错误态展示
         setCreationMode(null)
         setCreationChapterNumber(undefined)
-      } finally {
-        startCreationLockRef.current = false
       }
-    })()
-  }, [currentProjectId, chapters, creationFlow.isRunning, runChapterTask, upsertChapter, queryClient, setCreationMode])
+    })
+  }, [currentProjectId, chapters, runChapterTask, upsertChapter, queryClient, setCreationMode, withCreationStartLock])
 
   // ── 章节自由聊天回调 ──
   // ⚠️ 只依赖 hook 返回的稳定方法（useCallback 引用），不依赖整个 chapterChat 对象，
@@ -1126,7 +1261,7 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
               <div className="absolute top-3 left-3 z-50">
                 <TimelineRebuildControl
                   projectId={currentProject.id}
-                  selectedModel={selectedAgentModel}
+                  selectedModel={activeModelSelection}
                 />
               </div>
             )}
@@ -1194,15 +1329,16 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
                   compact
                   label="创作模型"
                   value={headerModelValue}
-                  onChange={(model) => {
-                    void handleHeaderModelChange(
-                      model ? { provider: model.provider, modelId: model.modelId } : null
-                    )
-                  }}
+                  mode={modelMode}
+                  agentModels={agentModelOptions}
+                  agentModelsLoading={novelAgentConfigQuery.isLoading}
+                  onModeChange={(nextMode) => { void handleModelModeChange(nextMode) }}
+                  onAgentModelChange={handleAgentModelChange}
+                  onChange={(model) => { void handleHeaderModelChange(model) }}
                 />
                 <TimelineRebuildControl
                   projectId={currentProject.id}
-                  selectedModel={selectedAgentModel}
+                  selectedModel={activeModelSelection}
                 />
               </>
             )}

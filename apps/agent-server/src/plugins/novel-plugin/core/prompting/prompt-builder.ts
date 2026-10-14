@@ -1898,6 +1898,18 @@ export class NovelPromptBuilder {
       if (narrativeTask.description.trim()) {
         parts.push(`## 已批准的本章叙事任务\n\n${narrativeTask.description.trim()}`)
       }
+      if (narrativeTask.memoryAnchor) {
+        parts.push([
+          '## 本章唯一记忆点（必须验收）',
+          `标题：${narrativeTask.memoryAnchor.title}`,
+          `正文证据：${narrativeTask.memoryAnchor.image}`,
+          `不可逆变化：${narrativeTask.memoryAnchor.irreversibleChange}`,
+          narrativeTask.memoryAnchor.emotionalPayoff
+            ? `情绪回报：${narrativeTask.memoryAnchor.emotionalPayoff}`
+            : '',
+          '检查正文是否出现可定位证据，并确认变化由行动造成；抽象总结或单纯情绪波动不算通过。',
+        ].filter(Boolean).join('\n'))
+      }
       // 矩阵执行验收：Reviewer 专属，从共享层 formatArrangedEntities 移至此处。
       // 对 Director/Writer/Memory 注入"Reviewer 必须逐项核对"无意义且破坏缓存稳定性。
       // 修复（2026-07-18）。
@@ -1991,6 +2003,17 @@ export class NovelPromptBuilder {
               targetWords,
               narrativeTask.scenes,
             ),
+            memory_anchor: narrativeTask.memoryAnchor
+              ? [
+                  `记忆点：${narrativeTask.memoryAnchor.title}`,
+                  `必须出现的具体画面/动作/物件/台词：${narrativeTask.memoryAnchor.image}`,
+                  `本章不可逆变化：${narrativeTask.memoryAnchor.irreversibleChange}`,
+                  narrativeTask.memoryAnchor.emotionalPayoff
+                    ? `情绪回报：${narrativeTask.memoryAnchor.emotionalPayoff}`
+                    : '',
+                  '正文必须让这个变化通过角色选择和可观察后果发生，不要用旁白总结代替。',
+                ].filter(Boolean).join('\n')
+              : '未提供结构化记忆点。请从本章主任务中提炼一个可观察的不可逆变化，并在正文中落实。',
             positioning_guidance: positioningGuidance,
             // 形态判定线与 prose-quality-evaluator 同口径（quality-policy 注释曾要求
             // 数字不进 prompt，但模板早已手写死数值且与门禁不一致——改为从
@@ -2048,6 +2071,9 @@ export class NovelPromptBuilder {
         scene_pressure: scene.pressure,
         scene_choice: scene.choice,
         scene_consequence: scene.consequence,
+        memory_anchor: narrativeTask.memoryAnchor
+          ? `本章记忆点：${narrativeTask.memoryAnchor.title}\n具体画面：${narrativeTask.memoryAnchor.image}\n不可逆变化：${narrativeTask.memoryAnchor.irreversibleChange}`
+          : '本章记忆点：让本场选择造成一个可观察且不可逆的变化。',
         previous_scene_tail: previousSceneTail?.trim() || '（这是第一场，没有上一场承接文本。）',
         positioning_guidance: positioningGuidance,
       },

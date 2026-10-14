@@ -372,11 +372,17 @@ export function renderCheckpointContent(checkpoint: CheckpointData): string {
           }
         | undefined
       if (estimate) {
+        const maxRounds = estimate.maxRounds ?? 2
+        const roundDescription = maxRounds <= 0
+          ? '本次质量修订预算已用尽，将保留当前稿交人工处理'
+          : maxRounds > 1
+          ? `第 1 轮按审稿意见修订；仍有问题则第 ${maxRounds} 轮只针对未通过项定向修补`
+          : '本次只执行 1 轮修订，仍有问题将保留当前稿交人工处理'
         lines.push(
           '',
           '## 修订预估（点击「修订」后）',
           '',
-          `- 自动修订轮次：最多 ${estimate.maxRounds ?? 2} 轮（第 1 轮按审稿意见修订；仍有问题则第 2 轮只针对未通过项定向修补）`,
+          `- 自动修订轮次：最多 ${maxRounds} 轮（${roundDescription}）`,
           `- 每轮 AI 调用：${estimate.callsPerRound ?? 1} 次（修订 Agent）`,
           `- 预计消耗：约 ${formatTokenCount(estimate.estimatedTokens)} token（估算，不含缓存命中）`
         )

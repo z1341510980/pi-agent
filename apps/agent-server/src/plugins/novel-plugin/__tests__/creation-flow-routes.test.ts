@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfirmationManager } from '../../../core/tool/confirmation-manager.js'
 import { createCreationFlowRoutes } from '../routes/creation-flow-routes.js'
-import { finishNovelChapterTask, registerNovelChapterTask } from '../utils/chapter-task-registry.js'
+import { NOVEL_AGENT_CONFIGS } from '../core/domain/novel-agents.js'
+import { finishNovelChapterTask, registerNovelChapterTask, activeNovelChapterTasks } from '../utils/chapter-task-registry.js'
 
 function createReply() {
   const reply = {
@@ -41,6 +42,20 @@ function createSseReply() {
     writableEnded: false,
   }
   return reply
+}
+
+/**
+ * create-flow / resume 现在跑在后台（2026-10 脱离 HTTP 生命周期），
+ * 进度与终态经事件流下发。测试用这个替身接住 append 调用。
+ */
+function createWorkflowEventStore() {
+  return {
+    append: vi.fn(),
+    list: vi.fn(() => []),
+    lastSeq: vi.fn(() => 0),
+    findActiveRun: vi.fn(),
+    reconcileOrphanRuns: vi.fn(() => 0),
+  }
 }
 
 describe('creation-flow checkpoint decisions', () => {
@@ -313,6 +328,7 @@ describe('other creation-flow model and audit contracts', () => {
       },
       orchestrator: { createChapterWithFlow, clearStaleInterjectMessages: vi.fn() },
       workflowRunStore: { save: vi.fn() },
+      workflowEventStore: createWorkflowEventStore(),
       chapterChatStore: { add: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
     } as any
@@ -329,6 +345,8 @@ describe('other creation-flow model and audit contracts', () => {
       log: { error: vi.fn(), warn: vi.fn() },
     } as any, createSseReply() as any)
 
+    // 后台执行：受理返回后编排仍在跑，审计要等终态
+    await vi.waitFor(() => expect(insertAgentLog).toHaveBeenCalled())
     const audit = insertAgentLog.mock.calls[0]?.[0]
     expect(audit).toMatchObject({
       agentType: 'audit',
@@ -355,6 +373,9 @@ describe('discussion model contract', () => {
       status: 'completed', content: '正文', transcript: [], scenes: [],
     }))
     const save = vi.fn()
+    const discussionEventStore = {
+      append: vi.fn(), list: vi.fn(() => []), lastSeq: vi.fn(() => 0),
+    }
     const services = {
       store: {
         getProject: vi.fn(() => ({ id: 'project-1' })),
@@ -364,14 +385,14 @@ describe('discussion model contract', () => {
       discussionRunner: { run },
       discussionSettingsStore: { get: vi.fn(() => ({ maxRounds: 20 })) },
       discussionRunStore: { save },
-      discussionEventStore: { append: vi.fn(), list: vi.fn(() => []), lastSeq: vi.fn(() => 0) },
+      discussionEventStore,
       chapterChatStore: { addMany: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
     } as any
     const route = createCreationFlowRoutes(services).find(item => (
       item.path === '/projects/:projectId/chapters/:chapterNumber/create-discussion'
     ))!
-    const reply = createSseReply()
+    const reply = createReply()
 
     await route.handler({
       params: { projectId: 'project-1', chapterNumber: '1' },
@@ -421,6 +442,9 @@ describe('discussion model contract', () => {
       status: 'completed', content: '正文', transcript: [], scenes: [],
     }))
     const save = vi.fn()
+    const discussionEventStore = {
+      append: vi.fn(), list: vi.fn(() => []), lastSeq: vi.fn(() => 0),
+    }
     const services = {
       store: {
         getProject: vi.fn(() => ({ id: 'project-1' })),
@@ -430,14 +454,14 @@ describe('discussion model contract', () => {
       discussionRunner: { run },
       discussionSettingsStore: { get: vi.fn(() => ({ maxRounds: 20 })) },
       discussionRunStore: { get: vi.fn(() => snapshot), save },
-      discussionEventStore: { append: vi.fn(), list: vi.fn(() => []), lastSeq: vi.fn(() => 0) },
+      discussionEventStore,
       chapterChatStore: { addMany: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
     } as any
     const route = createCreationFlowRoutes(services).find(item => (
       item.path === '/projects/:projectId/chapters/:chapterNumber/create-discussion/:runId/resume'
     ))!
-    const reply = createSseReply()
+    const reply = createReply()
 
     await route.handler({
       params: { projectId: 'project-1', chapterNumber: '1', runId: 'failed-run' },
@@ -447,6 +471,11 @@ describe('discussion model contract', () => {
       log: { error: vi.fn() },
     } as any, reply as any)
 
+    expect(reply.statusCode).toBe(202)
+    expect(reply.payload).toMatchObject({
+      runId: expect.any(String),
+      eventsPath: expect.stringContaining('/discussion-runs/'),
+    })
     expect(run).toHaveBeenCalledWith(
       'project-1',
       1,
@@ -456,11 +485,16 @@ describe('discussion model contract', () => {
     )
     const resumedRunOptions = (run.mock.calls as unknown as unknown[][])[0]?.[2]
     expect(resumedRunOptions).not.toHaveProperty('memberModel')
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({
       projectModel,
       resumedFromRunId: 'failed-run',
-    }))
+    })))
     expect(save.mock.calls[0]?.[0]).not.toHaveProperty('memberModel')
+    expect(discussionEventStore.append).toHaveBeenCalledWith(
+      expect.any(String),
+      'run_finished',
+      expect.objectContaining({ status: 'completed', content: '正文' }),
+    )
   })
 
   it('keeps an explicitly empty project model empty when resuming', async () => {
@@ -490,18 +524,20 @@ describe('discussion model contract', () => {
     const route = createCreationFlowRoutes(services).find(item => (
       item.path === '/projects/:projectId/chapters/:chapterNumber/create-discussion/:runId/resume'
     ))!
+    const reply = createReply()
 
     await route.handler({
       params: { projectId: 'project-1', chapterNumber: '1', runId: snapshot.id },
       body: {}, headers: {}, raw: { socket: { setNoDelay: vi.fn() } },
       log: { error: vi.fn() },
-    } as any, createSseReply() as any)
+    } as any, reply as any)
 
+    expect(reply.statusCode).toBe(202)
     expect(run).toHaveBeenCalledWith(
       'project-1', 1, expect.objectContaining({ projectModel: null }), undefined,
       expect.objectContaining({ phase: 'chapter_weaving' }),
     )
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ projectModel: null }))
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ projectModel: null })))
   })
 })
 
@@ -525,6 +561,7 @@ describe('workflow resume contract', () => {
       },
       orchestrator: { createChapterWithFlow, clearStaleInterjectMessages: vi.fn() },
       workflowRunStore: { save },
+      workflowEventStore: createWorkflowEventStore(),
       chapterChatStore: { add: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
     } as any
@@ -541,17 +578,27 @@ describe('workflow resume contract', () => {
       log: { warn: vi.fn(), error: vi.fn() },
     } as any, reply as any)
 
+    // 受理即返回 202 + runId，执行转后台
+    expect(reply.statusCode).toBe(202)
+    expect(reply.payload).toMatchObject({
+      ok: true,
+      runId: expect.any(String),
+      eventsPath: expect.stringContaining('/workflow-runs/'),
+    })
+
     // 边界即时落库（running）+ 终态落库（error 且可续跑）
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({
       status: 'error',
       phase: 'reviewing',
       writerDraft: '已生成的草稿正文',
-    }))
-    // emitter.result 收到 canResume + workflowRunId（写进 SSE）
-    const written = (reply.raw.write as any).mock.calls.map((c: any[]) => c[0]).join('')
-    expect(written).toContain('novel:result')
-    expect(written).toContain('"canResume":true')
-    expect(written).toContain('"workflowRunId"')
+    })))
+    // 终态事件携带 canResume + workflowRunId（前端 tail 据此合成 novel:result）
+    const append = services.workflowEventStore.append as ReturnType<typeof vi.fn>
+    await vi.waitFor(() => expect(append).toHaveBeenCalledWith(
+      expect.any(String),
+      'run_finished',
+      expect.objectContaining({ status: 'error', canResume: true, workflowRunId: expect.any(String) }),
+    ))
   })
 
   it('resume route loads the snapshot and resumes from the recorded phase', async () => {
@@ -574,6 +621,7 @@ describe('workflow resume contract', () => {
       },
       orchestrator: { createChapterWithFlow, clearStaleInterjectMessages: vi.fn() },
       workflowRunStore: { get, getLatestResumable, save },
+      workflowEventStore: createWorkflowEventStore(),
       chapterChatStore: { add: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
     } as any
@@ -590,7 +638,8 @@ describe('workflow resume contract', () => {
       log: { warn: vi.fn(), error: vi.fn() },
     } as any, reply as any)
 
-    expect(createChapterWithFlow).toHaveBeenCalledWith(
+    expect(reply.statusCode).toBe(202)
+    await vi.waitFor(() => expect(createChapterWithFlow).toHaveBeenCalledWith(
       'project-1',
       1,
       expect.objectContaining({
@@ -602,11 +651,11 @@ describe('workflow resume contract', () => {
           rhythmSuggestion: snapshot.rhythmSuggestion,
         }),
       }),
-    )
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+    ))
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({
       status: 'completed',
       resumedFromRunId: 'failed-run',
-    }))
+    })))
   })
 
   it('resume failure before a new boundary preserves the original resumable state', async () => {
@@ -629,6 +678,7 @@ describe('workflow resume contract', () => {
       },
       orchestrator: { createChapterWithFlow, clearStaleInterjectMessages: vi.fn() },
       workflowRunStore: { get: vi.fn(() => snapshot), getLatestResumable: vi.fn(), save },
+      workflowEventStore: createWorkflowEventStore(),
       chapterChatStore: { add: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
     } as any
@@ -643,15 +693,19 @@ describe('workflow resume contract', () => {
       log: { warn: vi.fn(), error: vi.fn() },
     } as any, reply as any)
 
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({
       status: 'error',
       phase: 'reviewing',
       writerDraft: '可继续审校的草稿',
       styleExpertIds: ['style-1'],
       resumedFromRunId: snapshot.id,
-    }))
-    const written = (reply.raw.write as any).mock.calls.map((call: any[]) => call[0]).join('')
-    expect(written).toContain('"canResume":true')
+    })))
+    const append = services.workflowEventStore.append as ReturnType<typeof vi.fn>
+    await vi.waitFor(() => expect(append).toHaveBeenCalledWith(
+      expect.any(String),
+      'run_finished',
+      expect.objectContaining({ canResume: true }),
+    ))
   })
 
   it('resume route with runId=latest falls back to the most recent resumable snapshot', async () => {
@@ -671,6 +725,7 @@ describe('workflow resume contract', () => {
         getLatestResumable: vi.fn(() => snapshot),
         save: vi.fn(),
       },
+      workflowEventStore: createWorkflowEventStore(),
       chapterChatStore: { add: vi.fn() },
       confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
     } as any
@@ -685,12 +740,12 @@ describe('workflow resume contract', () => {
     } as any, createSseReply() as any)
 
     expect(services.workflowRunStore.getLatestResumable).toHaveBeenCalledWith('project-1', 1)
-    expect(createChapterWithFlow).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(createChapterWithFlow).toHaveBeenCalledWith(
       'project-1', 1,
       expect.objectContaining({
         resume: expect.objectContaining({ entry: 'reviewing', writerDraft: '草稿' }),
       }),
-    )
+    ))
   })
 })
 
@@ -731,6 +786,153 @@ describe('create-team compatibility route', () => {
     )
     expect(execute).not.toHaveBeenCalled()
     expect(result).toMatchObject({ ok: true, data: { status: 'completed', content: '正文' } })
+  })
+})
+
+describe('create-flow 不再把请求连接当作取消信号（T8 回归）', () => {
+  const pendingLockKey = 'project-detach:1'
+  afterEach(() => {
+    // 挂起的后台 run 不会自己收尾：用例结束后手工释放，避免污染后续用例
+    const leftover = activeNovelChapterTasks.get(pendingLockKey)
+    if (leftover) finishNovelChapterTask(pendingLockKey, leftover)
+  })
+
+  function makeServices(createChapterWithFlow: ReturnType<typeof vi.fn>) {
+    return {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting' })),
+      },
+      orchestrator: { createChapterWithFlow, clearStaleInterjectMessages: vi.fn() },
+      workflowRunStore: { save: vi.fn() },
+      workflowEventStore: createWorkflowEventStore(),
+      chapterChatStore: { add: vi.fn() },
+      confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
+    } as any
+  }
+
+  it('create-flow 不监听 reply.raw 的 close：客户端断开不再中止整章创作', async () => {
+    const createChapterWithFlow = vi.fn(() => new Promise(() => { /* 一直挂起模拟后台运行 */ }))
+    const route = createCreationFlowRoutes(makeServices(createChapterWithFlow)).find(item => (
+      item.path === '/projects/:projectId/chapters/:chapterNumber/create-flow'
+    ))!
+    const reply = createSseReply()
+
+    await route.handler({
+      params: { projectId: 'project-detach', chapterNumber: '1' },
+      body: {},
+      headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+      log: { warn: vi.fn(), error: vi.fn() },
+    } as any, reply as any)
+
+    // 旧实现把 reply.raw 的 close 当取消信号（刷新页面/切路由即整章作废）；
+    // 现在 run 跑在后台，路由不得再注册任何 close 监听。
+    const registeredCloseListeners = reply.raw.once.mock.calls.filter(
+      (call: unknown[]) => call[0] === 'close',
+    )
+    expect(registeredCloseListeners).toHaveLength(0)
+    expect(createChapterWithFlow).toHaveBeenCalledTimes(1)
+  })
+
+  it('create-flow 收尾后释放章节锁：后台 run 不再依赖连接结束来解锁', async () => {
+    const createChapterWithFlow = vi.fn(async () => ({ status: 'completed', content: '正文' }))
+    const route = createCreationFlowRoutes(makeServices(createChapterWithFlow)).find(item => (
+      item.path === '/projects/:projectId/chapters/:chapterNumber/create-flow'
+    ))!
+
+    await route.handler({
+      params: { projectId: 'project-lock', chapterNumber: '1' },
+      body: {},
+      headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+      log: { warn: vi.fn(), error: vi.fn() },
+    } as any, createSseReply() as any)
+
+    await vi.waitFor(() => expect(activeNovelChapterTasks.has('project-lock:1')).toBe(false))
+  })
+})
+
+describe('workflow events tail（T8：run 脱离 HTTP 生命周期）', () => {  const makeServices = (store: { lastSeq: ReturnType<typeof vi.fn>; list: ReturnType<typeof vi.fn>; findActiveRun?: ReturnType<typeof vi.fn> }) => ({
+    workflowEventStore: store,
+  }) as any
+
+  it('events 端点：from=0 全量重放，run_finished 后自动收流', async () => {
+    const store = {
+      lastSeq: vi.fn(() => 3),
+      list: vi.fn(() => [
+        { runId: 'w1', seq: 1, type: 'run_started', payload: {}, createdAt: 1 },
+        { runId: 'w1', seq: 2, type: 'agui', payload: { type: 'TEXT_MESSAGE_CONTENT' }, createdAt: 2 },
+        { runId: 'w1', seq: 3, type: 'run_finished', payload: { status: 'completed' }, createdAt: 3 },
+      ]),
+    }
+    const route = createCreationFlowRoutes(makeServices(store)).find(item => (
+      item.path === '/projects/:projectId/workflow-runs/:runId/events'
+    ))!
+    const reply = createSseReply()
+
+    await route.handler({
+      params: { runId: 'w1' },
+      query: { from: '0' },
+      headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+    } as any, reply as any)
+
+    expect(reply.raw.writeHead).toHaveBeenCalledWith(200, expect.objectContaining({
+      'Content-Type': 'text/event-stream',
+    }))
+    const written = reply.raw.write.mock.calls.map(([data]) => String(data))
+    expect(written.some(data => data.includes('run_started'))).toBe(true)
+    expect(written.some(data => data.includes('run_finished'))).toBe(true)
+    // 终态已写出：流自动结束，无残留轮询
+    expect(reply.raw.end).toHaveBeenCalled()
+  })
+
+  it('events 端点：带游标时只补增量', async () => {
+    const list = vi.fn(() => [])
+    const store = { lastSeq: vi.fn(() => 9), list }
+    const route = createCreationFlowRoutes(makeServices(store)).find(item => (
+      item.path === '/projects/:projectId/workflow-runs/:runId/events'
+    ))!
+
+    await route.handler({
+      params: { runId: 'w1' },
+      query: { from: '7' },
+      headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+    } as any, createSseReply() as any)
+
+    expect(list).toHaveBeenCalledWith('w1', 8)
+  })
+
+  it('events 端点：空事件流返回 404', async () => {
+    const route = createCreationFlowRoutes(makeServices({
+      lastSeq: vi.fn(() => 0),
+      list: vi.fn(() => []),
+    })).find(item => item.path === '/projects/:projectId/workflow-runs/:runId/events')!
+    const reply = createReply()
+
+    await route.handler({ params: { runId: 'missing' }, query: {}, headers: {} } as any, reply as any)
+
+    expect(reply.statusCode).toBe(404)
+  })
+
+  it('active-workflow-run：面板重开后取回在跑的 runId 与续传游标', async () => {
+    const route = createCreationFlowRoutes(makeServices({
+      lastSeq: vi.fn(() => 0),
+      list: vi.fn(() => []),
+      findActiveRun: vi.fn(() => ({ runId: 'w-running', cursorSeq: 12 })),
+    })).find(item => item.path === '/projects/:projectId/chapters/:chapterNumber/active-workflow-run')!
+    const reply = createReply()
+
+    await route.handler({ params: { projectId: 'p-1', chapterNumber: '3' }, headers: {} } as any, reply as any)
+
+    expect(reply.payload).toMatchObject({
+      ok: true,
+      runId: 'w-running',
+      cursorSeq: 12,
+      eventsPath: '/projects/p-1/workflow-runs/w-running/events',
+    })
   })
 })
 
@@ -820,5 +1022,73 @@ describe('discussion events tail and cancel (T6)', () => {
     const missingReply = createReply()
     await route.handler({ params: { runId: 'missing' }, headers: {} } as any, missingReply as any)
     expect(missingReply.statusCode).toBe(404)
+  })
+})
+
+describe('novel agent model config', () => {
+  function createAgentConfigServices() {
+    const agents = new Map<string, any>(Object.values(NOVEL_AGENT_CONFIGS).map((config) => [
+      config.id,
+      { id: config.id, temperature: config.temperature },
+    ]))
+    const agentManager = {
+      getAgent: vi.fn((id: string) => agents.get(id)),
+      updateAgent: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+        const updated = { ...agents.get(id), ...patch }
+        agents.set(id, updated)
+        return updated
+      }),
+    }
+    return { store: {}, agentManager }
+  }
+
+  it('按 Agent 配置 API 保存并返回思考强度', async () => {
+    const services = createAgentConfigServices()
+    const route = createCreationFlowRoutes(services as any).find(item => item.path === '/agent-config' && item.method === 'PUT')!
+
+    const result = await route.handler({
+      body: {
+        items: [{
+          agentType: 'writer',
+          temperature: 0.9,
+          model: { provider: 'openai', modelId: 'gpt-test', thinkingLevel: 'high' },
+        }],
+        traceId: 'trace-1',
+      },
+      traceId: 'trace-1',
+    } as any, createReply() as any) as any
+
+    expect(result.data.find((item: { agentType: string }) => item.agentType === 'writer')?.model).toEqual({
+      provider: 'openai',
+      modelId: 'gpt-test',
+      thinkingLevel: 'high',
+    })
+  })
+
+  it('拒绝 Agent 模型不支持的思考强度值', async () => {
+    const services = createAgentConfigServices()
+    const route = createCreationFlowRoutes(services as any).find(item => item.path === '/agent-config' && item.method === 'PUT')!
+    const reply = {
+      status: vi.fn().mockReturnThis(),
+      send: vi.fn(),
+    }
+
+    await route.handler({
+      body: {
+        items: [{
+          agentType: 'writer',
+          temperature: 0.9,
+          model: { provider: 'openai', modelId: 'gpt-test', thinkingLevel: 'ultra' },
+        }],
+        traceId: 'trace-1',
+      },
+      traceId: 'trace-1',
+      url: '/agent-config',
+      method: 'PUT',
+      log: { warn: vi.fn() },
+    } as any, reply as any)
+
+    expect(reply.status).toHaveBeenCalledWith(400)
+    expect(services.agentManager.updateAgent).not.toHaveBeenCalled()
   })
 })

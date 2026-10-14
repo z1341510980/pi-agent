@@ -54,7 +54,9 @@ describe('小说 Agent 身份预算与契约', () => {
   it('Writer 保留正文边界、矩阵、连续性和推回契约', () => {
     const prompt = readPrompt('role-writer')
 
-    expect(prompt).toContain('只输出完整章节正文')
+    // 正文交付协议：走 submit 工具（tool_calls 通道），不在对话文本里输出正文
+    expect(prompt).toContain('novel_submit_prose')
+    expect(prompt).toContain('content 参数只放完整章节正文')
     expect(prompt).toContain('[DIRECTOR_PUSHBACK]')
     expect(prompt).toContain('矩阵中的角色、冲突、伏笔、线索、势力和地点')
     expect(prompt).toContain('承接上一章结尾')

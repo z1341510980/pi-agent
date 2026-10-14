@@ -9,6 +9,7 @@
  */
 
 import { getApi, putApi } from './http-client'
+import type { ThinkingLevel } from '@/stores/session-store'
 
 // ── 基础路径 ──
 
@@ -22,6 +23,8 @@ export type NovelAgentType = 'director' | 'writer' | 'reviser' | 'reviewer' | 'm
 export interface NovelAgentModelSelection {
   provider: string
   modelId: string
+  /** 可选思考强度；null 表示交给模型/SDK 自动决定。 */
+  thinkingLevel?: ThinkingLevel | null
 }
 
 export interface NovelAgentConfigEntry {

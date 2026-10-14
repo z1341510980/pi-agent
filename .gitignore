@@ -75,3 +75,4 @@ graphify-out/*
 
 # 小说迁移工具生成的报告
 apps/agent-server/scripts/novel-migration-tools/output/
+docs/new-api/*

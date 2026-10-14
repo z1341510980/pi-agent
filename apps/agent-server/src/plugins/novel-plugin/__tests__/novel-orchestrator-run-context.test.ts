@@ -247,7 +247,7 @@ describe('NovelOrchestrator request context', () => {
     })
   })
 
-  it('guard_degraded 整章重写耗尽后保留 Reviser 局部修订路径', async () => {
+  it('guard_degraded 整章重写后质量修订预算耗尽，不再启动 Reviser', async () => {
     const { orchestrator, agentCalls } = createDecisionPathOrchestrator()
     orchestrator.runPostWriteGuard = vi.fn(() => ({ shouldRewrite: true, reason: '正文过短', details: '需要修复' }))
     const degradedCheckpoints: Array<{ data: any; options?: string[] }> = []
@@ -270,9 +270,10 @@ describe('NovelOrchestrator request context', () => {
     expect(degradedCheckpoints[1]?.data.budgetCategories).toMatchObject({
       fullChapterRewrites: 1,
       fullChapterRewriteAvailable: false,
-      guardWriterRewrites: 4,
+      // Guard、整章重写、Reviser 共用总质量修订预算；整章重写后不再重新累加 Guard。
+      guardWriterRewrites: 2,
     })
-    expect(agentCalls.filter(agent => agent === 'reviser')).toHaveLength(1)
+    expect(agentCalls.filter(agent => agent === 'reviser')).toHaveLength(0)
   })
 
   it('PostWriteGuard 拦截未在正文出现的矩阵角色', () => {

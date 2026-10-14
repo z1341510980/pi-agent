@@ -8,8 +8,18 @@
  * 模型信息卡显示上下文、输出上限和价格等元数据；卡片内可调思考强度。
  */
 import { useEffect, useMemo, useState, type ReactElement } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Brain, Check, ChevronRight, CircleHelp, Sparkles } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { getApi } from '@/api/http-client'
 import { toastWarning } from '@/hooks/use-toast'
@@ -19,6 +29,16 @@ import {
   type ThinkingLevel,
 } from '@/components/chat/model-selector'
 import type { NovelAgentModelRef } from '@/stores/novel-ui-store'
+
+export type NovelModelPickerMode = 'unified' | 'per-agent'
+
+export type NovelAgentType = 'director' | 'writer' | 'reviser' | 'reviewer' | 'memory'
+
+export interface NovelAgentModelOption {
+  agentType: NovelAgentType
+  label: string
+  model: { provider: string; modelId: string; thinkingLevel?: ThinkingLevel | null } | null
+}
 
 interface ProviderBrief {
   id: string
@@ -72,27 +92,36 @@ export interface ModelPickerProps {
   label?: string
   /** 紧凑模式：顶栏 Tab 旁使用，隐藏图标与标签、收窄按钮 */
   compact?: boolean
+  /** 小说顶栏可选：统一模型 / 按 Agent 配置 */
+  mode?: NovelModelPickerMode
+  /** 小说顶栏可选：按 Agent 模式下的角色模型配置 */
+  agentModels?: readonly NovelAgentModelOption[]
+  /** 小说顶栏可选：切换统一模型 / 按 Agent 配置 */
+  onModeChange?: (mode: NovelModelPickerMode) => void
+  /** 小说顶栏可选：修改单个 Agent 的模型 */
+  onAgentModelChange?: (agentType: NovelAgentType, model: { provider: string; modelId: string; thinkingLevel?: ThinkingLevel | null } | null) => void
+  /** 按 Agent 配置加载中 */
+  agentModelsLoading?: boolean
 }
 
-export function ModelPicker({ value, onChange, label, compact = false }: ModelPickerProps): ReactElement {
-  const [providers, setProviders] = useState<ProviderBrief[]>([])
+export function ModelPicker({
+  value,
+  onChange,
+  label,
+  compact = false,
+  mode = 'unified',
+  agentModels = [],
+  onModeChange,
+  onAgentModelChange,
+  agentModelsLoading = false,
+}: ModelPickerProps): ReactElement {
+  const { data: providers = [] } = useQuery({
+    queryKey: ['providers'],
+    queryFn: () => getApi<ProviderBrief[]>('/api/providers').catch(() => []),
+  })
   const [open, setOpen] = useState(false)
   const [hoveredKey, setHoveredKey] = useState<string | null>(null)
   const [thinkingOpenKey, setThinkingOpenKey] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    getApi<ProviderBrief[]>('/api/providers')
-      .then((list) => {
-        if (!cancelled) setProviders(list)
-      })
-      .catch(() => {
-        /* 加载失败不阻塞 */
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   const models = useMemo<ModelOption[]>(
     () => providers.flatMap((provider) => provider.models.map((model) => ({
@@ -103,6 +132,15 @@ export function ModelPicker({ value, onChange, label, compact = false }: ModelPi
     }))),
     [providers],
   )
+  const modelsByProvider = useMemo(() => {
+    const groups = new Map<string, ModelOption[]>()
+    for (const model of models) {
+      const group = groups.get(model.providerName) ?? []
+      group.push(model)
+      groups.set(model.providerName, group)
+    }
+    return Array.from(groups.entries())
+  }, [models])
 
   // 失效选择自动清理：Provider 模型列表变更（删除/裁剪）后，持久化的旧选择
   // 会指向不存在的模型——后端会直接报"未找到所选模型"让整次创作失败。
@@ -133,6 +171,18 @@ export function ModelPicker({ value, onChange, label, compact = false }: ModelPi
     setOpen(false)
   }
 
+  function readModelRef(value: string): { provider: string; modelId: string } | null {
+    if (!value) return null
+    const separator = value.indexOf(':')
+    if (separator <= 0 || separator === value.length - 1) return null
+    return { provider: value.slice(0, separator), modelId: value.slice(separator + 1) }
+  }
+
+  function findModel(ref: { provider: string; modelId: string } | null): ModelOption | undefined {
+    if (!ref) return undefined
+    return models.find((model) => model.provider === ref.provider && model.id === ref.modelId)
+  }
+
   function modelSummary(model: ModelOption): string {
     if (model.contextWindow) return `上下文 ${Math.round(model.contextWindow / 1000)}k tokens`
     if (model.maxTokens) return `最大输出 ${model.maxTokens.toLocaleString()} tokens`
@@ -154,7 +204,7 @@ export function ModelPicker({ value, onChange, label, compact = false }: ModelPi
             aria-label="选择模型"
           >
             <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">{selectedModel?.name ?? '默认模型'}</span>
+            <span className="min-w-0 flex-1 truncate">{mode === 'per-agent' ? '按 Agent 配置' : selectedModel?.name ?? '默认模型'}</span>
             {value?.thinkingLevel ? <span className="shrink-0 text-[10px] text-primary">{THINKING_LEVEL_LABELS[value.thinkingLevel]}</span> : null}
             <ChevronRight className="size-3 shrink-0 rotate-90 text-muted-foreground" aria-hidden="true" />
           </button>
@@ -165,11 +215,115 @@ export function ModelPicker({ value, onChange, label, compact = false }: ModelPi
           collisionPadding={12}
           className="w-[min(680px,calc(100vw-1rem))] max-h-[calc(100vh-2rem)] !overflow-hidden p-2"
         >
-          <div className="mb-1 flex items-center justify-between px-2 py-1">
-            <div className="text-xs font-semibold text-text">全部模型</div>
-            <div className="text-[10px] text-muted-foreground">右侧查看模型简介</div>
+          <div className="mb-1 flex items-center justify-between gap-2 px-2 py-1">
+            <div className="text-xs font-semibold text-text">创作模型</div>
+            {onModeChange ? (
+              <div className="flex rounded-md border border-border bg-surface-2 p-0.5" role="group" aria-label="创作模型模式">
+                <button
+                  type="button"
+                  className={cn('rounded px-2 py-1 text-[10px]', mode === 'unified' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-text')}
+                  aria-pressed={mode === 'unified'}
+                  onClick={() => onModeChange('unified')}
+                >
+                  统一模型
+                </button>
+                <button
+                  type="button"
+                  className={cn('rounded px-2 py-1 text-[10px]', mode === 'per-agent' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-text')}
+                  aria-pressed={mode === 'per-agent'}
+                  onClick={() => onModeChange('per-agent')}
+                >
+                  按 Agent
+                </button>
+              </div>
+            ) : null}
           </div>
-          <div className="grid min-h-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_250px]">
+          {mode === 'per-agent' && onAgentModelChange ? (
+            <div className="mb-2 space-y-1.5 rounded-md border border-border bg-surface-2/50 p-2">
+              <div className="text-[10px] text-muted-foreground">每个创作角色使用设置页中的独立模型</div>
+              {agentModelsLoading ? (
+                <div className="py-2 text-center text-xs text-muted-foreground">加载 Agent 配置中...</div>
+              ) : agentModels.length === 0 ? (
+                <div className="py-2 text-center text-xs text-muted-foreground">暂无 Agent 配置</div>
+              ) : agentModels.map((agent) => {
+                const selected = agent.model ? `${agent.model.provider}:${agent.model.modelId}` : ''
+                const selectedModel = findModel(agent.model)
+                const levels = selectedModel ? modelThinkingLevels(selectedModel) : []
+                const selectedThinkingLevel = agent.model?.thinkingLevel && levels.includes(agent.model.thinkingLevel)
+                  ? agent.model.thinkingLevel
+                  : ''
+                return (
+                  <div key={agent.agentType} className="grid grid-cols-2 gap-x-2 gap-y-1.5 border-b border-border/60 pb-2 text-xs last:border-0 last:pb-0 md:grid-cols-[6.5rem_minmax(0,1fr)_8rem] md:items-center">
+                    <span className="col-span-2 truncate text-muted-foreground md:col-span-1" title={agent.label}>{agent.label}</span>
+                    <Select
+                      value={selected || '__default__'}
+                      onValueChange={(nextValue) => {
+                        const nextModel = readModelRef(nextValue)
+                        onAgentModelChange(agent.agentType, nextModel ? { ...nextModel, thinkingLevel: null } : null)
+                      }}
+                    >
+                      <SelectTrigger
+                        size="sm"
+                        className="h-8 w-full min-w-0 border-border bg-background text-xs"
+                        aria-label={`${agent.label}模型`}
+                      >
+                        <SelectValue placeholder="选择模型" />
+                      </SelectTrigger>
+                      <SelectContent position="popper" className="max-h-72 min-w-(--radix-select-trigger-width)">
+                        <SelectItem value="__default__" className="text-xs">跟随默认配置</SelectItem>
+                        {modelsByProvider.map(([providerName, providerModels]) => (
+                          <SelectGroup key={providerName}>
+                            <SelectLabel>{providerName}</SelectLabel>
+                            {providerModels.map((model) => (
+                              <SelectItem key={`${model.provider}:${model.id}`} value={`${model.provider}:${model.id}`} className="text-xs">
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <span className="truncate">{model.name}</span>
+                                  {model.reasoning ? <Brain className="size-3 shrink-0 text-primary" aria-label="支持思考" /> : null}
+                                </span>
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={selectedThinkingLevel || '__auto__'}
+                      disabled={!selectedModel || levels.length === 0}
+                      onValueChange={(nextValue) => {
+                        if (!agent.model) return
+                        onAgentModelChange(agent.agentType, {
+                          provider: agent.model.provider,
+                          modelId: agent.model.modelId,
+                          thinkingLevel: nextValue === '__auto__' ? null : nextValue as ThinkingLevel,
+                        })
+                      }}
+                    >
+                      <SelectTrigger
+                        size="sm"
+                        className="h-8 w-full min-w-0 border-border bg-background text-xs"
+                        aria-label={`${agent.label}思考强度`}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent position="popper" className="min-w-(--radix-select-trigger-width)">
+                        <SelectItem value="__auto__" className="text-xs">自动</SelectItem>
+                        {levels.map((level) => (
+                          <SelectItem key={level} value={level} className="text-xs">
+                            {THINKING_LEVEL_LABELS[level]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )
+              })}
+            </div>
+          ) : null}
+          {mode === 'unified' ? <>
+            <div className="mb-1 flex items-center justify-between px-2 py-1">
+              <div className="text-[10px] text-muted-foreground">右侧查看模型简介</div>
+            </div>
+            <div className="grid min-h-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_250px]">
             <div className="min-w-0">
               <button
                 type="button"
@@ -244,7 +398,8 @@ export function ModelPicker({ value, onChange, label, compact = false }: ModelPi
                 </div>
               )}
             </div>
-          </div>
+            </div>
+          </> : null}
         </PopoverContent>
       </Popover>
     </div>

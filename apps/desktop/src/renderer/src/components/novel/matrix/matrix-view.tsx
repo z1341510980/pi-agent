@@ -113,7 +113,7 @@ export interface MatrixViewProps {
   onEditSpan?: (entity: MatrixEntity) => void
   onDropEntity?: (entityId: string, entityType: MatrixEntityKind, chapter: number) => void
   onMoveEndpoint?: (entityId: string, entityType: MatrixEntityKind, spanIndex: number, end: 'start' | 'end', chapter: number) => void
-  onMoveSpan?: (entityId: string, entityType: 'conflict' | 'faction' | 'item', spanIndex: number, startChapter: number, endChapter: number) => void
+  onMoveSpan?: (entityId: string, entityType: 'conflict' | 'faction' | 'item' | 'narrative', spanIndex: number, startChapter: number, endChapter: number) => void
   onMoveCell?: (entityId: string, entityType: MatrixEntityKind, fromChapter: number, toChapter: number) => void
   onTogglePresent?: (entity: MatrixEntity, chapter: number) => void
 
@@ -326,7 +326,7 @@ export function MatrixView({
   useEffect(() => {
     const el = scrollContainerRef.current
     if (!el || !onCellWidthChange) return
-    const handler = (e: WheelEvent) => {
+    const handler = (e: WheelEvent): void => {
       if (!e.ctrlKey) return
       e.preventDefault()
       const next = Math.max(MATRIX_LAYOUT.minCellWidth, Math.min(MATRIX_LAYOUT.maxCellWidth, cellWidth + (e.deltaY < 0 ? 4 : -4)))

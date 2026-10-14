@@ -172,6 +172,8 @@ export interface UpdateChapterInput {
   /** AI 草稿来源版本；提供后后端会在同一次 PATCH 中执行乐观并发校验。 */
   expectedOutlineHash?: string
   expectedContentRevisionId?: string | null
+  /** 手动正文保存时的更新时间，用于防止覆盖其他窗口或流程的新正文。 */
+  expectedUpdatedAt?: number
   outlineGenerationId?: string
 }
 

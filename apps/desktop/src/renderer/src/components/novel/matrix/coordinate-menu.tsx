@@ -1,5 +1,5 @@
-import type { ReactElement, ReactNode } from 'react'
-import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { createPortal } from 'react-dom'
+import { useEffect, useLayoutEffect, useRef, type ReactElement, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 /**
@@ -7,11 +7,8 @@ import { cn } from '@/lib/utils'
  *
  * 矩阵是虚拟化网格，不能给每个单元格套一个 Radix `ContextMenu.Trigger`
  * （几千个 trigger 的开销不可接受），所以右键菜单走"记录 {x,y} → 受控打开"这条路。
- * 这里把坐标包成一个零尺寸的 fixed 锚点交给 Popover 定位，从而复用它的：
- *   - 碰撞规避：替掉原来 `Math.min(x, innerWidth - 180)` 这类按当时菜单宽度猜的硬编码常量
- *   - 外部点击 / Esc 关闭：替掉两处各写一遍的 window 监听，
- *     以及随之而来的"内部每个可点区域都要 stopPropagation，漏一个就点不动"
- *   - 焦点管理：关闭后焦点归还触发元素
+ * 菜单直接 portal 到 body，并使用 fixed 坐标，避免虚拟化滚动容器中
+ * Popper 锚点测量失败后把浮层回退到左上角。
  */
 
 export interface CoordinateMenuProps {
@@ -30,43 +27,66 @@ export function CoordinateMenu({
   ariaLabel,
   className,
   children,
-}: CoordinateMenuProps): ReactElement {
-  return (
-    <Popover
-      open={position !== null}
-      onOpenChange={(next) => {
-        if (!next) onClose()
+}: CoordinateMenuProps): ReactElement | null {
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    if (!position) return
+    const menu = menuRef.current
+    if (!menu) return
+
+    const rect = menu.getBoundingClientRect()
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth
+    const viewportHeight = document.documentElement.clientHeight || window.innerHeight
+    const margin = 8
+    const maxX = Math.max(margin, viewportWidth - rect.width - margin)
+    const maxY = Math.max(margin, viewportHeight - rect.height - margin)
+
+    menu.style.left = `${Math.min(Math.max(position.x, margin), maxX)}px`
+    menu.style.top = `${Math.min(Math.max(position.y, margin), maxY)}px`
+  }, [position, children, className])
+
+  useEffect(() => {
+    if (!position) return
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+    }
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target
+      if (target instanceof Node && !menuRef.current?.contains(target)) onClose()
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      document.removeEventListener('pointerdown', handlePointerDown)
+    }
+  }, [position, onClose])
+
+  if (!position) return null
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      role="menu"
+      aria-label={ariaLabel}
+      className={cn(
+        'fixed z-50 max-h-[calc(100vh-16px)] max-w-[calc(100vw-16px)] overflow-y-auto',
+        'rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none',
+        'w-auto text-xs',
+        className,
+      )}
+      style={{ left: position.x, top: position.y }}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
       }}
     >
-      <PopoverAnchor asChild>
-        <div
-          aria-hidden
-          style={{
-            position: 'fixed',
-            left: position?.x ?? 0,
-            top: position?.y ?? 0,
-            width: 0,
-            height: 0,
-          }}
-        />
-      </PopoverAnchor>
-      <PopoverContent
-        role="menu"
-        aria-label={ariaLabel}
-        side="bottom"
-        align="start"
-        sideOffset={0}
-        collisionPadding={8}
-        // 在菜单上再次右键不应穿透到底层再开一个菜单
-        onContextMenu={(event) => {
-          event.preventDefault()
-          event.stopPropagation()
-        }}
-        className={cn('w-auto py-1 text-xs', className)}
-      >
-        {children}
-      </PopoverContent>
-    </Popover>
+      {children}
+    </div>,
+    document.body,
   )
 }
 

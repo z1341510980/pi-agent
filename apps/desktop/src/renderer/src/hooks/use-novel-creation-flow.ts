@@ -313,6 +313,10 @@ export interface UseNovelCreationFlowReturn {
   takeArrangedCharacterFunctions: (
     chapterNumber: number
   ) => Array<{ characterId: string; function: string; note?: string }> | undefined
+  /** 查看最近一次 AI 编排产出的角色功能位，但不清空缓存。 */
+  peekArrangedCharacterFunctions: (
+    chapterNumber: number
+  ) => Array<{ characterId: string; function: string; note?: string }> | undefined
   /** 提交检查点决策（comment 为检查点卡片内修改意见，随 userMessages 一并提交既有 decision 端点） */
   submitCheckpoint: (decision: CheckpointDecision, comment?: string) => Promise<void>
   /** 用户发送消息参与创作（存入本地 state，在下一个检查点决策时一并发送） */
@@ -1763,6 +1767,121 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     [handleEvent]
   )
 
+  /**
+   * 后台 run 的事件 tail 消费器（create-discussion / create-flow 共用）。
+   *
+   * 后台化的 run 不再随 HTTP 请求结束，进度与结果都在事件流里：
+   * - agui：后台 emit 通道的完整镜像（TEXT_MESSAGE_* 流式正文、novel:progress、
+   *   novel:checkpoint、novel:user-message、RUN_*），payload 即原 AG-UI 事件，
+   *   直接喂 handleEvent——流式体验与旧 SSE 一致；
+   * - run_finished → novel:result（携带最终正文、diagnostics 与 canResume）+
+   *   RUN_FINISHED（与旧 emitter.result 的收尾序列一致）。
+   * 关闭面板只会断开 tail，run 在后台继续（断线不 abort）。
+   */
+  const consumeTail = useCallback(
+    async (eventsPath: string, controller: AbortController): Promise<void> => {
+      const tailUrl = `${browserConfig.apiBaseUrl}/api/plugins/novel${eventsPath}`
+      const tailResponse = await fetch(tailUrl, {
+        headers: { Accept: 'text/event-stream' },
+        signal: controller.signal
+      })
+      if (!tailResponse.ok || !tailResponse.body) {
+        throw new Error(`创作事件流连接失败: HTTP ${tailResponse.status}`)
+      }
+      await parseSseStream(tailResponse.body, (event) => {
+        const tail = event as unknown as { type?: string; payload?: Record<string, unknown> }
+        switch (tail.type) {
+          case 'agui':
+            if (tail.payload) handleEvent(tail.payload as BaseEvent)
+            return
+          case 'run_finished':
+            handleEvent({
+              type: 'CUSTOM',
+              name: 'novel:result',
+              value: { timestamp: Date.now(), ...(tail.payload ?? {}) }
+            } as BaseEvent)
+            handleEvent({ type: 'RUN_FINISHED' } as BaseEvent)
+            return
+          default:
+            // run_started / 其他调度事实：UI 由 agui 镜像承载
+            return
+        }
+      })
+    },
+    [handleEvent]
+  )
+
+  /**
+   * 后台创作 run 的受理 + tail 消费（T8：create-flow 已脱离 HTTP 生命周期）。
+   *
+   * POST 只受理并返回 `202 + runId + eventsPath`，执行在服务端后台继续：
+   * 刷新页面 / 切路由 / 重开面板都只是断开 tail，不会再取消整章创作。
+   * 收到 409（本章已有在跑的 run）时取回 runId 转入 tail 观看，而不是报错阻断。
+   */
+  const runBackgroundFlow = useCallback(
+    async (
+      url: string,
+      body: unknown,
+      controller: AbortController,
+      options: { activeRunPath: string; failureLabel: string }
+    ): Promise<void> => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      })
+
+      if (response.status === 409) {
+        const activeResponse = await fetch(
+          `${browserConfig.apiBaseUrl}/api/plugins/novel${options.activeRunPath}`,
+          { signal: controller.signal }
+        )
+        if (activeResponse.ok) {
+          const active = (await activeResponse.json()) as { runId?: string; eventsPath?: string }
+          if (active.runId && active.eventsPath) {
+            activeFlowIdRef.current = active.runId
+            handleEvent({ type: 'RUN_STARTED', threadId: '', runId: active.runId } as BaseEvent)
+            // 重开面板没有历史气泡状态：from=0 全量重放重建时间线（幂等，不重复气泡）
+            await consumeTail(active.eventsPath, controller)
+            return
+          }
+        }
+      }
+
+      if (!response.ok) {
+        let serverMessage = ''
+        try {
+          const payload = (await response.json()) as {
+            error?: string | { message?: string }
+            message?: string
+          }
+          serverMessage =
+            typeof payload.error === 'string'
+              ? payload.error
+              : (payload.error?.message ?? payload.message ?? '')
+        } catch {
+          // 非 JSON 错误响应保留 HTTP 状态作为兜底。
+        }
+        throw new Error(
+          serverMessage
+            ? `${options.failureLabel}：${serverMessage}`
+            : `${options.failureLabel}: HTTP ${response.status} ${response.statusText}`
+        )
+      }
+
+      const accepted = (await response.json()) as { runId?: string; eventsPath?: string }
+      if (!accepted.runId || !accepted.eventsPath) {
+        throw new Error('创作受理响应缺少 runId/eventsPath')
+      }
+      // 等价于旧 SSE 的 RUN_STARTED：登记 runId，插话端点据此做运行级隔离
+      activeFlowIdRef.current = accepted.runId
+      handleEvent({ type: 'RUN_STARTED', threadId: '', runId: accepted.runId } as BaseEvent)
+      await consumeTail(accepted.eventsPath, controller)
+    },
+    [consumeTail, handleEvent]
+  )
+
   const startCreation = useCallback(
     async (
       projectId: string,
@@ -1810,16 +1929,33 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         ...(options?.styleExpertIds ? { styleExpertIds: options.styleExpertIds } : {})
       }
 
-      const runPromise = runFlow(url, body, controller)
+      // T8：后端已把 run 挪到后台（202 + eventsPath），断线不再取消整章创作。
+      const runPromise = runBackgroundFlow(url, body, controller, {
+        activeRunPath: `/projects/${projectId}/chapters/${chapterNumber}/active-workflow-run`,
+        failureLabel: '创作流程启动失败'
+      })
       runFlowPromiseRef.current = runPromise
       try {
         await runPromise
+      } catch (err) {
+        // 用户主动取消（abort）：cancel()/reset() 已同步处理状态，不覆盖 phase
+        if (controller.signal.aborted) {
+          setIsRunning(false)
+          setCurrentCheckpoint(null)
+          return
+        }
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+        setProgressMessage(null)
+        setPhase('error')
+        setIsRunning(false)
+        setCurrentCheckpoint(null)
       } finally {
         abortControllerRef.current = null
         runFlowPromiseRef.current = null
       }
     },
-    [runFlow]
+    [runBackgroundFlow]
   )
 
   /**
@@ -1873,125 +2009,40 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         ...(options?.styleExpertIds ? { styleExpertIds: options.styleExpertIds } : {})
       }
 
-      /**
-       * T7：create-discussion 已改后台运行（POST 返 202 + runId），前端改为
-       * 消费事件 tail（GET events?from=seq）。tail 事件是调度事实：
-       * - agui：后台 emit 通道的完整镜像（TEXT_MESSAGE_* 流式正文、novel:progress、
-       *   novel:checkpoint、novel:user-message、RUN_*），payload 即原 AG-UI 事件，
-       *   直接喂 handleEvent——流式体验与旧 SSE 一致；
-       * - run_finished → novel:result（携带最终正文、diagnostics 与 canResume）+
-       *   RUN_FINISHED（与旧 emitter.result 的收尾序列一致）。
-       * 关闭面板只会断开 tail，run 在后台继续（断线不 abort）。
-       */
-      const consumeTail = async (eventsPath: string, controller: AbortController): Promise<void> => {
-        const tailUrl = `${browserConfig.apiBaseUrl}/api/plugins/novel${eventsPath}`
-        const tailResponse = await fetch(tailUrl, {
-          headers: { Accept: 'text/event-stream' },
-          signal: controller.signal
-        })
-        if (!tailResponse.ok || !tailResponse.body) {
-          throw new Error(`群聊事件流连接失败: HTTP ${tailResponse.status}`)
-        }
-        await parseSseStream(tailResponse.body, (event) => {
-          const tail = event as unknown as { type?: string; payload?: Record<string, unknown> }
-          switch (tail.type) {
-            case 'agui':
-              if (tail.payload) handleEvent(tail.payload as BaseEvent)
-              return
-            case 'run_finished':
-              handleEvent({
-                type: 'CUSTOM',
-                name: 'novel:result',
-                value: { timestamp: Date.now(), ...(tail.payload ?? {}) }
-              } as BaseEvent)
-              handleEvent({ type: 'RUN_FINISHED' } as BaseEvent)
-              return
-            default:
-              // run_started / plan_submitted / beat_* 等调度事实：UI 由 agui 镜像承载
-              return
-          }
-        })
-      }
 
-      const runPromise = (async (): Promise<void> => {
-        try {
-          const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            signal: controller.signal
-          })
-          if (response.status === 409) {
-            // 章节已有后台 run 在跑（面板重开后再点开始等场景）：
-            // 取回运行中的 runId 转入事件 tail 观看，而不是报错阻断。
-            const activeResponse = await fetch(
-              `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/active-discussion-run`,
-              { signal: controller.signal }
-            )
-            if (activeResponse.ok) {
-              const active = (await activeResponse.json()) as { runId?: string; eventsPath?: string }
-              if (active.runId && active.eventsPath) {
-                handleEvent({ type: 'RUN_STARTED', threadId: '', runId: active.runId } as BaseEvent)
-                // 重开面板没有历史气泡状态：from=0 全量重放重建时间线（幂等，不重复气泡）
-                await consumeTail(active.eventsPath, controller)
-                return
-              }
-            }
-          }
-          if (!response.ok) {
-            let serverMessage = ''
-            try {
-              const payload = (await response.json()) as { error?: string | { message?: string }; message?: string }
-              serverMessage =
-                typeof payload.error === 'string'
-                  ? payload.error
-                  : (payload.error?.message ?? payload.message ?? '')
-            } catch {
-              // 非 JSON 错误响应保留 HTTP 状态作为兜底。
-            }
-            throw new Error(
-              serverMessage
-                ? `群聊创作启动失败：${serverMessage}`
-                : `群聊创作启动失败: HTTP ${response.status} ${response.statusText}`
-            )
-          }
-          const accepted = (await response.json()) as { runId?: string; eventsPath?: string }
-          if (!accepted.runId || !accepted.eventsPath) {
-            throw new Error('群聊创作受理响应缺少 runId/eventsPath')
-          }
-          // 等价于旧 SSE 的 RUN_STARTED：登记 runId，插话端点据此做运行级隔离
-          handleEvent({ type: 'RUN_STARTED', threadId: '', runId: accepted.runId } as BaseEvent)
-          await consumeTail(accepted.eventsPath!, controller)
-        } catch (err) {
-          // 用户主动取消（abort）：cancel()/reset() 已同步处理状态，不覆盖 phase
-          if (controller.signal.aborted) {
-            setIsRunning(false)
-            setCurrentCheckpoint(null)
-            latestAgentStartMessageIdRef.current = null
-            unmappedStreamMessageIdRef.current = null
-            unmappedStreamSequenceRef.current = 0
-            return
-          }
-          const message = err instanceof Error ? err.message : String(err)
-          setError(message)
-          setProgressMessage(null)
-          setPhase('error')
+      // T7/T8：后台 run + 事件 tail，与 create-flow 共用同一消费器。
+      const runPromise = runBackgroundFlow(url, body, controller, {
+        activeRunPath: `/projects/${projectId}/chapters/${chapterNumber}/active-discussion-run`,
+        failureLabel: '群聊创作启动失败'
+      })
+      runFlowPromiseRef.current = runPromise
+      try {
+        await runPromise
+      } catch (err) {
+        // 用户主动取消（abort）：cancel()/reset() 已同步处理状态，不覆盖 phase
+        if (controller.signal.aborted) {
           setIsRunning(false)
           setCurrentCheckpoint(null)
           latestAgentStartMessageIdRef.current = null
           unmappedStreamMessageIdRef.current = null
           unmappedStreamSequenceRef.current = 0
+          return
         }
-      })()
-      runFlowPromiseRef.current = runPromise
-      try {
-        await runPromise
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+        setProgressMessage(null)
+        setPhase('error')
+        setIsRunning(false)
+        setCurrentCheckpoint(null)
+        latestAgentStartMessageIdRef.current = null
+        unmappedStreamMessageIdRef.current = null
+        unmappedStreamSequenceRef.current = 0
       } finally {
         abortControllerRef.current = null
         runFlowPromiseRef.current = null
       }
     },
-    [handleEvent]
+    [runBackgroundFlow]
   )
 
   const resumeDiscussion = useCallback(
@@ -2024,16 +2075,31 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       const controller = new AbortController()
       abortControllerRef.current = controller
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-discussion/${runId}/resume`
-      const runPromise = runFlow(url, {}, controller)
+      const runPromise = runBackgroundFlow(url, {}, controller, {
+        activeRunPath: `/projects/${projectId}/chapters/${chapterNumber}/active-discussion-run`,
+        failureLabel: '群聊断点续跑启动失败'
+      })
       runFlowPromiseRef.current = runPromise
       try {
         await runPromise
+      } catch (err) {
+        if (controller.signal.aborted) {
+          setIsRunning(false)
+          setCurrentCheckpoint(null)
+          return
+        }
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+        setProgressMessage(null)
+        setPhase('error')
+        setIsRunning(false)
+        setCurrentCheckpoint(null)
       } finally {
         abortControllerRef.current = null
         runFlowPromiseRef.current = null
       }
     },
-    [runFlow]
+    [runBackgroundFlow]
   )
 
   /**
@@ -2074,16 +2140,32 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       const controller = new AbortController()
       abortControllerRef.current = controller
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-flow/${runId}/resume`
-      const runPromise = runFlow(url, {}, controller)
+      // T8：续跑同样后台化，断线不再取消整章。
+      const runPromise = runBackgroundFlow(url, {}, controller, {
+        activeRunPath: `/projects/${projectId}/chapters/${chapterNumber}/active-workflow-run`,
+        failureLabel: '工作流断点续跑启动失败'
+      })
       runFlowPromiseRef.current = runPromise
       try {
         await runPromise
+      } catch (err) {
+        if (controller.signal.aborted) {
+          setIsRunning(false)
+          setCurrentCheckpoint(null)
+          return
+        }
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+        setProgressMessage(null)
+        setPhase('error')
+        setIsRunning(false)
+        setCurrentCheckpoint(null)
       } finally {
         abortControllerRef.current = null
         runFlowPromiseRef.current = null
       }
     },
-    [runFlow]
+    [runBackgroundFlow]
   )
 
   /**
@@ -2499,6 +2581,19 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     []
   )
 
+  const peekArrangedCharacterFunctions = useCallback(
+    (
+      chapterNumber: number
+    ): Array<{ characterId: string; function: string; note?: string }> | undefined => {
+      const cached = lastArrangeFunctionsRef.current
+      if (!cached || cached.chapterNumber !== chapterNumber || cached.entries.length === 0) {
+        return undefined
+      }
+      return cached.entries
+    },
+    []
+  )
+
   return {
     phase,
     isRunning,
@@ -2519,6 +2614,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     aiArrange,
     reverseArrange,
     takeArrangedCharacterFunctions,
+    peekArrangedCharacterFunctions,
     submitCheckpoint,
     sendMessage,
     sendInterject,

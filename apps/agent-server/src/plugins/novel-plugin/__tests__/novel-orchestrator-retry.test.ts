@@ -179,6 +179,14 @@ describe('runAgent 重试外壳：不可重试的失败', () => {
     expect(h.attempts()).toBe(1)
   })
 
+  it('Writer 正文格式校验失败不重试，避免同一坏响应进入写作循环', async () => {
+    const err = new Error('Writer 输出无效：未返回中文正文，疑似只返回了思考或写作说明')
+    const h = createRetryHarness([err])
+
+    await expect(h.orchestrator.runAgent('writer', 'p1', 1, 'task', {})).rejects.toBe(err)
+    expect(h.attempts()).toBe(1)
+  })
+
   it('用户已取消时不重试 —— 按了停止不应再打 LLM', async () => {
     const err = new Error('Request was aborted')
     const h = createRetryHarness([err], { signal: { aborted: true } })

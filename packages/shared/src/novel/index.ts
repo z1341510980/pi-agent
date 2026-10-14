@@ -1765,11 +1765,28 @@ export interface NarrativeTask {
   /** Existing story entity IDs or exact names needed beyond the arranged chapter context. */
   requiredReferences?: string[]
   /**
+   * 本章读者应当记住的单一变化契约。
+   * 这是叙事执行与记忆提取共用的锚点，不是宣传文案；必须能在正文中找到可观察证据。
+   */
+  memoryAnchor?: ChapterMemoryAnchor
+  /**
    * Director 提交的结构化场景计划（scene-wise-writing T1）。
    * 存在时 Writer 的逐场字数预算直接取每场 targetWords（系统校验总和=本章目标 ±1）；
    * 缺失时回退系统均分（群聊/旧数据兼容）。场景数与 sceneCount 一致、order 从 1 连续编号、核心场景 ≤2。
    */
   scenes?: NarrativeTaskScene[]
+}
+
+/** 本章记忆锚点：一个核心变化 + 一个可回忆的具体画面。 */
+export interface ChapterMemoryAnchor {
+  /** 方便时间线和审稿展示的短标题。 */
+  title: string
+  /** 正文中必须出现的具体画面、动作、物件或一句关键台词。 */
+  image: string
+  /** 本章结束后不可逆的状态、关系、认知或资源变化。 */
+  irreversibleChange: string
+  /** 读者应当获得的情绪回报，可选，不能替代变化本身。 */
+  emotionalPayoff?: string
 }
 
 /**
