@@ -187,9 +187,9 @@ export function createNovelServices(context: PluginContext): NovelServices {
   store.setChapterProjectionObserver(
     createChapterProjectionRecorder(memoryStore, {
       onError: (err, projectId, change) => {
-        context.logger.warn(
+        context.logger.error(
           { err, projectId, entityType: change.entityType, entityId: change.entityId },
-          '章节投影账本记录失败（实体写入已成功，可由对账脚本补齐）'
+          '章节投影账本记录失败，实体投影事务将回滚'
         )
       }
     })
@@ -203,10 +203,11 @@ export function createNovelServices(context: PluginContext): NovelServices {
       memoryStore.deleteLedgerReferencesByEntity(projectId, event.entityId)
       memoryStore.pruneEmptyStoryEvents(projectId)
     } catch (err) {
-      context.logger.warn(
+      context.logger.error(
         { err, projectId, entityType: event.entityType, entityId: event.entityId },
-        '删除实体后清理账本引用失败（可由 cleanup 脚本补做）'
+        '删除实体后清理账本引用失败，事务将回滚'
       )
+      throw err
     }
   })
 

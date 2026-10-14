@@ -142,7 +142,7 @@ export interface ArrangedEntity {
 
 ## 3. 存储层（`core/novel-store.ts` + `infrastructure/sqlite/`）
 
-类 `NovelStore` 实现 `NovelPromptStores` 接口，是领域层统一存储门面。事务、章节投影、边清理和账本引用仍由门面控制；单表 CRUD 由 SQLite Repository 承担。Repository 使用 Drizzle ORM 访问现有 `better-sqlite3` 连接，并将 camelCase ORM 属性映射回 `row-types.ts` 的 snake_case 行，Store 再执行领域规范化。
+类 `NovelStore` 实现 `NovelPromptStores` 接口，是领域层统一存储门面。事务、章节投影、边清理和账本引用由门面控制；凡是同步写入实体、appearance 与 Story Ledger 的路径，必须由同一个 `withTransaction()` 包住，观察者失败必须向上抛出以回滚整组写入。实体删除后的多态账本引用清理遵循同一规则。单表 CRUD 由 SQLite Repository 承担。Repository 使用 Drizzle ORM 访问现有 `better-sqlite3` 连接，并将 camelCase ORM 属性映射回 `row-types.ts` 的 snake_case 行，Store 再执行领域规范化。当前整体迁移路线记录在 `docs/novel/refactoring-plan.md`。
 
 当前 ORM 化 Store：`ProjectStore`、`core/stores/entity-stores.ts` 中的冲突/物品/剧情轨道门面、`FactionStore`、`CharacterStore`（含 Relationship CRUD）、`ForeshadowStore`（含 Clue/InfoLayer CRUD）、`WorldStore`，`GraphStore` 的节点位置/标记/边/上下文指标/作者意图/章节审查基础 CRUD，`ChapterStore` 的章节查询/卷/钩子/角色弧光/正文版本行 CRUD，`EntityAppearanceStore` 的基础出场 CRUD，`EntityCandidateStore` 的候选/审核/晋升基础写入，`NarrativeLedgerStore` 的 Storyline/Progress 基础 CRUD，以及 `ScenePlanStore` 的计划/场景/场景版本/Cast 基础 CRUD。`GraphStore` 的 AgentLog、压缩 payload，`EntityAppearanceStore` 的跨实体 spans 对账，`NarrativeLedgerStore` 的跨场景 stale 规则，以及 `ChapterStore` 的章节重排事务暂保留同步 SQL；其余 Store 按垂直切片逐步迁移。`novel-migrations.ts` 仍是唯一迁移来源，不引入第二套 Drizzle Kit migration ledger。
 

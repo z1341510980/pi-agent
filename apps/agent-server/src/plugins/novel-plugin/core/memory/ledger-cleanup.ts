@@ -101,34 +101,36 @@ export function applyDanglingCleanup(
   memoryStore: NovelMemoryStore,
   projectId: string,
 ): DanglingCleanupResult {
-  const plan = planDanglingCleanup(store, memoryStore, projectId)
-  let deletedEntityRefs = 0
-  let deletedChangeRecords = 0
-  let deletedMemoryEvents = 0
-  let deletedCharacterHistory = 0
+  return store.withTransaction(() => {
+    const plan = planDanglingCleanup(store, memoryStore, projectId)
+    let deletedEntityRefs = 0
+    let deletedChangeRecords = 0
+    let deletedMemoryEvents = 0
+    let deletedCharacterHistory = 0
 
-  for (const entity of plan.entities) {
-    const removed = memoryStore.deleteLedgerReferencesByEntity(projectId, entity.entityId)
-    deletedEntityRefs += removed.entityRefs
-    deletedChangeRecords += removed.changeRecords
-    deletedMemoryEvents += removed.memoryEvents
+    for (const entity of plan.entities) {
+      const removed = memoryStore.deleteLedgerReferencesByEntity(projectId, entity.entityId)
+      deletedEntityRefs += removed.entityRefs
+      deletedChangeRecords += removed.changeRecords
+      deletedMemoryEvents += removed.memoryEvents
 
-    if (entity.entityType === 'character') {
-      // 实体字段侧：指向已删角色的出场记录
-      deletedCharacterHistory += store.deleteCharacterHistoryByCharacter(entity.entityId)
+      if (entity.entityType === 'character') {
+        // 实体字段侧：指向已删角色的出场记录
+        deletedCharacterHistory += store.deleteCharacterHistoryByCharacter(entity.entityId)
+      }
     }
-  }
 
-  const prunedEmptyEvents = memoryStore.pruneEmptyStoryEvents(projectId)
+    const prunedEmptyEvents = memoryStore.pruneEmptyStoryEvents(projectId)
 
-  return {
-    ...plan,
-    deletedEntityRefs,
-    deletedChangeRecords,
-    deletedMemoryEvents,
-    deletedCharacterHistory,
-    prunedEmptyEvents,
-  }
+    return {
+      ...plan,
+      deletedEntityRefs,
+      deletedChangeRecords,
+      deletedMemoryEvents,
+      deletedCharacterHistory,
+      prunedEmptyEvents,
+    }
+  })
 }
 
 export function formatDanglingCleanupPlan(

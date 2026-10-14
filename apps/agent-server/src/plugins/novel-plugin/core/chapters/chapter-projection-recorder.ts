@@ -35,7 +35,7 @@ export const CHAPTER_PROJECTION_EVENT_TITLE = '章节投影变更'
 export const CHAPTER_PROJECTION_BACKFILL_EVENT_TITLE = '存量投影回填'
 
 export interface ChapterProjectionRecorderOptions {
-  /** 记录失败时的告警出口（默认静默：账本记录失败不能阻断实体写入） */
+  /** 记录失败时的告警出口；回调完成后错误仍会继续抛出以触发外层事务回滚。 */
   onError?: (err: unknown, projectId: string, change: ChapterProjectionChange) => void
   /**
    * story event 标题。默认为实时收口用的标题；
@@ -119,8 +119,8 @@ export function createChapterProjectionRecorder(
         })
       }
     } catch (err) {
-      // 账本记录是"补充事实"，失败不能让实体写入回滚
       options?.onError?.(err, projectId, change)
+      throw err
     }
   }
 }

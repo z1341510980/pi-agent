@@ -130,6 +130,20 @@ describe('悬空账本引用清理', () => {
     expect(store.getConflict('c2')).toBeDefined()
   })
 
+  it('存量清理中途失败时，账本引用和空事件一起回滚', () => {
+    createConflictWithLedger('c1')
+    // 模拟旧版本删除实体后留下的多态引用。
+    db.prepare('DELETE FROM novel_conflicts WHERE id = ?').run('c1')
+    db.exec(`CREATE TRIGGER reject_cleanup_memory_event
+      BEFORE DELETE ON novel_memory_events
+      BEGIN SELECT RAISE(ABORT, 'cleanup unavailable'); END`)
+
+    expect(() => applyDanglingCleanup(store, memoryStore, PROJECT_ID))
+      .toThrow('cleanup unavailable')
+    expect(memoryStore.listChangeRecords(PROJECT_ID, { subjectId: 'c1' })).toHaveLength(1)
+    expect(memoryStore.listStoryEvents(PROJECT_ID)).toHaveLength(1)
+  })
+
   it('存量清理同时处理实体字段侧的悬空 character_history', () => {
     store.createCharacter({
       id: 'ch1', projectId: PROJECT_ID, name: '孙疤', description: '', identity: '',

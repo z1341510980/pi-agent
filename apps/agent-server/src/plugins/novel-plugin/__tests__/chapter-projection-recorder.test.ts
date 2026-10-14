@@ -65,6 +65,88 @@ describe('章节投影账本记录器', () => {
     expect(dimensionsAt(2)).toEqual(['faction.arranged'])
   })
 
+  it('账本投影写入失败时，实体和 appearance 一起回滚', () => {
+    db.exec(`CREATE TRIGGER reject_projection_change
+      BEFORE INSERT ON novel_memory_events
+      BEGIN SELECT RAISE(ABORT, 'ledger unavailable'); END`)
+
+    expect(() => createFaction('f-rollback', [[1, 1]])).toThrow('ledger unavailable')
+    expect(store.getFaction('f-rollback')).toBeUndefined()
+    expect(store.listAppearancesByChapter(PROJECT_ID, 'ch-1')).toEqual([])
+    expect(memoryStore.listStoryEvents(PROJECT_ID, { chapterNumber: 1 })).toEqual([])
+  })
+
+  it('冻结章节跨度扩展失败时，实体字段和 appearance 一起回滚', () => {
+    createFaction('f-update', [[1, 1]])
+    db.exec(`CREATE TRIGGER reject_second_projection_change
+      BEFORE INSERT ON novel_memory_events
+      WHEN NEW.chapter_number = 2
+      BEGIN SELECT RAISE(ABORT, 'ledger unavailable'); END`)
+
+    expect(() => store.updateFaction('f-update', {
+      chapterSpans: [[1, 2]], description: '更新后的描述',
+    })).toThrow('ledger unavailable')
+    expect(store.getFaction('f-update')?.description).toBe('')
+    expect(store.listAppearancesByChapter(PROJECT_ID, 'ch-1'))
+      .toEqual([expect.objectContaining({ entityType: 'faction', entityId: 'f-update' })])
+    expect(store.listAppearancesByChapter(PROJECT_ID, 'ch-2')).toEqual([])
+    expect(memoryStore.listChangeRecords(PROJECT_ID, { chapterNumber: 2 })).toEqual([])
+  })
+
+  it('批量 appearance 记录失败时不留下部分投影', () => {
+    createFaction('f-appearance-1', [])
+    createFaction('f-appearance-2', [])
+    db.exec(`CREATE TRIGGER reject_projection_change
+      BEFORE INSERT ON novel_memory_events
+      BEGIN SELECT RAISE(ABORT, 'ledger unavailable'); END`)
+
+    expect(() => store.recordAppearancesIfEnabled({
+      projectId: PROJECT_ID, chapterNumber: 1, chapterId: 'ch-1',
+      entityType: 'faction', entityIds: ['f-appearance-1', 'f-appearance-2'],
+    })).toThrow('ledger unavailable')
+    expect(store.listAppearancesByChapter(PROJECT_ID, 'ch-1')).toEqual([])
+    expect(memoryStore.listStoryEvents(PROJECT_ID, { chapterNumber: 1 })).toEqual([])
+  })
+
+  it('批量角色历史写入中账本失败时，整批 history 和账本记录回滚', () => {
+    store.createCharacter({
+      id: 'c-batch', projectId: PROJECT_ID, name: '叶明远', description: '', identity: '',
+      personality: '', appearance: '', currentState: '', currentGoal: '', currentPressure: '',
+      secret: '', arcStage: '', arcHistory: '[]', speechStyle: '', isProtagonist: true,
+      longTermDesire: '', plotRole: 'protagonist', removalImpact: '',
+    })
+    db.exec(`CREATE TRIGGER reject_second_projection_change
+      BEFORE INSERT ON novel_memory_events
+      WHEN NEW.chapter_number = 2
+      BEGIN SELECT RAISE(ABORT, 'ledger unavailable'); END`)
+
+    expect(() => store.batchCreateCharacterHistory([1, 2].map((chapterNumber) => ({
+      projectId: PROJECT_ID, characterId: 'c-batch', chapterId: null, chapterNumber,
+      fieldName: 'currentState', oldValue: null, newValue: `第${chapterNumber}章出场`, reason: '',
+    })))).toThrow('ledger unavailable')
+    expect(store.listCharacterHistory(PROJECT_ID, 'c-batch')).toEqual([])
+    expect(memoryStore.listStoryEvents(PROJECT_ID)).toEqual([])
+    expect(memoryStore.listChangeRecords(PROJECT_ID)).toEqual([])
+  })
+
+  it('entity deletion ledger cleanup failure rolls back the deletion', () => {
+    store.setEntityDeletedObserver((projectId, event) => {
+      memoryStore.deleteLedgerReferencesByEntity(projectId, event.entityId)
+      memoryStore.pruneEmptyStoryEvents(projectId)
+    })
+    createFaction('f-delete', [[1, 1]])
+    db.exec(`CREATE TRIGGER reject_ledger_reference_cleanup
+      BEFORE DELETE ON novel_memory_events
+      BEGIN SELECT RAISE(ABORT, 'ledger unavailable'); END`)
+
+    expect(() => store.deleteFaction('f-delete')).toThrow('ledger unavailable')
+    expect(store.getFaction('f-delete')).toBeDefined()
+    expect(store.listAppearancesByChapter(PROJECT_ID, 'ch-1'))
+      .toEqual([expect.objectContaining({ entityType: 'faction', entityId: 'f-delete' })])
+    expect(memoryStore.listChangeRecords(PROJECT_ID, { subjectId: 'f-delete' })).toHaveLength(1)
+    expect(memoryStore.listStoryEvents(PROJECT_ID, { chapterNumber: 1 })).toHaveLength(1)
+  })
+
   it('地点 appearChapters 追加会写入账本', () => {
     store.createLocation({
       id: 'l1', projectId: PROJECT_ID, name: '潼关', description: '', type: 'dungeon',
