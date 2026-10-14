@@ -2667,5 +2667,41 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
       CREATE INDEX IF NOT EXISTS idx_novel_workflow_events_run
         ON novel_workflow_events(run_id, seq);
     `
+  },
+  {
+    // 125: 共用的持久化创作运行内核；旧 workflow/discussion snapshots 暂留作兼容投影。
+    id: '125_create_creation_run_runtime',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_creation_runs (
+        run_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        chapter_number INTEGER NOT NULL CHECK (chapter_number > 0),
+        mode TEXT NOT NULL CHECK (mode IN ('workflow', 'discussion', 'arrange', 'reverse')),
+        status TEXT NOT NULL CHECK (status IN ('submitted', 'running', 'waiting_input', 'revising', 'completed', 'failed', 'cancelled')),
+        stage TEXT NOT NULL CHECK (stage IN ('planning', 'writing', 'acting', 'arranging', 'reviewing', 'revising', 'finalizing')),
+        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        checkpoint_id TEXT,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_creation_runs_active_chapter
+        ON novel_creation_runs(project_id, chapter_number)
+        WHERE status IN ('submitted', 'running', 'waiting_input', 'revising');
+      CREATE INDEX IF NOT EXISTS idx_novel_creation_runs_project_updated
+        ON novel_creation_runs(project_id, updated_at DESC);
+      CREATE TABLE IF NOT EXISTS novel_creation_run_events (
+        run_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (run_id, seq),
+        FOREIGN KEY (run_id) REFERENCES novel_creation_runs(run_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_novel_creation_run_events_run
+        ON novel_creation_run_events(run_id, seq);
+    `
   }
 ]

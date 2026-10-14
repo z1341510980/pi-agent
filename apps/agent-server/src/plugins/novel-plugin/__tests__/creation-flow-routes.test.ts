@@ -280,6 +280,50 @@ describe('re-revise model and audit contract', () => {
 })
 
 describe('other creation-flow model and audit contracts', () => {
+  it('projects create-flow start, phases, and terminal state into the shared run lifecycle', async () => {
+    const start = vi.fn(() => ({ runId: 'run-1' }))
+    const observePhase = vi.fn()
+    const finish = vi.fn()
+    const createChapterWithFlow = vi.fn(async (_projectId: string, _chapterNumber: number, options: any) => {
+      options.onProgress({ phase: 'writing', type: 'phase_change' })
+      options.onProgress({ phase: 'memory', type: 'phase_change' })
+      return { status: 'completed', content: '正文' }
+    })
+    const services = {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting' })),
+      },
+      orchestrator: { createChapterWithFlow, clearStaleInterjectMessages: vi.fn() },
+      workflowRunStore: { save: vi.fn() },
+      workflowEventStore: createWorkflowEventStore(),
+      chapterChatStore: { add: vi.fn() },
+      confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
+      creationRunLifecycle: { start, observePhase, finish },
+    } as any
+    const route = createCreationFlowRoutes(services).find(item => (
+      item.path === '/projects/:projectId/chapters/:chapterNumber/create-flow'
+    ))!
+    const reply = createReply()
+
+    await route.handler({
+      params: { projectId: 'project-1', chapterNumber: '1' },
+      body: {},
+      headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+      log: { error: vi.fn(), warn: vi.fn() },
+    } as any, reply as any)
+
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledWith(
+      expect.any(String),
+      { status: 'completed', error: undefined },
+    ))
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-1', chapterNumber: 1, mode: 'workflow',
+    }))
+    expect(observePhase.mock.calls.map(call => call[1])).toEqual(['writing', 'memory'])
+  })
+
   it('passes the selected model through reverse-arrange to entity extraction', async () => {
     const selectedModel = { provider: 'selected-provider', modelId: 'selected-model', thinkingLevel: 'high' as const }
     const generateAndArrange = vi.fn(async () => ({

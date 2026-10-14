@@ -43,6 +43,8 @@ import { DiscussionRunStore } from './core/discussion/discussion-run-store.js'
 import { DiscussionEventStore } from './core/discussion/discussion-event-store.js'
 import { WorkflowRunStore } from './core/workflow-run-store.js'
 import { WorkflowEventStore } from './core/workflow-event-store.js'
+import { CreationRunStore } from './core/runtime/creation-run-store.js'
+import { CreationRunLifecycle } from './core/runtime/creation-run-lifecycle.js'
 import { DiscussionSettingsStore } from './core/discussion/engine/discussion-settings-store.js'
 import { ConsistencyAuditor } from './core/analysis/consistency-auditor.js'
 import { RelationshipGraph } from './core/analysis/novel-relationship-graph.js'
@@ -121,6 +123,8 @@ export interface NovelServices {
   workflowRunStore: WorkflowRunStore
   /** 章节工作流（create-flow）事件流：run 脱离 HTTP 后，进度与终态的唯一出口。 */
   workflowEventStore: WorkflowEventStore
+  /** Shared durable lifecycle kernel; legacy workflow stores remain during migration. */
+  creationRunLifecycle?: CreationRunLifecycle
   /** 章节聊天消息存储（按章节持久化用户输入与 Agent 回复） */
   chapterChatStore: ChapterChatStore
   /** 章节级自由聊天 Runner */
@@ -280,6 +284,13 @@ export function createNovelServices(context: PluginContext): NovelServices {
   const discussionEventStore = new DiscussionEventStore(db)
   const workflowRunStore = new WorkflowRunStore(db)
   const workflowEventStore = new WorkflowEventStore(db)
+  const creationRunLifecycle = new CreationRunLifecycle(new CreationRunStore(db))
+  const interruptedCreationRuns = creationRunLifecycle.reconcileInterruptedRuns(
+    '服务重启导致创作流程中断；可从断点继续',
+  )
+  if (interruptedCreationRuns > 0) {
+    context.logger.warn({ count: interruptedCreationRuns }, '已回收统一创作运行内核中的孤儿运行')
+  }
   // 启动即回收：此刻不可能有在跑流程，残留 running 必为上次进程退出的孤儿。
   // 标记为 error（phase 保留为续跑入口），防止前端把死 run 当进行中永远转圈。
   const orphanRuns =
@@ -401,6 +412,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
     discussionEventStore,
     workflowRunStore,
     workflowEventStore,
+    creationRunLifecycle,
     chapterChatStore,
     chapterChatRunner,
     outlineGenerator,

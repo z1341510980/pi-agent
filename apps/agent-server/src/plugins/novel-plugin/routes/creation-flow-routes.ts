@@ -59,6 +59,7 @@ import { modelSelectionSchema } from './model-selection-contract.js'
 import { persistNovelFailureAudit } from '../core/observability/novel-error-audit.js'
 import { registerCheckpointFeedback, appendCheckpointFeedback, clearCheckpointFeedback, clearCheckpointFeedbackForRun } from '../utils/checkpoint-feedback-registry.js'
 import { waitForCheckpointDecision, withDiscussionCheckpointOptions } from '../utils/checkpoint-controller.js'
+import type { CreationRunStage } from '../core/runtime/creation-run-state.js'
 
 /**
  * 群聊可续跑阶段：这些阶段失败时快照携带足够状态（transcript/scenes/content/
@@ -273,6 +274,21 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       // `novel_workflow_events`，前端用 events 端点 tail（断线重连只是重新 tail）。
       // 只有显式 cancel（/cancel-active-flow）才停 —— 与群聊模式（create-discussion）同语义。
       const workflowRunId = randomUUID()
+      const creationRunLifecycle = services.creationRunLifecycle
+      if (creationRunLifecycle) {
+        try {
+          creationRunLifecycle.start({
+            runId: workflowRunId,
+            projectId,
+            chapterNumber: chapterNumberValue,
+            mode: 'workflow',
+          })
+        } catch (error) {
+          request.log.warn({ error, projectId, chapterNumber: chapterNumberValue, workflowRunId }, '统一创作运行内核受理失败')
+          reply.code(409).send({ ok: false, error: '该章节已有一个活动创作运行，请先结束或恢复现有运行' })
+          return
+        }
+      }
       const eventsPath = `/projects/${projectId}/workflow-runs/${workflowRunId}/events`
       const emitter = createNovelAgUiEmitter(
         (event) => {
@@ -417,6 +433,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
                   checkpointId: pending?.id,
                   createdAt: checkpointCreatedAt
                 }
+                if (creationRunLifecycle) {
+                  try {
+                    creationRunLifecycle.awaitCheckpoint(workflowRunId, pending?.id ?? toolCallId, checkpointCreatedAt)
+                  } catch (error) {
+                    request.log.warn({ error, workflowRunId, checkpointType: checkpoint.type }, '统一运行内核记录检查点失败')
+                  }
+                }
                 persistWorkflowMessage({
                   role: 'system',
                   fromId: 'system',
@@ -437,11 +460,30 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
                 emitter.checkpoint(persistedCheckpoint)
                 return decisionPromise as Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
               },
-              onProgress: (event) => emitter.progress(event),
+              onProgress: (event) => {
+                emitter.progress(event)
+                if (creationRunLifecycle) {
+                  try {
+                    creationRunLifecycle.observePhase(workflowRunId, event.phase)
+                  } catch (error) {
+                    request.log.warn({ error, workflowRunId, phase: event.phase }, '统一运行内核阶段投影失败')
+                  }
+                }
+              },
               onConversationMessage: persistWorkflowMessage,
               signal: task.controller.signal,
               arrangedEntities
             })
+             if (creationRunLifecycle) {
+               try {
+                 creationRunLifecycle.finish(workflowRunId, {
+                   status: result.status,
+                   error: result.error,
+                 })
+               } catch (error) {
+                 request.log.warn({ error, workflowRunId, status: result.status }, '统一运行内核终态投影失败')
+               }
+             }
             persistWorkflowMessage({
               role: 'system',
               fromId: 'system',
@@ -499,6 +541,16 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             })
             // 路由层异常（orchestrator 未返回 result）：有边界产物同样可续跑
             if (lastBoundary != null) saveRunSnapshot('error', { error: errMessage })
+             if (creationRunLifecycle) {
+               try {
+                 creationRunLifecycle.finish(workflowRunId, {
+                   status: task.controller.signal.aborted ? 'cancelled' : 'error',
+                   error: errMessage,
+                 })
+               } catch (lifecycleError) {
+                 request.log.warn({ error: lifecycleError, workflowRunId }, '统一运行内核异常终态投影失败')
+               }
+             }
             cancelDebug('create-flow-catch', {
               projectId,
               chapterNumber,
@@ -1177,6 +1229,37 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         if (!accepted) {
           reply.code(404).send({ ok: false, error: '检查点不存在或已处理' })
           return
+        }
+        if (isWorkflow && services.creationRunLifecycle) {
+          const checkpointArgs = pending.args as {
+            checkpoint?: { type?: CheckpointType }
+            workflowRunId?: string
+          }
+          const workflowRunId = checkpointArgs.workflowRunId
+          const checkpointType = checkpointArgs.checkpoint?.type
+          if (workflowRunId) {
+            const resumeStage = decision === 'approve'
+              ? checkpointType === 'narrative_task'
+                ? 'writing'
+                : checkpointType === 'writer_pushback' ? 'planning' : undefined
+              : checkpointType === 'writer_pushback' && (decision === 'revise' || decision === 'rewrite')
+                ? 'writing'
+                : undefined
+            try {
+              services.creationRunLifecycle.resolveCheckpoint(
+                workflowRunId,
+                checkpointId,
+                decision as 'approve' | 'revise' | 'rewrite' | 'reject',
+                {
+                  resumeStage: resumeStage as CreationRunStage | undefined,
+                  resumeWithoutRevision: checkpointType === 'writer_pushback' && decision === 'rewrite',
+                  reason: `用户选择：${describeDecision(checkpointType, decision)}`,
+                },
+              )
+            } catch (error) {
+              request.log.warn({ error, workflowRunId, checkpointId, decision }, '统一运行内核决策投影失败')
+            }
+          }
         }
         return { ok: true, data: { accepted: true } }
       },
