@@ -536,6 +536,111 @@ describe('other creation-flow model and audit contracts', () => {
 })
 
 describe('discussion model contract', () => {
+  it('projects discussion start, phases, and terminal result into a durable run', async () => {
+    const start = vi.fn(() => ({ runId: 'discussion-run-1' }))
+    const observePhase = vi.fn()
+    const finish = vi.fn()
+    const run = vi.fn(async (_projectId: string, _chapterNumber: number, options: any) => {
+      options.onProgress({ type: 'phase_change', phase: 'acting', data: {}, timestamp: 100 })
+      options.onProgress({ type: 'phase_change', phase: 'writing', data: {}, timestamp: 110 })
+      return { status: 'completed', content: '正文', transcript: [], scenes: [] }
+    })
+    const services = {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting' })),
+      },
+      discussionRunner: { run },
+      discussionRunStore: { save: vi.fn() },
+      discussionEventStore: { append: vi.fn() },
+      chapterChatStore: { addMany: vi.fn() },
+      confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
+      creationRunLifecycle: { start, observePhase, finish },
+    } as any
+    const route = createCreationFlowRoutes(services).find(item => (
+      item.path === '/projects/:projectId/chapters/:chapterNumber/create-discussion'
+    ))!
+    const reply = createReply()
+
+    await route.handler({
+      params: { projectId: 'project-1', chapterNumber: '1' }, body: {}, headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } }, log: { error: vi.fn(), warn: vi.fn() },
+    } as any, reply as any)
+
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledWith(
+      expect.any(String), { status: 'completed', error: undefined },
+    ))
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-1', chapterNumber: 1, mode: 'discussion',
+    }))
+    expect(observePhase.mock.calls.map(call => call[1])).toEqual(['acting', 'writing'])
+    expect(reply.statusCode).toBe(202)
+  })
+
+  it('binds discussion checkpoint ids to the durable run and resolves the decision', async () => {
+    const start = vi.fn((input: { runId: string }) => ({ runId: input.runId }))
+    const awaitCheckpoint = vi.fn()
+    const resolveCheckpoint = vi.fn()
+    const finish = vi.fn()
+    let resolveDecision!: (decision: string) => void
+    const pending = {
+      id: 'discussion-checkpoint-1', toolCallId: '',
+      threadId: 'novel-discussion-project-1-1',
+      args: { checkpoint: { type: 'discussion_pause', options: ['approve', 'reject'] }, workflowRunId: 'discussion-checkpoint-run' },
+    }
+    const run = vi.fn(async (_projectId: string, _chapterNumber: number, options: any) => {
+      const decision = await options.onCheckpoint({ type: 'discussion_pause', phase: 'acting', question: '继续吗？' })
+      expect(decision).toBe('approve')
+      return { status: 'completed', content: '正文', transcript: [], scenes: [] }
+    })
+    const services = {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting' })),
+      },
+      discussionRunner: { run },
+      discussionRunStore: { save: vi.fn() },
+      discussionEventStore: { append: vi.fn() },
+      chapterChatStore: { addMany: vi.fn() },
+      creationRunLifecycle: { start, awaitCheckpoint, resolveCheckpoint, finish },
+      confirmationManager: {
+        requestDecision: vi.fn((request: { toolCallId: string }) => {
+          pending.toolCallId = request.toolCallId
+          return new Promise<string>(resolve => { resolveDecision = resolve })
+        }),
+        listPending: vi.fn(() => [pending]),
+        respondDecision: vi.fn(() => { resolveDecision('approve'); return true }),
+      },
+    } as any
+    const route = createCreationFlowRoutes(services).find(item => (
+      item.path === '/projects/:projectId/chapters/:chapterNumber/create-discussion'
+    ))!
+    const reply = createReply()
+    await route.handler({
+      params: { projectId: 'project-1', chapterNumber: '1' }, body: {}, headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } }, log: { error: vi.fn(), warn: vi.fn() },
+    } as any, reply as any)
+
+    await vi.waitFor(() => expect(awaitCheckpoint).toHaveBeenCalledWith(
+      expect.any(String), 'discussion-checkpoint-1',
+    ))
+    const actualRunId = start.mock.calls[0]?.[0]?.runId as string
+    ;(pending.args as { workflowRunId: string }).workflowRunId = actualRunId
+    const decisionRoute = createCreationFlowRoutes(services).find(item => (
+      item.path === '/projects/:projectId/checkpoint/:checkpointId/decision'
+    ))!
+    await decisionRoute.handler({
+      params: { projectId: 'project-1', checkpointId: 'discussion-checkpoint-1' },
+      body: { decision: 'approve' }, log: { warn: vi.fn() },
+    } as any, createReply() as any)
+    await vi.waitFor(() => expect(resolveCheckpoint).toHaveBeenCalledWith(
+      actualRunId, 'discussion-checkpoint-1', 'approve', expect.any(Object),
+    ))
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledWith(
+      actualRunId, { status: 'completed', error: undefined },
+    ))
+  })
+
   it('keeps role models under their configured settings when a request includes a selected model', async () => {
     const memberModel = { provider: 'selected', modelId: 'run-model' }
     const projectModel = { provider: 'project', modelId: 'main-model' }

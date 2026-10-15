@@ -67,7 +67,7 @@ Each phase should produce a small verified slice. Do not combine broad file spli
 
 1. Keep the committed `CreationRunLifecycle` as the runtime lifecycle base.
 2. Migrate create-flow checkpoint feedback, cancellation, recovery, and status projection to persisted run commands/events. The initial create-flow path is wired; workflow resume now creates a new durable run from the saved `writing`/`reviewing`/`memory` boundary and records phase, checkpoint, and terminal transitions.
-3. Migrate discussion, arrange, and reverse-arrange in separate compatible slices; do not maintain two authoritative state machines for one run. AI arrange is now wired: `arranging` start, `arrange_review` checkpoint, decision projection, and completed/cancelled/failed terminal state all use `CreationRunLifecycle`.
+3. Migrate discussion, arrange, and reverse-arrange in separate compatible slices; do not maintain two authoritative state machines for one run. AI arrange and discussion are now wired; reverse-arrange remains a separate follow-up slice because its current HTTP/SSE binding has a different lifecycle boundary.
 4. Reduce module-level registries to connection/transport bookkeeping only; persist business state and make stale run recovery deterministic.
 
 ### Phase C: Typed persistence and API boundaries
@@ -141,7 +141,7 @@ Each phase should produce a small verified slice. Do not combine broad file spli
 - A lifecycle admission conflict returns `409` before the resume task or event stream starts.
 - Existing workflow event tail and snapshot recovery behavior remains unchanged.
 
-## Current task: Phase B AI arrange lifecycle
+## Completed slice: Phase B AI arrange lifecycle
 
 ### Files and responsibilities
 
@@ -166,6 +166,32 @@ pnpm --filter agent-server build
 git diff --check
 ```
 
+## Completed slice: Phase B discussion lifecycle
+
+### Files and responsibilities
+
+- `apps/agent-server/src/plugins/novel-plugin/routes/creation-flow-routes.ts`: start, resume, checkpoint, cancel, and terminal projection for background discussion runs.
+- `apps/agent-server/src/plugins/novel-plugin/utils/checkpoint-controller.ts`: bind generated checkpoint ids and the durable discussion run id before emitting the checkpoint event.
+- `apps/agent-server/src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts`: verify discussion start, phase projection, checkpoint decision resolution, and terminal state.
+
+### Acceptance criteria
+
+- A new discussion run is admitted into `CreationRunLifecycle` before the background task starts, and returns `202` with its event-stream run id.
+- Progress phases map to durable stages; discussion checkpoints persist `waiting_input` with the exact checkpoint id and resolve on approve/revise/reject.
+- Explicit cancellation rejects a pending confirmation, wakes the runner, and projects a cancelled terminal state; task registries are cleaned afterward.
+- Discussion resume creates a new durable run from the saved resumable phase and preserves the original run as the recovery input.
+- Existing discussion event tail, checkpoint feedback, history persistence, and resume behavior remain compatible.
+
+### Verification commands
+
+Run from the repository root:
+
+```powershell
+pnpm --filter agent-server test src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts src/plugins/novel-plugin/__tests__/novel-discussion-runner.test.ts src/plugins/novel-plugin/__tests__/team-discussion-engine.test.ts
+pnpm --filter agent-server build
+git diff --check
+```
+
 ## Progress log
 
 - 2026-10-14: Phase B foundation committed as `49e8098` on `codex/novel-runtime-refactor`.
@@ -175,3 +201,4 @@ git diff --check
 - 2026-10-15: AI arrange projection commit is now atomic across the Story Ledger and appearance writes; failure performs strict compensating rollback and does not emit an arrange-completed event.
 - 2026-10-15: Workflow resume is wired to `CreationRunLifecycle`; its phase/checkpoint/terminal transitions use a new durable run id while retaining the original workflow snapshot as input.
 - 2026-10-15: AI arrange is wired to `CreationRunLifecycle`; `arranging` and `arrange_review` now have durable state and terminal projection.
+- 2026-10-15: Discussion start and resume are wired to `CreationRunLifecycle`; phases, checkpoints, explicit cancellation, and terminal states now use the durable run id while the event tail remains the transport contract.

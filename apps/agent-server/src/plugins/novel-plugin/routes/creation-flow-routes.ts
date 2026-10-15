@@ -57,7 +57,7 @@ import { parseNovelModelRef } from '../core/domain/novel-model-ref.js'
 import type { ArrangeDraftHandle } from '../core/generation/novel-entity-generator.js'
 import { modelSelectionSchema } from './model-selection-contract.js'
 import { persistNovelFailureAudit } from '../core/observability/novel-error-audit.js'
-import { registerCheckpointFeedback, appendCheckpointFeedback, clearCheckpointFeedback, clearCheckpointFeedbackForRun } from '../utils/checkpoint-feedback-registry.js'
+import { appendCheckpointFeedback, clearCheckpointFeedbackForRun } from '../utils/checkpoint-feedback-registry.js'
 import { waitForCheckpointDecision, withDiscussionCheckpointOptions } from '../utils/checkpoint-controller.js'
 import type { CreationRunStage } from '../core/runtime/creation-run-state.js'
 
@@ -66,6 +66,23 @@ import type { CreationRunStage } from '../core/runtime/creation-run-state.js'
  * failedSceneId）从断点继续。planning 阶段失败无可续跑产物，仍整场重来。
  */
 const DISCUSSION_RESUMABLE_PHASES = new Set(['chapter_weaving', 'reviewing', 'acting', 'scene_setup'])
+
+function discussionLifecycleStage(phase?: string): CreationRunStage {
+  switch (phase) {
+    case 'chapter_weaving':
+    case 'scene_weaving':
+      return 'writing'
+    case 'reviewing':
+      return 'reviewing'
+    case 'acting':
+    case 'scene_setup':
+      return 'acting'
+    case 'memory':
+      return 'finalizing'
+    default:
+      return 'planning'
+  }
+}
 // 检查点请求与后台 discussion run 解耦；用户意见先按 checkpointId 暂存，
 // 等待中的 engine 在恢复后把它们写入 transcript，供下一位 Agent 读取。
 const CREATION_FLOW_ROUTES_FILE = 'apps/agent-server/src/plugins/novel-plugin/routes/creation-flow-routes.ts'
@@ -1277,7 +1294,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
 
         // 委托 ConfirmationManager 响应决策（resolve 对应 pending Promise）
         const accepted = services.confirmationManager.respondDecision(checkpointId, decision)
-        if (isDiscussion) clearCheckpointFeedback(checkpointId)
         if (!accepted) {
           reply.code(404).send({ ok: false, error: '检查点不存在或已处理' })
           return
@@ -1328,6 +1344,21 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               )
             } catch (error) {
               request.log.warn({ error, workflowRunId: checkpointArgs.workflowRunId, checkpointId, decision }, 'AI 编排运行内核决策投影失败')
+            }
+          }
+        }
+        if (isDiscussion && services.creationRunLifecycle) {
+          const checkpointArgs = pending.args as { workflowRunId?: string }
+          if (checkpointArgs.workflowRunId) {
+            try {
+              services.creationRunLifecycle.resolveCheckpoint(
+                checkpointArgs.workflowRunId,
+                checkpointId,
+                decision as 'approve' | 'revise' | 'rewrite' | 'reject',
+                { reason: `用户选择：${describeDecision(undefined, decision)}` },
+              )
+            } catch (error) {
+              request.log.warn({ error, workflowRunId: checkpointArgs.workflowRunId, checkpointId, decision }, '群聊运行内核决策投影失败')
             }
           }
         }
@@ -1542,6 +1573,22 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         // 进度与结果经事件流消费（GET .../discussion-runs/:runId/events）。
         const discussionRunId = randomUUID()
         const startedAt = Date.now()
+        const creationRunLifecycle = services.creationRunLifecycle
+        if (creationRunLifecycle) {
+          try {
+            creationRunLifecycle.start({
+              runId: discussionRunId,
+              projectId,
+              chapterNumber: chapterNumberValue,
+              mode: 'discussion',
+              initialStage: 'planning',
+            })
+          } catch (error) {
+            request.log.warn({ error, projectId, chapterNumber: chapterNumberValue, discussionRunId }, '群聊运行内核受理失败')
+            reply.code(409).send({ ok: false, error: '无法为该章节创建群聊运行，请检查是否已有活动运行' })
+            return
+          }
+        }
         const task = registerNovelChapterTask(creationLockKey, 'discussion', discussionRunId)
         chapterCreationLocks.add(creationLockKey)
         // 插话回显通道：状态事件（queued/injected/dropped）经 emitter 进 mirror sink，
@@ -1594,10 +1641,28 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
                     reason: `等待用户确认群聊检查点：${checkpoint.question}`,
                     feedback: checkpointFeedback,
                     emit: emitter.checkpoint,
+                    runId: discussionRunId,
+                    onCreated: checkpointId => {
+                      if (!creationRunLifecycle) return
+                      try {
+                        creationRunLifecycle.awaitCheckpoint(discussionRunId, checkpointId)
+                      } catch (error) {
+                        request.log.warn({ error, discussionRunId, checkpointId }, '群聊运行内核检查点投影失败')
+                      }
+                    },
                   }) as Promise<'approve' | 'reject' | 'revise' | string>
                 },
                 checkpointFeedback,
-                onProgress: (event) => emitter.progress(event),
+                onProgress: (event) => {
+                  emitter.progress(event)
+                  if (creationRunLifecycle) {
+                    try {
+                      creationRunLifecycle.observePhase(discussionRunId, event.phase)
+                    } catch (error) {
+                      request.log.warn({ error, discussionRunId, phase: event.phase }, '群聊运行内核阶段投影失败')
+                    }
+                  }
+                },
                 flowKey: interjectFlowKey,
                 styleExpertIds: input.styleExpertIds,
                 projectModel,
@@ -1609,6 +1674,16 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               },
               arrangedEntities,
             )
+            if (creationRunLifecycle) {
+              try {
+                creationRunLifecycle.finish(discussionRunId, {
+                  status: result.status,
+                  error: result.error,
+                })
+              } catch (error) {
+                request.log.warn({ error, discussionRunId, status: result.status }, '群聊运行内核终态投影失败')
+              }
+            }
             // T5：run 行停写三元组；failedPhase 只透传 canResume 判定，不落库。
             // run_finished 携带最终正文与演出诊断：前端经事件 tail 拿结果，无需独立状态端点。
             services.discussionEventStore.append(discussionRunId, 'run_finished', {
@@ -1663,6 +1738,16 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               })
             }
           } catch (err) {
+            if (creationRunLifecycle) {
+              try {
+                creationRunLifecycle.finish(discussionRunId, {
+                  status: task.controller.signal.aborted ? 'cancelled' : 'error',
+                  error: err instanceof Error ? err.message : String(err),
+                })
+              } catch (lifecycleError) {
+                request.log.warn({ error: lifecycleError, discussionRunId }, '群聊运行内核异常终态投影失败')
+              }
+            }
             // 引擎外层异常：补终态事件，避免事件流永远停在 running 让 fold 无法收口。
             services.discussionEventStore.append(discussionRunId, 'run_finished', {
               status: 'error',
@@ -1801,6 +1886,11 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           })
           return
         }
+        if (services.confirmationManager) {
+          const pending = services.confirmationManager.listPending()
+            .filter(item => item.args && (item.args as { workflowRunId?: string }).workflowRunId === runId)
+          for (const request of pending) services.confirmationManager.respondDecision(request.id, 'reject')
+        }
         task.controller.abort(new Error('用户显式取消群聊运行'))
         // 等待引擎冻结并落终态（与 cancel-active-flow 同语义），避免前端
         // 拿到 200 后立刻重开面板却看到 running。
@@ -1847,6 +1937,22 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         const resumeRunId = randomUUID()
         const startedAt = Date.now()
         const eventsPath = `/projects/${projectId}/discussion-runs/${resumeRunId}/events`
+        const creationRunLifecycle = services.creationRunLifecycle
+        if (creationRunLifecycle) {
+          try {
+            creationRunLifecycle.start({
+              runId: resumeRunId,
+              projectId,
+              chapterNumber: chapter,
+              mode: 'discussion',
+              initialStage: discussionLifecycleStage(resumePhase),
+            })
+          } catch (error) {
+            request.log.warn({ error, projectId, chapterNumber: chapter, resumeRunId }, '群聊续跑运行内核受理失败')
+            reply.code(409).send({ ok: false, error: '无法为该章节创建群聊续跑运行，请检查是否已有活动运行' })
+            return
+          }
+        }
         const emitter = createNovelAgUiEmitter(
           (event) => {
             services.discussionEventStore.append(resumeRunId, 'agui', event as unknown as Record<string, unknown>)
@@ -1892,9 +1998,27 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
                   reason: `等待用户确认群聊断点续跑检查点：${checkpoint.question}`,
                   feedback: checkpointFeedback,
                   emit: emitter.checkpoint,
+                  runId: resumeRunId,
+                  onCreated: checkpointId => {
+                    if (!creationRunLifecycle) return
+                    try {
+                      creationRunLifecycle.awaitCheckpoint(resumeRunId, checkpointId)
+                    } catch (error) {
+                      request.log.warn({ error, resumeRunId, checkpointId }, '群聊续跑运行内核检查点投影失败')
+                    }
+                  },
                 }) as Promise<'approve' | 'reject' | 'revise' | string>
               },
-              onProgress: (event) => emitter.progress(event),
+              onProgress: (event) => {
+                emitter.progress(event)
+                if (creationRunLifecycle) {
+                  try {
+                    creationRunLifecycle.observePhase(resumeRunId, event.phase)
+                  } catch (error) {
+                    request.log.warn({ error, resumeRunId, phase: event.phase }, '群聊续跑运行内核阶段投影失败')
+                  }
+                }
+              },
               projectModel,
               flowKey: interjectFlowKey,
               styleExpertIds: snapshot.styleExpertIds,
@@ -1909,8 +2033,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               transcript: snapshot.transcript,
               scenes: snapshot.scenes,
               content: snapshot.content,
-               failedSceneId: resumeFailedSceneId,
-               failedActionBeatId: resumeFailedActionBeatId,
+              failedSceneId: resumeFailedSceneId,
+              failedActionBeatId: resumeFailedActionBeatId,
               // 事件重放得出的完成集：跳过 transcript 反推（T5）
               ...(resumePhase === 'acting' && resumeFailedSceneId != null
                 && resumeInfo?.completedByScene.get(resumeFailedSceneId)
@@ -1918,6 +2042,17 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
                 : {}),
             },
           )
+
+          if (creationRunLifecycle) {
+            try {
+              creationRunLifecycle.finish(resumeRunId, {
+                status: result.status,
+                error: result.error,
+              })
+            } catch (error) {
+              request.log.warn({ error, resumeRunId, status: result.status }, '群聊续跑运行内核终态投影失败')
+            }
+          }
 
           const finalResult = {
             ...result,
@@ -1979,6 +2114,16 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : String(err)
+          if (creationRunLifecycle) {
+            try {
+              creationRunLifecycle.finish(resumeRunId, {
+                status: task.controller.signal.aborted ? 'cancelled' : 'error',
+                error: errorMessage,
+              })
+            } catch (lifecycleError) {
+              request.log.warn({ error: lifecycleError, resumeRunId }, '群聊续跑运行内核异常终态投影失败')
+            }
+          }
           services.discussionEventStore.append(resumeRunId, 'run_finished', {
             status: task.controller.signal.aborted ? 'cancelled' : 'error',
             error: errorMessage,
@@ -2042,10 +2187,22 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       }
       // 委托 ConfirmationManager 响应决策（resolve 对应 pending Promise）
       const accepted = services.confirmationManager.respondDecision(checkpointId, decision)
-      clearCheckpointFeedback(checkpointId)
       if (!accepted) {
         reply.code(404).send({ ok: false, error: '群聊检查点不存在或已处理' })
         return
+      }
+      const checkpointArgs = pending.args as { workflowRunId?: string }
+      if (services.creationRunLifecycle && checkpointArgs.workflowRunId) {
+        try {
+          services.creationRunLifecycle.resolveCheckpoint(
+            checkpointArgs.workflowRunId,
+            checkpointId,
+            decision as 'approve' | 'revise' | 'rewrite' | 'reject',
+            { reason: `用户选择：${describeDecision(undefined, decision)}` },
+          )
+        } catch (error) {
+          request.log.warn({ error, workflowRunId: checkpointArgs.workflowRunId, checkpointId, decision }, '群聊运行内核决策投影失败')
+        }
       }
       return { ok: true, data: { accepted: true } }
     },

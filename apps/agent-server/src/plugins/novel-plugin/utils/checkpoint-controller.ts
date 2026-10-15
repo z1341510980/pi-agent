@@ -4,7 +4,7 @@ import { registerCheckpointFeedback } from './checkpoint-feedback-registry.js'
 
 type ConfirmationManagerLike = {
   requestDecision: (request: any, timeoutMs: number) => Promise<string>
-  listPending: () => Array<{ id: string; toolCallId?: string }>
+  listPending: () => Array<{ id: string; toolCallId?: string; args?: Record<string, unknown> }>
 }
 
 /** 统一后台 checkpoint 的挂起、绑定反馈和事件推送流程。 */
@@ -16,18 +16,25 @@ export async function waitForCheckpointDecision(params: {
   reason: string
   feedback?: string[]
   emit: (checkpoint: Record<string, unknown>) => void
+  runId?: string
+  onCreated?: (checkpointId: string) => void
 }): Promise<string> {
   const toolCallId = randomUUID()
   const decision = params.manager.requestDecision({
     threadId: params.threadId,
     toolCallId,
     toolName: params.toolName,
-    args: { checkpoint: params.checkpoint },
+    args: {
+      checkpoint: params.checkpoint,
+      ...(params.runId ? { workflowRunId: params.runId } : {}),
+    },
     reason: params.reason,
   }, 0)
   const pending = params.manager.listPending().find(item => item.toolCallId === toolCallId)
-  if (pending?.id && params.feedback) registerCheckpointFeedback(pending.id, params.feedback)
-  params.emit({ ...params.checkpoint, checkpointId: pending?.id })
+  if (!pending?.id) throw new Error(`Checkpoint request was not registered: ${toolCallId}`)
+  if (params.feedback) registerCheckpointFeedback(pending.id, params.feedback)
+  params.onCreated?.(pending.id)
+  params.emit({ ...params.checkpoint, checkpointId: pending.id })
   return decision
 }
 
