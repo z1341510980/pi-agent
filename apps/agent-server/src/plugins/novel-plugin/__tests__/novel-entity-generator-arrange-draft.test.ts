@@ -34,6 +34,10 @@ function createHarness(): Harness {
   const store = new NovelStore(db)
   const memoryStore = new NovelMemoryStore(db)
   store.setChapterProjectionObserver(createChapterProjectionRecorder(memoryStore))
+  store.setEntityDeletedObserver((projectId, event) => {
+    memoryStore.deleteLedgerReferencesByEntity(projectId, event.entityId)
+    memoryStore.pruneEmptyStoryEvents(projectId)
+  })
   const projectId = randomUUID()
   store.createProject({
     id: projectId,
@@ -137,6 +141,45 @@ async function buildDraft(h: Harness, factionId: string, newConflictDescription:
 }
 
 describe('AI 编排待确认草稿（arrange_review 补偿回滚）', () => {
+  it('账本投影写入失败时回滚本轮实体和 appearance 并向调用方失败', async () => {
+    const h = createHarness()
+    try {
+      const description = '编排账本失败后必须撤销新实体'
+      const conflictSpec = { coreStyle: description }
+      const progress: Array<{ phase: string; message: string }> = []
+      h.db.exec(`CREATE TRIGGER reject_arrange_projection
+        BEFORE INSERT ON novel_story_events
+        WHEN NEW.title = '章纲编排实体投影'
+        BEGIN SELECT RAISE(ABORT, 'ledger unavailable'); END`)
+      ;(h.generator as any).planEntitiesFromOutline = async () => ({
+        plan: { ...EMPTY_PLAN, conflicts: [conflictSpec] },
+        logContext: { systemPrompt: '', userMessage: '', rawResult: '', status: 'success', error: '' },
+      })
+      ;(h.generator as any).generatePlanInBatches = async () => ({
+        generated: new Map<object, GeneratedEntity>([
+          [conflictSpec, { type: 'conflict', data: newConflictData(description) }],
+        ]),
+        itemCount: 1, batchCount: 1, retryCount: 0, fallbackCount: 0,
+        unbatchedGenerationCount: 0,
+      })
+
+      await expect(h.generator.generateAndArrange(h.projectId, 11, '章纲', (event) => {
+        progress.push({ phase: event.phase, message: event.message })
+      }))
+        .rejects.toThrow('ledger unavailable')
+
+      expect(progress.some((event) => event.message === '编排完成，实体已落入矩阵')).toBe(false)
+      expect(h.store.listConflicts(h.projectId).some((c) => c.description === description)).toBe(false)
+      expect(h.store.listChapterAppearanceIds({
+        projectId: h.projectId, chapterNumber: 11, entityType: 'conflict',
+      })).toEqual([])
+      expect(h.memoryStore.listStoryEvents(h.projectId, { chapterNumber: 11 })).toEqual([])
+      expect(h.memoryStore.listChangeRecords(h.projectId, { chapterNumber: 11 })).toEqual([])
+    } finally {
+      h.db.close()
+    }
+  })
+
   it('生成即提交：决策前新建实体与复用出场已可见，编排投影事件已写账本', async () => {
     const h = createHarness()
     try {

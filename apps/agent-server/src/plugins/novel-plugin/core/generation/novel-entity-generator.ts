@@ -1479,10 +1479,66 @@ export class NovelEntityGenerator {
       }
     }
 
+    // ── 账本投影 ──
+    // 旧实现只在 reverse-arrange 时写、且只写新建实体，导致：
+    // ① ai-arrange（按章纲编排）一条账本都不写，账本视图对编排完全无感；
+    // ② 复用实体的"本章出场"只落在实体快照字段上，与账本对不上账。
+    // 现在两条路径都写，且区分 created / reused 两类记录。
+    try {
+      this.store.withTransaction(() => {
+        this.recordArrangeProjection(projectId, chapterNumber, isReverse, {
+          characterIds: createdCharacterIds,
+          conflictIds: createdConflictIds,
+          foreshadowIds: createdForeshadowIds,
+          factionIds: createdFactionIds,
+          locationIds: createdLocationIds,
+          itemIds: createdItemIds,
+          narrativeIds: createdNarrativeIds,
+        }, {
+          // 复用 = 出现在结果里但不在本次新建列表里
+          characterIds: characterIds.filter((id) => !createdCharacterIds.includes(id)),
+          conflictIds: conflictIds.filter((id) => !createdConflictIds.includes(id)),
+          foreshadowIds: foreshadowIds.filter((id) => !createdForeshadowIds.includes(id)),
+          factionIds: factionIds.filter((id) => !createdFactionIds.includes(id)),
+          locationIds: locationIds.filter((id) => !createdLocationIds.includes(id)),
+          itemIds: itemIds.filter((id) => !createdItemIds.includes(id)),
+          narrativeIds: narrativeIds.filter((id) => !createdNarrativeIds.includes(id)),
+        }, undo)
+
+        // Appearance writes and their observer ledger records join the same commit.
+        this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'conflict', entityIds: conflictIds, source: 'ai-arrange' })
+        this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'foreshadow', entityIds: foreshadowIds, source: 'ai-arrange' })
+        this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'faction', entityIds: factionIds, source: 'ai-arrange' })
+        this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'location', entityIds: locationIds, source: 'ai-arrange' })
+        this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'item', entityIds: itemIds, source: 'ai-arrange' })
+        this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'clue', entityIds: clueIds, source: 'ai-arrange' })
+        this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'narrative', entityIds: narrativeIds, source: 'ai-arrange' })
+      })
+    } catch (err) {
+      try {
+        const rolledBack = this.undoArrange(undo, true)
+        this.context.logger.error(
+          { projectId, chapterNumber, isReverse, err, rolledBack },
+          '实体编排投影提交失败，已回滚本轮编排',
+        )
+      } catch (rollbackError) {
+        this.context.logger.error(
+          { projectId, chapterNumber, isReverse, err, rollbackError },
+          '实体编排投影提交和补偿回滚均失败',
+        )
+        throw new AggregateError([err, rollbackError], '编排投影提交失败且补偿回滚不完整')
+      }
+      throw err
+    }
+    if (unresolvedExistingHints.length > 0) {
+      onProgress?.({
+        phase: 'arranged',
+        message: `⚠️ ${unresolvedExistingHints.length} 个标注为"已有"的实体未匹配到现有数据，已按新建处理：${unresolvedExistingHints.join('、')}。请检查矩阵是否出现重复实体。`,
+      })
+    }
     onProgress?.({
       phase: 'arranged',
       message: '编排完成，实体已落入矩阵',
-      // 携带 detail 用于前端展示编排完成清单气泡
       detail: {
         kind: 'arrange_result',
         characters: generatedCharacters,
@@ -1498,50 +1554,6 @@ export class NovelEntityGenerator {
       { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length, clues: clueIds.length, factions: factionIds.length, locations: locationIds.length, items: itemIds.length, narratives: narrativeIds.length, characterFunctions: characterFunctions.length },
       'generateAndArrange 完成：实体已落库',
     )
-    // ── 账本投影 ──
-    // 旧实现只在 reverse-arrange 时写、且只写新建实体，导致：
-    // ① ai-arrange（按章纲编排）一条账本都不写，账本视图对编排完全无感；
-    // ② 复用实体的"本章出场"只落在实体快照字段上，与账本对不上账。
-    // 现在两条路径都写，且区分 created / reused 两类记录。
-    try {
-      this.recordArrangeProjection(projectId, chapterNumber, isReverse, {
-        characterIds: createdCharacterIds,
-        conflictIds: createdConflictIds,
-        foreshadowIds: createdForeshadowIds,
-        factionIds: createdFactionIds,
-        locationIds: createdLocationIds,
-        itemIds: createdItemIds,
-        narrativeIds: createdNarrativeIds,
-      }, {
-        // 复用 = 出现在结果里但不在本次新建列表里
-        characterIds: characterIds.filter((id) => !createdCharacterIds.includes(id)),
-        conflictIds: conflictIds.filter((id) => !createdConflictIds.includes(id)),
-        foreshadowIds: foreshadowIds.filter((id) => !createdForeshadowIds.includes(id)),
-        factionIds: factionIds.filter((id) => !createdFactionIds.includes(id)),
-        locationIds: locationIds.filter((id) => !createdLocationIds.includes(id)),
-        itemIds: itemIds.filter((id) => !createdItemIds.includes(id)),
-        narrativeIds: narrativeIds.filter((id) => !createdNarrativeIds.includes(id)),
-      }, undo)
-    } catch (err) {
-      // 投影落账失败不能撤销已经成功的实体编排，下一次编排或章节收尾仍可补齐。
-      this.context.logger.warn({ projectId, chapterNumber, isReverse, err }, '实体已落库，但账本投影写入失败')
-    }
-    if (unresolvedExistingHints.length > 0) {
-      onProgress?.({
-        phase: 'arranged',
-        message: `⚠️ ${unresolvedExistingHints.length} 个标注为"已有"的实体未匹配到现有数据，已按新建处理：${unresolvedExistingHints.join('、')}。请检查矩阵是否出现重复实体。`,
-      })
-    }
-    // ── P2：实体出场关系统一（appearanceV2Write 开启时双写，默认关 = 无副作用）──
-    // 把本章编排的出场关系同步写入 novel_entity_appearances，供按章/按实体统一查询。
-    // 角色出场仍走 character_history（历史事实），此处只覆盖有 chapter_spans 的实体类型。
-    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'conflict', entityIds: conflictIds, source: 'ai-arrange' })
-    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'foreshadow', entityIds: foreshadowIds, source: 'ai-arrange' })
-    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'faction', entityIds: factionIds, source: 'ai-arrange' })
-    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'location', entityIds: locationIds, source: 'ai-arrange' })
-    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'item', entityIds: itemIds, source: 'ai-arrange' })
-    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'clue', entityIds: clueIds, source: 'ai-arrange' })
-    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'narrative', entityIds: narrativeIds, source: 'ai-arrange' })
     return {
       characterIds,
       conflictIds,
@@ -1603,35 +1615,46 @@ export class NovelEntityGenerator {
    *
    * @returns 撤销的新建实体总数（不含字段恢复条数）
    */
-  private undoArrange(undo: ArrangeUndoCapture): number {
-    for (const rollback of [...undo.rollbackActions].reverse()) {
-      try {
-        rollback()
-      } catch { /* best-effort 清理，忽略单个撤销失败 */ }
-    }
-    const deletions: Array<[string[], (id: string) => unknown]> = [
-      [undo.createdLocationIds, (id) => this.store.deleteLocation(id)],
-      [undo.createdItemIds, (id) => this.store.deleteItem(id)],
-      [undo.createdNarrativeIds, (id) => this.store.deleteNarrative(id)],
-      [undo.createdFactionIds, (id) => this.store.deleteFaction(id)],
-      [undo.createdForeshadowIds, (id) => this.store.deleteForeshadow(id)],
-      [undo.createdConflictIds, (id) => this.store.deleteConflict(id)],
-      [undo.createdCharacterIds, (id) => {
-        this.store.deleteCharacterHistoryByCharacter(id)
-        this.store.deleteCharacter(id)
-      }],
-    ]
-    for (const [ids, remove] of deletions) {
-      for (const id of ids) {
-        try {
-          remove(id)
-        } catch { /* best-effort 清理，忽略单个删除失败 */ }
+  private undoArrange(undo: ArrangeUndoCapture, strict = false): number {
+    const execute = (): number => {
+      for (const rollback of [...undo.rollbackActions].reverse()) {
+        if (strict) {
+          rollback()
+        } else {
+          try {
+            rollback()
+          } catch { /* best-effort 清理，忽略单个撤销失败 */ }
+        }
       }
+      const deletions: Array<[string[], (id: string) => unknown]> = [
+        [undo.createdLocationIds, (id) => this.store.deleteLocation(id)],
+        [undo.createdItemIds, (id) => this.store.deleteItem(id)],
+        [undo.createdNarrativeIds, (id) => this.store.deleteNarrative(id)],
+        [undo.createdFactionIds, (id) => this.store.deleteFaction(id)],
+        [undo.createdForeshadowIds, (id) => this.store.deleteForeshadow(id)],
+        [undo.createdConflictIds, (id) => this.store.deleteConflict(id)],
+        [undo.createdCharacterIds, (id) => {
+          this.store.deleteCharacterHistoryByCharacter(id)
+          this.store.deleteCharacter(id)
+        }],
+      ]
+      for (const [ids, remove] of deletions) {
+        for (const id of ids) {
+          if (strict) {
+            remove(id)
+          } else {
+            try {
+              remove(id)
+            } catch { /* best-effort 清理，忽略单个删除失败 */ }
+          }
+        }
+      }
+      return undo.createdCharacterIds.length + undo.createdConflictIds.length
+        + undo.createdForeshadowIds.length + undo.createdFactionIds.length
+        + undo.createdLocationIds.length + undo.createdItemIds.length
+        + undo.createdNarrativeIds.length
     }
-    return undo.createdCharacterIds.length + undo.createdConflictIds.length
-      + undo.createdForeshadowIds.length + undo.createdFactionIds.length
-      + undo.createdLocationIds.length + undo.createdItemIds.length
-      + undo.createdNarrativeIds.length
+    return strict ? this.store.withTransaction(execute) : execute()
   }
 
   /**
@@ -1776,11 +1799,9 @@ export class NovelEntityGenerator {
     // story_event_entities 经 FK 级联清理；changes（memory_events）里新建实体的
     // 记录由实体删除观察者按 entity_id 清理，无需在此重复处理。
     undo?.rollbackActions.push(() => {
-      try {
-        this.context.db
-          .prepare('DELETE FROM novel_story_events WHERE id = ?')
-          .run(projection.event.id)
-      } catch { /* best-effort，与 undoArrange 同语义 */ }
+      this.context.db
+        .prepare('DELETE FROM novel_story_events WHERE id = ?')
+        .run(projection.event.id)
     })
   }
 

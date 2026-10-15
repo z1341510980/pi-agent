@@ -63,10 +63,10 @@ Each phase should produce a small verified slice. Do not combine broad file spli
 5. Verify ledger-write rollback, ledger-cleanup rollback, matrix reconciliation, and existing finalizer behavior.
 6. Keep the polymorphic reference model. Do not add foreign keys or a generic outbox in this slice. Retain reconciliation/backfill tools as drift detection and repair.
 
-### Phase B: Durable run lifecycle and entry points — base implemented
+### Phase B: Durable run lifecycle and entry points — in progress
 
 1. Keep the committed `CreationRunLifecycle` as the runtime lifecycle base.
-2. Migrate create-flow checkpoint feedback, cancellation, recovery, and status projection to persisted run commands/events.
+2. Migrate create-flow checkpoint feedback, cancellation, recovery, and status projection to persisted run commands/events. The initial create-flow path is wired; workflow resume now creates a new durable run from the saved `writing`/`reviewing`/`memory` boundary and records phase, checkpoint, and terminal transitions.
 3. Migrate discussion, arrange, and reverse-arrange in separate compatible slices; do not maintain two authoritative state machines for one run.
 4. Reduce module-level registries to connection/transport bookkeeping only; persist business state and make stale run recovery deterministic.
 
@@ -106,7 +106,7 @@ Each phase should produce a small verified slice. Do not combine broad file spli
 4. Maintain a page-by-page interface matrix and check it against route schemas and source requirements.
 5. Add architecture rules for typed route boundaries, approved storage access, and structured LLM submission.
 
-## Current task: Phase A transaction slice
+## Completed slice: Phase A transaction consistency
 
 ### Files and responsibilities
 
@@ -126,6 +126,21 @@ Each phase should produce a small verified slice. Do not combine broad file spli
 - Normal create/update/delete behavior remains idempotent and matrix reconciliation reports no new drift.
 - Chapter finalizer tests remain green; no second transaction or outbox layer is added to that path.
 
+## Current task: Phase B workflow resume lifecycle
+
+### Files and responsibilities
+
+- `apps/agent-server/src/plugins/novel-plugin/routes/creation-flow-routes.ts`: create a new durable lifecycle run for each workflow resume and project its phases, checkpoints, and terminal result.
+- `apps/agent-server/src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts`: verify resume starts from the saved boundary and writes lifecycle transitions.
+- `apps/agent-server/src/plugins/novel-plugin/core/runtime/creation-run-lifecycle.ts`: shared state transition rules and durable event projection; unchanged by this slice.
+
+### Acceptance criteria
+
+- Resuming a `writing`, `reviewing`, or `memory` workflow snapshot creates a new lifecycle run with the matching stage (`memory` maps to `finalizing`).
+- Resume progress events, checkpoints, success, failure, and cancellation use the new run id without changing the original snapshot input.
+- A lifecycle admission conflict returns `409` before the resume task or event stream starts.
+- Existing workflow event tail and snapshot recovery behavior remains unchanged.
+
 ### Verification commands
 
 Run from the repository root:
@@ -141,4 +156,6 @@ git diff --check
 - 2026-10-14: Phase B foundation committed as `49e8098` on `codex/novel-runtime-refactor`.
 - 2026-10-14: Phase A regression test added first; verified RED because projection recorder swallowed the SQLite ledger error.
 - 2026-10-14: Phase A implemented and verified: 81 tests across 7 files pass, agent-server TypeScript build passes, and `git diff --check` is clean.
-- 2026-10-14: Overall refactor sequence and current transaction slice documented here; Phase B migration beyond its committed lifecycle foundation remains next.
+- 2026-10-14: Overall refactor sequence and current transaction slice documented here; Phase B migration beyond its committed lifecycle foundation remained next.
+- 2026-10-15: AI arrange projection commit is now atomic across the Story Ledger and appearance writes; failure performs strict compensating rollback and does not emit an arrange-completed event.
+- 2026-10-15: Workflow resume is wired to `CreationRunLifecycle`; its phase/checkpoint/terminal transitions use a new durable run id while retaining the original workflow snapshot as input.

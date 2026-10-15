@@ -280,6 +280,58 @@ describe('re-revise model and audit contract', () => {
 })
 
 describe('other creation-flow model and audit contracts', () => {
+  it('starts a durable lifecycle run for workflow resume and records its phase and terminal state', async () => {
+    const start = vi.fn(() => ({ runId: 'resume-run-1' }))
+    const observePhase = vi.fn()
+    const awaitCheckpoint = vi.fn()
+    const finish = vi.fn()
+    const createChapterWithFlow = vi.fn(async (_projectId: string, _chapterNumber: number, options: any) => {
+      options.onProgress({ phase: 'writing', type: 'phase_change' })
+      options.onProgress({ phase: 'memory', type: 'phase_change' })
+      return { status: 'completed', content: '续写正文' }
+    })
+    const services = {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting' })),
+      },
+      orchestrator: { createChapterWithFlow, clearStaleInterjectMessages: vi.fn() },
+      workflowRunStore: {
+        get: vi.fn(() => ({
+          id: 'interrupted-run', projectId: 'project-1', chapterNumber: 1,
+          status: 'error', phase: 'writing', writerDraft: '中断前草稿',
+        })),
+        save: vi.fn(),
+      },
+      workflowEventStore: createWorkflowEventStore(),
+      chapterChatStore: { add: vi.fn() },
+      confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
+      creationRunLifecycle: { start, observePhase, awaitCheckpoint, finish },
+    } as any
+    const route = createCreationFlowRoutes(services).find(item => (
+      item.path === '/projects/:projectId/chapters/:chapterNumber/create-flow/:runId/resume'
+    ))!
+    const reply = createReply()
+
+    await route.handler({
+      params: { projectId: 'project-1', chapterNumber: '1', runId: 'interrupted-run' },
+      body: {},
+      headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+      log: { error: vi.fn(), warn: vi.fn() },
+    } as any, reply as any)
+
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledWith(
+      expect.any(String),
+      { status: 'completed', error: undefined },
+    ))
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-1', chapterNumber: 1, mode: 'workflow', initialStage: 'writing',
+    }))
+    expect(observePhase.mock.calls.map(call => call[1])).toEqual(['writing', 'memory'])
+    expect(reply.statusCode).toBe(202)
+  })
+
   it('projects create-flow start, phases, and terminal state into the shared run lifecycle', async () => {
     const start = vi.fn(() => ({ runId: 'run-1' }))
     const observePhase = vi.fn()

@@ -751,6 +751,22 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         // 只有显式 cancel 才停），进度与结果经 events 端点 tail 消费。
         const resumeRunId = randomUUID()
         const eventsPath = `/projects/${projectId}/workflow-runs/${resumeRunId}/events`
+        const creationRunLifecycle = services.creationRunLifecycle
+        if (creationRunLifecycle) {
+          try {
+            creationRunLifecycle.start({
+              runId: resumeRunId,
+              projectId,
+              chapterNumber: chapter,
+              mode: 'workflow',
+              initialStage: resumePhase === 'memory' ? 'finalizing' : resumePhase,
+            })
+          } catch (error) {
+            request.log.warn({ error, projectId, chapterNumber: chapter, resumeRunId }, '续跑运行内核受理失败')
+            reply.code(409).send({ ok: false, error: '无法为该章节创建续跑运行，请检查是否已有活动运行' })
+            return
+          }
+        }
         const emitter = createNovelAgUiEmitter(
           (event) => {
             services.workflowEventStore.append(resumeRunId, 'agui', event as unknown as Record<string, unknown>)
@@ -890,6 +906,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
                     checkpointId: pending?.id,
                     createdAt: checkpointCreatedAt,
                   }
+                  if (creationRunLifecycle) {
+                    try {
+                      creationRunLifecycle.awaitCheckpoint(resumeRunId, pending?.id ?? toolCallId, checkpointCreatedAt)
+                    } catch (error) {
+                      request.log.warn({ error, resumeRunId, checkpointType: checkpoint.type }, '续跑运行内核检查点投影失败')
+                    }
+                  }
                   persistWorkflowMessage({
                     role: 'system',
                     fromId: 'system',
@@ -909,12 +932,31 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
                   emitter.checkpoint(persistedCheckpoint)
                   return decisionPromise as Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
                 },
-                onProgress: (event) => emitter.progress(event),
+                onProgress: (event) => {
+                  emitter.progress(event)
+                  if (creationRunLifecycle) {
+                    try {
+                      creationRunLifecycle.observePhase(resumeRunId, event.phase)
+                    } catch (error) {
+                      request.log.warn({ error, resumeRunId, phase: event.phase }, '续跑运行内核阶段投影失败')
+                    }
+                  }
+                },
                 onConversationMessage: persistWorkflowMessage,
                 signal: task.controller.signal,
                 arrangedEntities: snapshot.arrangedEntities,
               },
             )
+            if (creationRunLifecycle) {
+              try {
+                creationRunLifecycle.finish(resumeRunId, {
+                  status: result.status,
+                  error: result.error,
+                })
+              } catch (error) {
+                request.log.warn({ error, resumeRunId, status: result.status }, '续跑运行内核终态投影失败')
+              }
+            }
             persistWorkflowMessage({
               role: 'system',
               fromId: 'system',
@@ -956,6 +998,16 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             )
             } catch (err) {
             const errMessage = err instanceof Error ? err.message : String(err)
+            if (creationRunLifecycle) {
+              try {
+                creationRunLifecycle.finish(resumeRunId, {
+                  status: task.controller.signal.aborted ? 'cancelled' : 'error',
+                  error: errMessage,
+                })
+              } catch (lifecycleError) {
+                request.log.warn({ error: lifecycleError, resumeRunId }, '续跑运行内核异常终态投影失败')
+              }
+            }
             persistWorkflowMessage({
               role: 'system',
               fromId: 'system',
