@@ -252,3 +252,4 @@ Extend `RouteDefinition` and the plugin loader with typed params/query/body/resp
 - 2026-10-15: Discussion start and resume are wired to `CreationRunLifecycle`; phases, checkpoints, explicit cancellation, and terminal states now use the durable run id while the event tail remains the transport contract.
 - 2026-10-15: Reverse-arrange is wired to the durable background run protocol; the old POST SSE compatibility path and duplicate client parser were removed.
 - 2026-10-15: Phase C started with the project reference-template binding boundary; typed storage, P8 contracts, stale-lock handling, and the route SQL architecture guard are now in place.
+- 2026-10-15: Phase C typed route contracts now carry Fastify schema metadata through the plugin loader. The four P8 binding routes declare params, query, body, and response contracts, with TypeBox constraints aligned to the existing Zod validation; contract tests cover request validation and response serialization.

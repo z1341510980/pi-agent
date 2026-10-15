@@ -19,7 +19,7 @@
  */
 
 import fp from 'fastify-plugin'
-import type { FastifyPluginAsync } from 'fastify'
+import type { FastifyInstance, FastifyPluginAsync } from 'fastify'
 import { dirname, join, resolve } from 'node:path'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -46,7 +46,40 @@ import { createWebSearchPlugin } from './web-search-plugin/index.js'
 import { createInfiniteCanvasPlugin } from './infinite-canvas-plugin/index.js'
 import { applyMigrations } from '../core/db/migrations.js'
 import yaml from 'js-yaml'
-import type { Plugin, PluginCapability } from '../core/plugin/plugin-types.js'
+import type { Plugin, PluginCapability, RouteDefinition } from '../core/plugin/plugin-types.js'
+
+/** Register one plugin route while preserving its Fastify contract metadata. */
+export function registerPluginRoute(
+  app: FastifyInstance,
+  pluginName: string,
+  route: RouteDefinition,
+): void {
+  const fullPath = `/api/plugins/${pluginName}${route.path}`
+  const opts = {
+    handler: route.handler,
+    ...(route.schema ? { schema: route.schema } : {}),
+    ...(route.bodyLimit ? { bodyLimit: route.bodyLimit } : {}),
+  }
+  switch (route.method) {
+    case 'GET':
+      app.get(fullPath, opts)
+      break
+    case 'POST':
+      app.post(fullPath, opts)
+      break
+    case 'PUT':
+      app.put(fullPath, opts)
+      break
+    case 'DELETE':
+      app.delete(fullPath, opts)
+      break
+    case 'PATCH':
+      app.patch(fullPath, opts)
+      break
+    default:
+      throw new Error(`Unsupported plugin route method: ${String(route.method)}`)
+  }
+}
 
 export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'plugin-loader')
@@ -529,31 +562,7 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   for (const { pluginName, route } of routes) {
     const fullPath = `/api/plugins/${pluginName}${route.path}`
     try {
-      // 根据方法调用对应的 Fastify 注册函数
-      const opts = {
-        handler: route.handler,
-        ...(route.bodyLimit ? { bodyLimit: route.bodyLimit } : {})
-      }
-      switch (route.method) {
-        case 'GET':
-          app.get(fullPath, opts)
-          break
-        case 'POST':
-          app.post(fullPath, opts)
-          break
-        case 'PUT':
-          app.put(fullPath, opts)
-          break
-        case 'DELETE':
-          app.delete(fullPath, opts)
-          break
-        case 'PATCH':
-          app.patch(fullPath, opts)
-          break
-        default:
-          log.warn({ method: route.method, path: fullPath }, '不支持的路由方法，跳过')
-          continue
-      }
+      registerPluginRoute(app, pluginName, route)
       log.info({ method: route.method, path: fullPath }, '已注册插件路由')
     } catch (err) {
       log.error({ method: route.method, path: fullPath, err }, '注册插件路由失败')

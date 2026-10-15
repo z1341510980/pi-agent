@@ -145,7 +145,7 @@ export interface NovelServices {
   /** P6：私人模板与不可变版本链存储 */
   referenceTemplates: ReferenceTemplateStore
   /** P8：项目与参考模板绑定存储 */
-  referenceTemplateBindings?: ReferenceTemplateBindingStore
+  referenceTemplateBindings: ReferenceTemplateBindingStore
   /** P7：同场景验证 run 存储 */
   referenceValidationRuns: ReferenceValidationRunStore
   /** P7：同场景验证执行器（双路生成/固定 facts hash/安全拦截） */

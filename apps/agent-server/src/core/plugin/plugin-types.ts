@@ -13,7 +13,7 @@
  * - 未来可考虑使用 worker_threads 或 vm 模块实现沙箱
  */
 
-import type { FastifyBaseLogger } from 'fastify'
+import type { FastifyBaseLogger, FastifySchema } from 'fastify'
 import type { AgentManager } from '../agent/subagent-tool.js'
 import type { AgentCallLogger } from '../agent/agent-call-logger.js'
 import type { TeamManager } from '../agent/team-manager.js'
@@ -165,6 +165,8 @@ export interface RouteDefinition {
   path: string
   /** 单路由请求体上限（字节）；省略时沿用 Fastify 默认值。 */
   bodyLimit?: number
+  /** Fastify schema for params/query/body/response validation and serialization. */
+  schema?: FastifySchema
   /** 路由处理器 */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: (request: any, reply: any) => Promise<any> | any

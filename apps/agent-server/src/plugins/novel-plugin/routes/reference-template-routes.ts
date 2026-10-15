@@ -8,6 +8,7 @@
  *     decision（accepted 后 publishable=true）。
  */
 import { z } from 'zod'
+import { Type } from 'typebox'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
@@ -79,16 +80,43 @@ const decisionSchema = z.object({
   version: z.number().int().positive().optional(),
 })
 
+const projectParamsSchema = Type.Object({ projectId: Type.String({ minLength: 1 }) })
+const bindingParamsSchema = Type.Object({
+  projectId: Type.String({ minLength: 1 }),
+  templateId: Type.String({ minLength: 1 }),
+})
+const uuidSchema = Type.String({ format: 'uuid' })
+const agentScopeSchema = Type.Union([
+  Type.Literal('Director'),
+  Type.Literal('Writer'),
+  Type.Literal('Reviser'),
+  Type.Literal('Reviewer'),
+])
+const bindingUpsertRouteSchema = Type.Object({
+  templateVersionId: uuidSchema,
+  bound: Type.Optional(Type.Boolean()),
+  defaultEnabled: Type.Optional(Type.Boolean()),
+  agentScopes: Type.Optional(Type.Array(agentScopeSchema, { maxItems: 4 })),
+  chapterScopes: Type.Optional(Type.Array(Type.String({ maxLength: 50 }), { maxItems: 50 })),
+  projectOverrides: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  lockVersion: Type.Optional(Type.Integer({ minimum: 1 })),
+}, { additionalProperties: true })
+const bindingResolveRouteSchema = Type.Object({
+  enabled: Type.Boolean(),
+  templateId: Type.Optional(uuidSchema),
+  templateVersionId: Type.Optional(uuidSchema),
+  chapterClassification: Type.Optional(Type.String({ maxLength: 100 })),
+  chapterNumber: Type.Optional(Type.Integer({ minimum: 1 })),
+}, { additionalProperties: true })
+const emptyQuerySchema = Type.Object({}, { additionalProperties: true })
+const anyResponseSchema = { 200: Type.Any(), 400: Type.Any(), 404: Type.Any(), 409: Type.Any() }
+
 export function createReferenceTemplateRoutes(services: NovelServices): RouteDefinition[] {
   const reference = services.referenceAnalysis
   if (!reference) return []
   const profileStore = services.referenceProfiles
   const templateStore = services.referenceTemplates
   const bindingStore = services.referenceTemplateBindings
-  const requireBindingStore = () => {
-    if (!bindingStore) throw new AppError(ErrorCode.INTERNAL_SERVER_ERROR, '参考模板绑定存储未初始化', 500)
-    return bindingStore
-  }
   const validationStore = services.referenceValidationRuns
   const validationWorker = services.referenceValidationWorker
 
@@ -480,13 +508,24 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
     {
       method: 'GET',
       path: '/projects/:projectId/reference-template-bindings',
+      schema: {
+        params: projectParamsSchema,
+        querystring: emptyQuerySchema,
+        response: anyResponseSchema,
+      },
       handler: async (request: any) => {
-        return success(requireBindingStore().listByProject(request.params.projectId), request.traceId);
+        return success(bindingStore.listByProject(request.params.projectId), request.traceId);
       },
     },
     {
       method: 'PUT',
       path: '/projects/:projectId/reference-template-bindings/:templateId',
+      schema: {
+        params: bindingParamsSchema,
+        querystring: emptyQuerySchema,
+        body: bindingUpsertRouteSchema,
+        response: anyResponseSchema,
+      },
       handler: async (request: any, reply: any) => {
         const input = validateBody(z.object({
           templateVersionId: z.string().uuid(),
@@ -500,7 +539,7 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
         if (!input) return reply;
         const { projectId, templateId } = request.params;
         try {
-          const binding = requireBindingStore().upsert({ projectId, templateId, ...input });
+          const binding = bindingStore.upsert({ projectId, templateId, ...input });
           return success({ id: binding.id, lockVersion: binding.lockVersion }, request.traceId);
         } catch (error) {
           throw mapBindingError(error);
@@ -510,10 +549,15 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
     {
       method: 'DELETE',
       path: '/projects/:projectId/reference-template-bindings/:templateId',
+      schema: {
+        params: bindingParamsSchema,
+        querystring: emptyQuerySchema,
+        response: anyResponseSchema,
+      },
       handler: async (request: any) => {
         const { projectId, templateId } = request.params;
         try {
-          requireBindingStore().remove(projectId, templateId);
+          bindingStore.remove(projectId, templateId);
           return success({ deleted: true }, request.traceId);
         } catch (error) {
           throw mapBindingError(error);
@@ -523,6 +567,12 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
     {
       method: 'POST',
       path: '/projects/:projectId/reference-template-bindings/resolve',
+      schema: {
+        params: projectParamsSchema,
+        querystring: emptyQuerySchema,
+        body: bindingResolveRouteSchema,
+        response: anyResponseSchema,
+      },
       handler: async (request: any, reply: any) => {
         const input = validateBody(z.object({
           enabled: z.boolean(),
@@ -532,7 +582,7 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
           chapterNumber: z.number().int().positive().optional(),
         }), request, reply);
         if (!input) return reply;
-        return success(requireBindingStore().resolve(request.params.projectId, input), request.traceId);
+        return success(bindingStore.resolve(request.params.projectId, input), request.traceId);
       },
     },
 ]

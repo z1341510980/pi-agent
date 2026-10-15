@@ -132,6 +132,7 @@ function makeMockServices(): NovelServices {
     referenceAnalysisWorker: { run: vi.fn().mockResolvedValue(undefined), requestCancel: vi.fn(), isRunning: vi.fn().mockReturnValue(false) } as any,
     referenceProfiles: { getProfile: vi.fn(), listVersions: vi.fn().mockReturnValue([]) } as any,
     referenceTemplates: { getTemplate: vi.fn(), listTemplates: vi.fn().mockReturnValue([]), getVersion: vi.fn(), listVersions: vi.fn().mockReturnValue([]) } as any,
+    referenceTemplateBindings: {} as any,
     referenceValidationRuns: { getRun: vi.fn(), listEvents: vi.fn().mockReturnValue([]) } as any,
     referenceValidationWorker: { run: vi.fn().mockResolvedValue(undefined), requestCancel: vi.fn(), isRunning: vi.fn().mockReturnValue(false) } as any,
   }
