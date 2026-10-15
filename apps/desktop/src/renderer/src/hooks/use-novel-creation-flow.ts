@@ -2268,7 +2268,16 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/reverse-arrange`
 
-      const runPromise = runFlow(url, options?.modelId ? { modelId: options.modelId } : {}, controller)
+      // 反推编排与正文创作共用后台 run + event tail，HTTP 断线不会中止实体抽取。
+      const runPromise = runBackgroundFlow(
+        url,
+        options?.modelId ? { modelId: options.modelId } : {},
+        controller,
+        {
+          activeRunPath: `/projects/${projectId}/chapters/${chapterNumber}/active-reverse-arrange-run`,
+          failureLabel: '反推编排启动失败'
+        }
+      )
       runFlowPromiseRef.current = runPromise
       try {
         await runPromise
@@ -2277,7 +2286,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         runFlowPromiseRef.current = null
       }
     },
-    [runFlow]
+    [runBackgroundFlow]
   )
 
   const submitCheckpoint = useCallback(

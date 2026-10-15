@@ -54,6 +54,7 @@ import { ReferenceAnalysisRunStore } from './core/analysis/reference-analysis-ru
 import { ReferenceAnalysisRunWorker } from './core/analysis/reference-analysis-run-worker.js'
 import { ReferenceProfileStore } from './core/analysis/reference-profile-store.js'
 import { ReferenceTemplateStore } from './core/analysis/reference-template-store.js'
+import { ReferenceTemplateBindingStore } from './core/analysis/reference-template-binding-store.js'
 import { ReferenceValidationRunStore } from './core/analysis/reference-validation-run-store.js'
 import { ReferenceValidationRunWorker } from './core/analysis/reference-validation-run-worker.js'
 import { TimelineRebuildRunner } from './core/analysis/timeline-rebuild-runner.js'
@@ -143,6 +144,8 @@ export interface NovelServices {
   referenceProfiles: ReferenceProfileStore
   /** P6：私人模板与不可变版本链存储 */
   referenceTemplates: ReferenceTemplateStore
+  /** P8：项目与参考模板绑定存储 */
+  referenceTemplateBindings?: ReferenceTemplateBindingStore
   /** P7：同场景验证 run 存储 */
   referenceValidationRuns: ReferenceValidationRunStore
   /** P7：同场景验证执行器（双路生成/固定 facts hash/安全拦截） */
@@ -380,6 +383,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
     store
   )
   const referenceTemplates = new ReferenceTemplateStore(db, referenceProfiles)
+  const referenceTemplateBindings = new ReferenceTemplateBindingStore(db, referenceTemplates)
   const referenceValidationRuns = new ReferenceValidationRunStore(db)
   const referenceValidationWorker = new ReferenceValidationRunWorker(
     context,
@@ -423,6 +427,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
     referenceAnalysisWorker,
     referenceProfiles,
     referenceTemplates,
+    referenceTemplateBindings,
     referenceValidationRuns,
     referenceValidationWorker,
     timelineRebuildRunner,

@@ -705,6 +705,11 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           reply.code(404).send({ ok: false, error: '该章节没有正在执行的工作流创作' })
           return
         }
+        const first = services.workflowEventStore.list(active.runId, 1)[0]
+        if (first?.type !== 'run_started' || first.payload.mode !== 'workflow') {
+          reply.code(404).send({ ok: false, error: '该章节没有正在执行的工作流创作' })
+          return
+        }
         reply.send({
           ok: true,
           runId: active.runId,
@@ -2594,7 +2599,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
 
 
   // ═══════════════════════════════════════════════════════════════
-  // 模式3：从已写好的正文反推实体到矩阵（SSE）
+  // 模式3：从已写好的正文反推实体到矩阵（后台 run + SSE 事件 tail）
   // 用户手写了章节正文，调用此接口从正文提取实体（角色/冲突/伏笔/势力/地点）并落库到矩阵
   // ═══════════════════════════════════════════════════════════════
 
@@ -2608,6 +2613,12 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const input = validateBody(reverseArrangeBodySchema, request, reply)
       if (!input) return reply
 
+      const chapter = store.getChapter(projectId, chNum)!
+      if (!chapter.content?.trim()) {
+        reply.code(400).send({ ok: false, error: '章节正文为空，无法反推实体' })
+        return
+      }
+
       // 并发锁：与 ai-arrange 共用锁池，同一章节不允许并发编排
       const lockKey = `${projectId}:${chapterNumber}`
       if (aiArrangeLocks.has(lockKey) || chapterCreationLocks.has(lockKey) || activeNovelChapterTasks.has(lockKey)) {
@@ -2615,113 +2626,176 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         return
       }
 
-      let clientDisconnected = false
-      const task = registerNovelChapterTask(lockKey, 'reverse-arrange')
-      const abortOnDisconnect = () => {
-        if (!reply.raw.writableEnded) {
-          clientDisconnected = true
-          if (!task.controller.signal.aborted) task.controller.abort(new Error('客户端已断开反推编排流'))
-        }
-      }
-      reply.raw.on('close', abortOnDisconnect)
-
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-        'Access-Control-Allow-Origin': request.headers.origin || '*',
-        'Access-Control-Allow-Credentials': 'true',
-      })
-      request.raw.socket?.setNoDelay?.(true)
-      const writeRaw = (data: string) => {
-        if (clientDisconnected || reply.raw.writableEnded) return
-        reply.raw.write(data)
-      }
-      const emitter = createNovelAgUiEmitter(
-        createSseEmitterSink(writeRaw),
-        `novel:reverse-arrange:${projectId}:${chapterNumber}`,
-        randomUUID(),
-      )
-      const heartbeat = setInterval(() => {
-        if (clientDisconnected || reply.raw.writableEnded) return
-        reply.raw.write(': keepalive\n\n')
-      }, 15000)
-      const startedAt = Date.now()
-
-      try {
-        aiArrangeLocks.set(lockKey, Promise.resolve())
-        const chapter = store.getChapter(projectId, chNum)
-        if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${chNum}`, 404)
-        if (!chapter.content?.trim()) throw new Error('章节正文为空，无法反推实体')
-
-        emitter.progress({ type: 'arrange_start', phase: 'arranging', message: '开始从正文反推实体...' })
-        const arrangedEntities = await entityGenerator.generateAndArrange(
-          projectId,
-          chNum,
-          chapter.content,
-          (evt) => emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' }),
-          'content', // source='content' 表示从正文反推
-          task.controller.signal,
-          input.modelId,
-        )
-        const totalCount = arrangedEntities.characterIds.length
-          + arrangedEntities.conflictIds.length
-          + arrangedEntities.foreshadowIds.length
-          + (arrangedEntities.clueIds ?? []).length
-          + arrangedEntities.factionIds.length
-          + arrangedEntities.locationIds.length
-          + (arrangedEntities.itemIds ?? []).length
-          + (arrangedEntities.narrativeIds ?? []).length
-        emitter.progress({
-          type: 'arrange_done',
-          phase: 'arranging',
-          message: `反推完成：共提取 ${totalCount} 个实体已落入矩阵`,
-          data: arrangedEntities,
-          detail: {
-            kind: 'arrange_summary',
-            total: totalCount,
-            characters: arrangedEntities.characterIds.length,
-            conflicts: arrangedEntities.conflictIds.length,
-            foreshadows: arrangedEntities.foreshadowIds.length,
-            clues: (arrangedEntities.clueIds ?? []).length,
-            factions: arrangedEntities.factionIds.length,
-            locations: arrangedEntities.locationIds.length,
-            items: (arrangedEntities.itemIds ?? []).length,
-            narratives: (arrangedEntities.narrativeIds ?? []).length,
-            reviewPending: false,
-          },
-        })
-        emitter.result({
-          status: 'completed',
-          stateChanges: [{
-            type: 'reverse-arrange',
-            description: `从正文反推完成，已提取 ${totalCount} 个实体落入第 ${chNum} 章矩阵`,
-          }],
-        })
-      } catch (err) {
-        if (!task.controller.signal.aborted) {
-          persistRouteFailureAudit({
-            request,
+      const reverseRunId = randomUUID()
+      const creationRunLifecycle = services.creationRunLifecycle
+      if (creationRunLifecycle) {
+        try {
+          creationRunLifecycle.start({
+            runId: reverseRunId,
             projectId,
             chapterNumber: chNum,
-            operation: 'reverse-arrange',
-            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/reverse-arrange',
-            input,
-            errorCode: 'reverse_arrange_request_failed',
-            error: err,
-            durationMs: Date.now() - startedAt,
-            phase: 'arranging',
+            mode: 'reverse',
+            initialStage: 'arranging',
           })
+        } catch (error) {
+          request.log.warn({ error, projectId, chapterNumber: chNum, reverseRunId }, '反推编排运行内核受理失败')
+          reply.code(409).send({ ok: false, error: '无法为该章节创建反推编排运行，请检查是否已有活动运行' })
+          return
         }
-        emitter.error(String(err))
-      } finally {
-        clearInterval(heartbeat)
-        reply.raw.off('close', abortOnDisconnect)
-        finishNovelChapterTask(lockKey, task)
-        if (!reply.raw.writableEnded) reply.raw.end()
-        aiArrangeLocks.delete(lockKey)
       }
+      const eventsPath = `/projects/${projectId}/workflow-runs/${reverseRunId}/events`
+      const emitter = createNovelAgUiEmitter(
+        (event) => {
+          services.workflowEventStore.append(
+            reverseRunId,
+            'agui',
+            event as unknown as Record<string, unknown>,
+          )
+        },
+        `novel:reverse-arrange:${projectId}:${chapterNumber}`,
+        reverseRunId,
+      )
+      services.workflowEventStore.append(reverseRunId, 'run_started', {
+        projectId,
+        chapterNumber: chNum,
+        mode: 'reverse',
+        workflowRunId: reverseRunId,
+      })
+      const task = registerNovelChapterTask(lockKey, 'reverse-arrange', reverseRunId)
+      aiArrangeLocks.set(lockKey, Promise.resolve())
+      const startedAt = Date.now()
+
+      const executeRun = async (): Promise<void> => {
+        try {
+          emitter.progress({ type: 'arrange_start', phase: 'arranging', message: '开始从正文反推实体...' })
+          const arrangedEntities = await entityGenerator.generateAndArrange(
+            projectId,
+            chNum,
+            chapter.content,
+            (evt) => {
+              emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' })
+              if (creationRunLifecycle) {
+                try {
+                  creationRunLifecycle.observePhase(reverseRunId, 'arranging')
+                } catch (error) {
+                  request.log.warn({ error, reverseRunId }, '反推编排运行内核阶段投影失败')
+                }
+              }
+            },
+            'content',
+            task.controller.signal,
+            input.modelId,
+          )
+          task.controller.signal.throwIfAborted()
+          const totalCount = arrangedEntities.characterIds.length
+            + arrangedEntities.conflictIds.length
+            + arrangedEntities.foreshadowIds.length
+            + (arrangedEntities.clueIds ?? []).length
+            + arrangedEntities.factionIds.length
+            + arrangedEntities.locationIds.length
+            + (arrangedEntities.itemIds ?? []).length
+            + (arrangedEntities.narrativeIds ?? []).length
+          emitter.progress({
+            type: 'arrange_done',
+            phase: 'arranging',
+            message: `反推完成：共提取 ${totalCount} 个实体已落入矩阵`,
+            data: arrangedEntities,
+            detail: {
+              kind: 'arrange_summary',
+              total: totalCount,
+              characters: arrangedEntities.characterIds.length,
+              conflicts: arrangedEntities.conflictIds.length,
+              foreshadows: arrangedEntities.foreshadowIds.length,
+              clues: (arrangedEntities.clueIds ?? []).length,
+              factions: arrangedEntities.factionIds.length,
+              locations: arrangedEntities.locationIds.length,
+              items: (arrangedEntities.itemIds ?? []).length,
+              narratives: (arrangedEntities.narrativeIds ?? []).length,
+              reviewPending: false,
+            },
+          })
+          if (creationRunLifecycle) {
+            try {
+              creationRunLifecycle.finish(reverseRunId, { status: 'completed' })
+            } catch (error) {
+              request.log.warn({ error, reverseRunId }, '反推编排运行内核终态投影失败')
+            }
+          }
+          services.workflowEventStore.append(reverseRunId, 'run_finished', {
+            status: 'completed',
+            workflowRunId: reverseRunId,
+            stateChanges: [{
+              type: 'reverse-arrange',
+              description: `从正文反推完成，已提取 ${totalCount} 个实体落入第 ${chNum} 章矩阵`,
+            }],
+          })
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          const status = task.controller.signal.aborted ? 'cancelled' : 'error'
+          if (creationRunLifecycle) {
+            try {
+              creationRunLifecycle.finish(reverseRunId, { status, error })
+            } catch (lifecycleError) {
+              request.log.warn({ error: lifecycleError, reverseRunId }, '反推编排运行内核异常终态投影失败')
+            }
+          }
+          if (!task.controller.signal.aborted) {
+            persistRouteFailureAudit({
+              request,
+              projectId,
+              chapterNumber: chNum,
+              operation: 'reverse-arrange',
+              sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/reverse-arrange',
+              input,
+              errorCode: 'reverse_arrange_request_failed',
+              error: err,
+              durationMs: Date.now() - startedAt,
+              phase: 'arranging',
+            })
+          }
+          services.workflowEventStore.append(reverseRunId, 'run_finished', {
+            status, workflowRunId: reverseRunId, error,
+          })
+        } finally {
+          finishNovelChapterTask(lockKey, task)
+          aiArrangeLocks.delete(lockKey)
+        }
+      }
+      void executeRun()
+
+      reply.code(202).send({
+        ok: true,
+        runId: reverseRunId,
+        eventsPath,
+        message: '正文反推编排已受理，正在后台执行；通过 events 端点消费进度与结果',
+      })
+    },
+  })
+
+  // 反推编排后台 run 的重连入口。事件仍复用 workflow event tail，
+  // 但单独的查询路径避免前端把反推误识别成正文工作流。
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/chapters/:chapterNumber/active-reverse-arrange-run',
+    handler: async (request: any, reply: any) => {
+      const { projectId } = request.params as { projectId: string }
+      const chapterNumber = Number((request.params as { chapterNumber: string }).chapterNumber)
+      const active = services.workflowEventStore.findActiveRun(projectId, chapterNumber)
+      if (!active) {
+        reply.code(404).send({ ok: false, error: '该章节没有正在执行的反推编排' })
+        return
+      }
+      const first = services.workflowEventStore.list(active.runId, 1)[0]
+      if (first?.type !== 'run_started' || first.payload.mode !== 'reverse') {
+        reply.code(404).send({ ok: false, error: '该章节没有正在执行的反推编排' })
+        return
+      }
+      reply.send({
+        ok: true,
+        runId: active.runId,
+        cursorSeq: active.cursorSeq,
+        eventsPath: `/projects/${projectId}/workflow-runs/${active.runId}/events`,
+      })
     },
   })
 

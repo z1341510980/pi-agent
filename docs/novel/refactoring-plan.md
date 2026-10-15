@@ -63,11 +63,11 @@ Each phase should produce a small verified slice. Do not combine broad file spli
 5. Verify ledger-write rollback, ledger-cleanup rollback, matrix reconciliation, and existing finalizer behavior.
 6. Keep the polymorphic reference model. Do not add foreign keys or a generic outbox in this slice. Retain reconciliation/backfill tools as drift detection and repair.
 
-### Phase B: Durable run lifecycle and entry points — in progress
+### Phase B: Durable run lifecycle and entry points — completed
 
 1. Keep the committed `CreationRunLifecycle` as the runtime lifecycle base.
 2. Migrate create-flow checkpoint feedback, cancellation, recovery, and status projection to persisted run commands/events. The initial create-flow path is wired; workflow resume now creates a new durable run from the saved `writing`/`reviewing`/`memory` boundary and records phase, checkpoint, and terminal transitions.
-3. Migrate discussion, arrange, and reverse-arrange in separate compatible slices; do not maintain two authoritative state machines for one run. AI arrange and discussion are now wired; reverse-arrange remains a separate follow-up slice because its current HTTP/SSE binding has a different lifecycle boundary.
+3. Migrate discussion, arrange, and reverse-arrange in separate slices; do not maintain two authoritative state machines for one run. All three entry points now use `CreationRunLifecycle` with the background event-tail protocol.
 4. Reduce module-level registries to connection/transport bookkeeping only; persist business state and make stale run recovery deterministic.
 
 ### Phase C: Typed persistence and API boundaries
@@ -192,6 +192,54 @@ pnpm --filter agent-server build
 git diff --check
 ```
 
+## Completed slice: Phase B reverse-arrange lifecycle
+
+### Files and responsibilities
+
+- `apps/agent-server/src/plugins/novel-plugin/routes/creation-flow-routes.ts`: admit reverse-arrange as a durable `mode: reverse` run, project arranging/terminal state, expose active-run lookup, and use the shared workflow event tail.
+- `apps/desktop/src/renderer/src/hooks/use-novel-creation-flow.ts`: consume reverse-arrange through the same background run transport as create-flow and discussion.
+- `apps/desktop/src/renderer/src/hooks/__tests__/use-novel-creation-flow.test.ts`: verify model forwarding and background acceptance.
+- `apps/agent-server/src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts`: verify admission, cancellation, active-run lookup, and terminal projection.
+
+### Acceptance criteria
+
+- POST reverse-arrange returns `202` with `runId` and `eventsPath`; progress and terminal events are persisted in the workflow event stream.
+- `CreationRunLifecycle` owns reverse-arrange state (`arranging` → `completed`/`cancelled`/`failed`); explicit cancellation waits for task cleanup.
+- The desktop client uses one background run/tail implementation and reconnects through `active-reverse-arrange-run`.
+- The old POST SSE compatibility transport and duplicate client parser are removed.
+
+### Verification commands
+
+```powershell
+pnpm --filter agent-server test src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts
+pnpm --filter desktop test src/renderer/src/hooks/__tests__/use-novel-creation-flow.test.ts
+pnpm --filter desktop typecheck
+pnpm --filter agent-server build
+git diff --check
+```
+
+## Completed slice: Phase C route storage boundary
+
+### Files and responsibilities
+
+- `apps/agent-server/src/plugins/novel-plugin/core/analysis/reference-template-binding-store.ts`: typed CRUD/resolve boundary for project reference-template bindings, including JSON mapping, version ownership, optimistic locking, and chapter filtering.
+- `apps/agent-server/src/plugins/novel-plugin/novel-services.ts`: construct and expose the binding store.
+- `apps/agent-server/src/plugins/novel-plugin/routes/reference-template-routes.ts`: use the binding store for all P8 binding endpoints; no direct SQLite access remains in routes.
+- `apps/agent-server/src/plugins/novel-plugin/__tests__/reference-template-binding-store.test.ts`: store behavior and persistence invariants.
+- `apps/agent-server/src/plugins/novel-plugin/__tests__/reference-template.test.ts`: P8 HTTP contract coverage.
+- `apps/agent-server/src/plugins/novel-plugin/__tests__/route-storage-boundary.test.ts`: architecture guard against SQL in route modules.
+
+### Acceptance criteria
+
+- Binding list/upsert/delete/resolve preserve the existing URL and response contract.
+- Stale `lockVersion` returns `409`; omitted update fields preserve their stored values; a version from another template is rejected.
+- Malformed JSON falls back to typed empty values rather than returning a 500 from a route.
+- All novel route modules remain behind store/service boundaries, enforced by an automated architecture test.
+
+### Current task: Phase C typed route contracts
+
+Extend `RouteDefinition` and the plugin loader with typed params/query/body/response schema metadata, then migrate one route family under contract tests. Keep this separate from repository extraction so route schema changes can be rolled out without mixing storage behavior changes.
+
 ## Progress log
 
 - 2026-10-14: Phase B foundation committed as `49e8098` on `codex/novel-runtime-refactor`.
@@ -202,3 +250,5 @@ git diff --check
 - 2026-10-15: Workflow resume is wired to `CreationRunLifecycle`; its phase/checkpoint/terminal transitions use a new durable run id while retaining the original workflow snapshot as input.
 - 2026-10-15: AI arrange is wired to `CreationRunLifecycle`; `arranging` and `arrange_review` now have durable state and terminal projection.
 - 2026-10-15: Discussion start and resume are wired to `CreationRunLifecycle`; phases, checkpoints, explicit cancellation, and terminal states now use the durable run id while the event tail remains the transport contract.
+- 2026-10-15: Reverse-arrange is wired to the durable background run protocol; the old POST SSE compatibility path and duplicate client parser were removed.
+- 2026-10-15: Phase C started with the project reference-template binding boundary; typed storage, P8 contracts, stale-lock handling, and the route SQL architecture guard are now in place.

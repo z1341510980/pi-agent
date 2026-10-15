@@ -10,6 +10,7 @@ import { ReferenceAnalysisRunStore } from '../core/analysis/reference-analysis-r
 import { ReferenceAnalysisRunWorker } from '../core/analysis/reference-analysis-run-worker.js'
 import { ReferenceProfileStore } from '../core/analysis/reference-profile-store.js'
 import { ReferenceTemplateStore } from '../core/analysis/reference-template-store.js'
+import { ReferenceTemplateBindingStore } from '../core/analysis/reference-template-binding-store.js'
 import { ReferenceValidationRunStore } from '../core/analysis/reference-validation-run-store.js'
 import { ReferenceValidationRunWorker } from '../core/analysis/reference-validation-run-worker.js'
 import { createReferenceRunRoutes } from '../routes/reference-run-routes.js'
@@ -72,6 +73,7 @@ const BOOK_REPLY = JSON.stringify({
 interface Harness {
   db: Database.Database
   app: FastifyInstance
+  projectId: string
   profileStore: ReferenceProfileStore
   templateStore: ReferenceTemplateStore
   validationStore: ReferenceValidationRunStore
@@ -127,6 +129,7 @@ async function createHarness(p7Replies: string[]): Promise<Harness> {
     reference
   )
   const templateStore = new ReferenceTemplateStore(db, profileStore)
+  const bindingStore = new ReferenceTemplateBindingStore(db, templateStore)
   const validationStore = new ReferenceValidationRunStore(db)
   const validationWorker = new ReferenceValidationRunWorker(
     createFakeContext(p7Replies),
@@ -144,6 +147,7 @@ async function createHarness(p7Replies: string[]): Promise<Harness> {
     referenceAnalysisWorker: analysisWorker,
     referenceProfiles: profileStore,
     referenceTemplates: templateStore,
+    referenceTemplateBindings: bindingStore,
     referenceValidationRuns: validationStore,
     referenceValidationWorker: validationWorker
   } as unknown as NovelServices
@@ -203,12 +207,34 @@ async function createHarness(p7Replies: string[]): Promise<Harness> {
   return {
     db,
     app,
+    projectId,
     profileStore,
     templateStore,
     validationStore,
     validationWorker,
     profileId,
     dispose: () => db.close()
+  }
+}
+
+async function createReviewedTemplate(h: Harness): Promise<{ templateId: string; versionId: string }> {
+  const profile = h.profileStore.getProfile(h.profileId)!
+  for (const finding of profile.findings) {
+    h.profileStore.reviewFinding(h.profileId, {
+      findingKey: finding.key,
+      decision: 'accepted',
+      agentTargets: ['Writer'],
+    })
+  }
+  const draft = await h.app.inject({
+    method: 'POST',
+    url: `${PREFIX}/reference-profiles/${h.profileId}/template-drafts`,
+    payload: { name: '绑定测试模板' },
+  })
+  expect(draft.statusCode).toBe(200)
+  return {
+    templateId: draft.json().data.template.id,
+    versionId: draft.json().data.version.id,
   }
 }
 
@@ -336,6 +362,84 @@ describe('P6 应用预览与模板草稿', () => {
       payload: { name: '含残留模板' }
     })
     expect(draft.statusCode).toBe(422)
+    h.dispose()
+  })
+})
+
+describe('P8 项目参考模板绑定', () => {
+  it('通过绑定存储完成创建、更新、resolve、删除，并拒绝过期 lockVersion', async () => {
+    const h = await createHarness([])
+    const { templateId, versionId } = await createReviewedTemplate(h)
+
+    const created = await h.app.inject({
+      method: 'PUT',
+      url: `${PREFIX}/projects/${h.projectId}/reference-template-bindings/${templateId}`,
+      payload: {
+        templateVersionId: versionId,
+        bound: true,
+        defaultEnabled: true,
+        agentScopes: ['Writer'],
+        chapterScopes: ['turn'],
+        projectOverrides: { tone: 'restrained' },
+      },
+    })
+    expect(created.statusCode).toBe(200)
+    expect(created.json().data.lockVersion).toBe(1)
+
+    const listed = await h.app.inject({
+      method: 'GET',
+      url: `${PREFIX}/projects/${h.projectId}/reference-template-bindings`,
+    })
+    expect(listed.statusCode).toBe(200)
+    expect(listed.json().data[0]).toMatchObject({
+      templateId,
+      templateVersionId: versionId,
+      bound: true,
+      defaultEnabled: true,
+      agentScopes: ['Writer'],
+      chapterScopes: ['turn'],
+      projectOverrides: { tone: 'restrained' },
+      lockVersion: 1,
+    })
+
+    const updated = await h.app.inject({
+      method: 'PUT',
+      url: `${PREFIX}/projects/${h.projectId}/reference-template-bindings/${templateId}`,
+      payload: { templateVersionId: versionId, lockVersion: 1, projectOverrides: { tone: 'urgent' } },
+    })
+    expect(updated.statusCode).toBe(200)
+    expect(updated.json().data.lockVersion).toBe(2)
+
+    const stale = await h.app.inject({
+      method: 'PUT',
+      url: `${PREFIX}/projects/${h.projectId}/reference-template-bindings/${templateId}`,
+      payload: { templateVersionId: versionId, lockVersion: 1 },
+    })
+    expect(stale.statusCode).toBe(409)
+
+    const resolved = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/projects/${h.projectId}/reference-template-bindings/resolve`,
+      payload: { enabled: true, templateId, chapterClassification: 'turn' },
+    })
+    expect(resolved.statusCode).toBe(200)
+    expect(resolved.json().data).toMatchObject({
+      effective: true,
+      templateId,
+      templateVersionId: versionId,
+      projectOverrides: { tone: 'urgent' },
+    })
+
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `${PREFIX}/projects/${h.projectId}/reference-template-bindings/${templateId}`,
+    })
+    expect(removed.statusCode).toBe(200)
+    const missing = await h.app.inject({
+      method: 'DELETE',
+      url: `${PREFIX}/projects/${h.projectId}/reference-template-bindings/${templateId}`,
+    })
+    expect(missing.statusCode).toBe(404)
     h.dispose()
   })
 })

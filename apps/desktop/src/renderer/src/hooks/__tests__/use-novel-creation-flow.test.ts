@@ -51,6 +51,9 @@ beforeEach(() => {
     if (url.includes('/create-flow') && !url.includes('/workflow-runs/')) {
       return acceptedRunResponse('workflow-run-1', '/projects/project-1/workflow-runs/workflow-run-1/events')
     }
+    if (url.includes('/reverse-arrange') && !url.includes('/active-reverse-arrange-run')) {
+      return acceptedRunResponse('reverse-run-1', '/projects/project-1/workflow-runs/reverse-run-1/events')
+    }
     return new Response('ok', { status: 200 })
   })
   sendFlowMessageMock.mockResolvedValue({ messageId: 'interject-1', status: 'queued' })

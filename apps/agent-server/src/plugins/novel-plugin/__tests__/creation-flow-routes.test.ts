@@ -461,6 +461,7 @@ describe('other creation-flow model and audit contracts', () => {
         getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting', content: '已完成的章节正文。' })),
       },
       entityGenerator: { generateAndArrange },
+      workflowEventStore: createWorkflowEventStore(),
     } as any
     const route = createCreationFlowRoutes(services).find(item => (
       item.path === '/projects/:projectId/chapters/:chapterNumber/reverse-arrange'
@@ -483,6 +484,96 @@ describe('other creation-flow model and audit contracts', () => {
       expect.any(AbortSignal),
       selectedModel,
     )
+  })
+
+  it('accepts reverse arrange as a background run and projects its lifecycle and events', async () => {
+    const start = vi.fn(() => ({ runId: 'reverse-run-1' }))
+    const observePhase = vi.fn()
+    const finish = vi.fn()
+    const append = vi.fn()
+    const generateAndArrange = vi.fn(async (_projectId: string, _chapterNumber: number, _content: string, onProgress: (event: any) => void) => {
+      onProgress({ phase: 'arranging', message: '提取实体' })
+      return {
+        characterIds: ['character-1'], conflictIds: [], foreshadowIds: [], clueIds: [], factionIds: [], locationIds: [], items: [],
+      }
+    })
+    const services = {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting', content: '章节正文。' })),
+      },
+      entityGenerator: { generateAndArrange },
+      creationRunLifecycle: { start, observePhase, finish },
+      workflowEventStore: createWorkflowEventStore(),
+    } as any
+    services.workflowEventStore.append = append
+    const route = createCreationFlowRoutes(services).find(item => (
+      item.path === '/projects/:projectId/chapters/:chapterNumber/reverse-arrange'
+    ))!
+    const reply = createReply()
+
+    await route.handler({
+      params: { projectId: 'project-1', chapterNumber: '1' },
+      body: {}, headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+      log: { warn: vi.fn(), error: vi.fn() },
+    } as any, reply as any)
+
+    const runId = (reply.payload as { runId: string }).runId
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledWith(runId, { status: 'completed' }))
+    expect(reply.statusCode).toBe(202)
+    expect(reply.payload).toMatchObject({ runId, eventsPath: `/projects/project-1/workflow-runs/${runId}/events` })
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      runId, projectId: 'project-1', chapterNumber: 1, mode: 'reverse', initialStage: 'arranging',
+    }))
+    expect(observePhase).toHaveBeenCalledWith(runId, 'arranging')
+    expect(append).toHaveBeenCalledWith(runId, 'run_started', expect.objectContaining({ mode: 'reverse' }))
+    expect(append).toHaveBeenCalledWith(runId, 'agui', expect.objectContaining({ type: 'CUSTOM', name: 'novel:progress' }))
+    expect(append).toHaveBeenCalledWith(runId, 'run_finished', expect.objectContaining({ status: 'completed', workflowRunId: runId }))
+  })
+
+  it('cancels a background reverse-arrange only through the explicit chapter cancel route', async () => {
+    const start = vi.fn(() => ({ runId: 'reverse-cancel-run' }))
+    const finish = vi.fn()
+    let resolveGeneration!: (value: any) => void
+    let capturedSignal!: AbortSignal
+    const generateAndArrange = vi.fn((_projectId: string, _chapterNumber: number, _content: string, _onProgress: (event: any) => void, _source: string, signal: AbortSignal) => {
+      capturedSignal = signal
+      return new Promise(resolve => { resolveGeneration = resolve })
+    })
+    const services = {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting', content: '章节正文。' })),
+      },
+      entityGenerator: { generateAndArrange },
+      creationRunLifecycle: { start, observePhase: vi.fn(), finish },
+      workflowEventStore: createWorkflowEventStore(),
+      confirmationManager: { listPending: vi.fn(() => []), respondDecision: vi.fn() },
+    } as any
+    const routes = createCreationFlowRoutes(services)
+    const reverseRoute = routes.find(item => item.path === '/projects/:projectId/chapters/:chapterNumber/reverse-arrange')!
+    const cancelRoute = routes.find(item => item.path === '/projects/:projectId/chapters/:chapterNumber/cancel-active-flow')!
+    const reply = createReply()
+
+    await reverseRoute.handler({
+      params: { projectId: 'project-1', chapterNumber: '1' }, body: {}, headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } }, log: { warn: vi.fn(), error: vi.fn() },
+    } as any, reply as any)
+    await vi.waitFor(() => expect(generateAndArrange).toHaveBeenCalled())
+    expect(reply.statusCode).toBe(202)
+    expect(capturedSignal.aborted).toBe(false)
+
+    const cancellation = cancelRoute.handler({
+      params: { projectId: 'project-1', chapterNumber: '1' },
+      log: { info: vi.fn(), warn: vi.fn() },
+    } as any, createReply() as any)
+    await vi.waitFor(() => expect(capturedSignal.aborted).toBe(true))
+    resolveGeneration({ characterIds: [], conflictIds: [], foreshadowIds: [], clueIds: [], factionIds: [], locationIds: [], itemIds: [] })
+    await cancellation
+
+    const runId = (reply.payload as { runId: string }).runId
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledWith(runId, expect.objectContaining({ status: 'cancelled' })))
   })
 
   it('persists an audit record when the main workflow returns an error result', async () => {
@@ -1183,7 +1274,7 @@ describe('workflow events tail（T8：run 脱离 HTTP 生命周期）', () => { 
   it('events 端点：空事件流返回 404', async () => {
     const route = createCreationFlowRoutes(makeServices({
       lastSeq: vi.fn(() => 0),
-      list: vi.fn(() => []),
+      list: vi.fn(() => [{ type: 'run_started', payload: { mode: 'workflow' } }]),
     })).find(item => item.path === '/projects/:projectId/workflow-runs/:runId/events')!
     const reply = createReply()
 
@@ -1195,7 +1286,7 @@ describe('workflow events tail（T8：run 脱离 HTTP 生命周期）', () => { 
   it('active-workflow-run：面板重开后取回在跑的 runId 与续传游标', async () => {
     const route = createCreationFlowRoutes(makeServices({
       lastSeq: vi.fn(() => 0),
-      list: vi.fn(() => []),
+      list: vi.fn(() => [{ runId: 'w-running', seq: 1, type: 'run_started', payload: { mode: 'workflow' }, createdAt: 1 }]),
       findActiveRun: vi.fn(() => ({ runId: 'w-running', cursorSeq: 12 })),
     })).find(item => item.path === '/projects/:projectId/chapters/:chapterNumber/active-workflow-run')!
     const reply = createReply()
@@ -1207,6 +1298,23 @@ describe('workflow events tail（T8：run 脱离 HTTP 生命周期）', () => { 
       runId: 'w-running',
       cursorSeq: 12,
       eventsPath: '/projects/p-1/workflow-runs/w-running/events',
+    })
+  })
+
+  it('active-reverse-arrange-run：只返回反推编排的活动 run', async () => {
+    const route = createCreationFlowRoutes(makeServices({
+      lastSeq: vi.fn(() => 2),
+      list: vi.fn(() => [{ runId: 'r-running', seq: 1, type: 'run_started', payload: { mode: 'reverse' }, createdAt: 1 }]),
+      findActiveRun: vi.fn(() => ({ runId: 'r-running', cursorSeq: 1 })),
+    })).find(item => item.path === '/projects/:projectId/chapters/:chapterNumber/active-reverse-arrange-run')!
+    const reply = createReply()
+
+    await route.handler({ params: { projectId: 'p-1', chapterNumber: '3' } } as any, reply as any)
+
+    expect(reply.payload).toMatchObject({
+      ok: true,
+      runId: 'r-running',
+      eventsPath: '/projects/p-1/workflow-runs/r-running/events',
     })
   })
 })

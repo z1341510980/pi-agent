@@ -16,6 +16,7 @@ import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import type { NovelServices } from '../novel-services.js'
 import { buildApplicationPreview } from '../core/analysis/reference-application-preview.js'
 import { validateScenarioSafety } from '../core/analysis/reference-validation-run-worker.js'
+import { ReferenceTemplateBindingConflictError } from '../core/analysis/reference-template-binding-store.js'
 
 const previewSchema = z.object({
   findingKeys: z.array(z.string().min(1)).max(200).optional(),
@@ -83,6 +84,11 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
   if (!reference) return []
   const profileStore = services.referenceProfiles
   const templateStore = services.referenceTemplates
+  const bindingStore = services.referenceTemplateBindings
+  const requireBindingStore = () => {
+    if (!bindingStore) throw new AppError(ErrorCode.INTERNAL_SERVER_ERROR, '参考模板绑定存储未初始化', 500)
+    return bindingStore
+  }
   const validationStore = services.referenceValidationRuns
   const validationWorker = services.referenceValidationWorker
 
@@ -102,6 +108,20 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
     const run = validationStore.getRun(runId)
     if (!run) throw new AppError(ErrorCode.NOT_FOUND, '验证任务不存在', 404)
     return run
+  }
+
+  const mapBindingError = (error: unknown): AppError => {
+    if (error instanceof ReferenceTemplateBindingConflictError) {
+      return new AppError(ErrorCode.CONFLICT, error.message, 409)
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    if (/模板不存在|模板版本不存在|绑定不存在/.test(message)) {
+      return new AppError(ErrorCode.NOT_FOUND, message, 404)
+    }
+    if (/属于指定模板/.test(message)) {
+      return new AppError(ErrorCode.BAD_REQUEST, message, 400)
+    }
+    return new AppError(ErrorCode.CONFLICT, message, 409)
   }
 
   return [
@@ -461,33 +481,7 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
       method: 'GET',
       path: '/projects/:projectId/reference-template-bindings',
       handler: async (request: any) => {
-        const projectId = request.params.projectId;
-        const rows = services.context.db.prepare(`
-          SELECT id, template_id, template_version_id, bound, default_enabled, agent_scopes, chapter_scopes, project_overrides, lock_version, last_used_at, created_at, updated_at
-          FROM novel_project_reference_templates
-          WHERE project_id = ?
-          ORDER BY updated_at DESC
-        `).all(projectId) as Array<{
-          id: string; template_id: string; template_version_id: string; bound: number;
-          default_enabled: number; agent_scopes: string; chapter_scopes: string;
-          project_overrides: string; lock_version: number; last_used_at: number | null;
-          created_at: number; updated_at: number;
-        }>;
-        const bindings = rows.map((row) => ({
-          id: row.id,
-          templateId: row.template_id,
-          templateVersionId: row.template_version_id,
-          bound: Boolean(row.bound),
-          defaultEnabled: Boolean(row.default_enabled),
-          agentScopes: JSON.parse(row.agent_scopes || '[]'),
-          chapterScopes: JSON.parse(row.chapter_scopes || '[]'),
-          projectOverrides: JSON.parse(row.project_overrides || '{}'),
-          lockVersion: row.lock_version,
-          lastUsedAt: row.last_used_at,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }));
-        return success(bindings, request.traceId);
+        return success(requireBindingStore().listByProject(request.params.projectId), request.traceId);
       },
     },
     {
@@ -505,62 +499,12 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
         }), request, reply);
         if (!input) return reply;
         const { projectId, templateId } = request.params;
-        const version = templateStore.getVersion(input.templateVersionId);
-        if (!version) throw new AppError(ErrorCode.NOT_FOUND, '模板版本不存在', 404);
-        const template = templateStore.getTemplate(templateId);
-        if (!template) throw new AppError(ErrorCode.NOT_FOUND, '模板不存在', 404);
-        const now = Date.now();
-        const existing = services.context.db.prepare(`
-          SELECT id, lock_version FROM novel_project_reference_templates
-          WHERE project_id = ? AND template_id = ?
-        `).get(projectId, templateId) as { id: string; lock_version: number } | undefined;
-        let result: any;
-        if (existing) {
-          const lockVersion = input.lockVersion ?? existing.lock_version;
-          services.context.db.prepare(`
-            UPDATE novel_project_reference_templates SET
-              template_version_id = ?,
-              bound = ?,
-              default_enabled = ?,
-              agent_scopes = ?,
-              chapter_scopes = ?,
-              project_overrides = ?,
-              lock_version = lock_version + 1,
-              updated_at = ?
-            WHERE project_id = ? AND template_id = ? AND lock_version = ?
-          `).run(
-            input.templateVersionId,
-            input.bound !== undefined ? (input.bound ? 1 : 0) : 1,
-            input.defaultEnabled !== undefined ? (input.defaultEnabled ? 1 : 0) : 0,
-            JSON.stringify(input.agentScopes ?? []),
-            JSON.stringify(input.chapterScopes ?? []),
-            JSON.stringify(input.projectOverrides ?? {}),
-            now, projectId, templateId, lockVersion
-          );
-          const updated = services.context.db.prepare(`
-            SELECT id, lock_version FROM novel_project_reference_templates
-            WHERE project_id = ? AND template_id = ?
-          `).get(projectId, templateId) as { id: string; lock_version: number };
-          result = { id: updated.id, lockVersion: updated.lock_version };
-        } else {
-          const id = require('node:crypto').randomUUID();
-          services.context.db.prepare(`
-            INSERT INTO novel_project_reference_templates
-              (id, project_id, template_id, template_version_id, bound, default_enabled,
-               agent_scopes, chapter_scopes, project_overrides, lock_version, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-          `).run(
-            id, projectId, templateId, input.templateVersionId,
-            input.bound !== undefined ? (input.bound ? 1 : 0) : 1,
-            input.defaultEnabled !== undefined ? (input.defaultEnabled ? 1 : 0) : 0,
-            JSON.stringify(input.agentScopes ?? []),
-            JSON.stringify(input.chapterScopes ?? []),
-            JSON.stringify(input.projectOverrides ?? {}),
-            now, now
-          );
-          result = { id, lockVersion: 1 };
+        try {
+          const binding = requireBindingStore().upsert({ projectId, templateId, ...input });
+          return success({ id: binding.id, lockVersion: binding.lockVersion }, request.traceId);
+        } catch (error) {
+          throw mapBindingError(error);
         }
-        return success(result, request.traceId);
       },
     },
     {
@@ -568,16 +512,12 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
       path: '/projects/:projectId/reference-template-bindings/:templateId',
       handler: async (request: any) => {
         const { projectId, templateId } = request.params;
-        const existing = services.context.db.prepare(`
-          SELECT id FROM novel_project_reference_templates
-          WHERE project_id = ? AND template_id = ?
-        `).get(projectId, templateId) as { id: string } | undefined;
-        if (!existing) throw new AppError(ErrorCode.NOT_FOUND, '绑定不存在', 404);
-        services.context.db.prepare(`
-          DELETE FROM novel_project_reference_templates
-          WHERE project_id = ? AND template_id = ?
-        `).run(projectId, templateId);
-        return success({ deleted: true }, request.traceId);
+        try {
+          requireBindingStore().remove(projectId, templateId);
+          return success({ deleted: true }, request.traceId);
+        } catch (error) {
+          throw mapBindingError(error);
+        }
       },
     },
     {
@@ -592,60 +532,7 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
           chapterNumber: z.number().int().positive().optional(),
         }), request, reply);
         if (!input) return reply;
-        const projectId = request.params.projectId;
-        // 从项目绑定中查找已绑定的模板
-        let bindings = services.context.db.prepare(`
-          SELECT template_id, template_version_id, default_enabled, agent_scopes, chapter_scopes, project_overrides
-          FROM novel_project_reference_templates
-          WHERE project_id = ? AND bound = 1
-        `).all(projectId) as Array<{
-          template_id: string; template_version_id: string; default_enabled: number;
-          agent_scopes: string; chapter_scopes: string; project_overrides: string;
-        }>;
-        if (!input.enabled || bindings.length === 0) {
-          return success({ effective: false, rules: { spirit: [], technique: [], power: [], pacing: [] } }, request.traceId);
-        }
-        // 如果指定了 templateId，只使用该模板
-        if (input.templateId) {
-          bindings = bindings.filter((b) => b.template_id === input.templateId);
-        }
-        if (bindings.length === 0) {
-          return success({ effective: false, reason: '未找到已绑定的模板' }, request.traceId);
-        }
-        // 使用第一个绑定的模板版本
-        const binding = bindings[0];
-        const version = templateStore.getVersion(binding.template_version_id);
-        if (!version) {
-          return success({ effective: false, reason: '模板版本不存在' }, request.traceId);
-        }
-        // 编译规则
-        const allRules = [...version.spiritRules, ...version.techniqueRules, ...version.powerRules, ...version.pacingRules];
-        // 如果指定了章节分类，过滤规则
-        let filteredRules = allRules;
-        if (input.chapterClassification) {
-          filteredRules = allRules.filter((rule) =>
-            rule.chapterScope.includes(input.chapterClassification!) || rule.chapterScope.length === 0
-          );
-        }
-        const rules = {
-          spirit: version.spiritRules.filter((rule) => filteredRules.includes(rule)),
-          technique: version.techniqueRules.filter((rule) => filteredRules.includes(rule)),
-          power: version.powerRules.filter((rule) => filteredRules.includes(rule)),
-          pacing: version.pacingRules.filter((rule) => filteredRules.includes(rule)),
-        };
-        const agentScopes = JSON.parse(binding.agent_scopes || '[]') as string[];
-        const chapterScopes = JSON.parse(binding.chapter_scopes || '[]') as string[];
-        const projectOverrides = JSON.parse(binding.project_overrides || '{}') as Record<string, unknown>;
-        return success({
-          effective: true,
-          templateId: binding.template_id,
-          templateVersionId: binding.template_version_id,
-          agentScopes,
-          chapterScopes,
-          projectOverrides,
-          rules,
-          ruleCount: rules.spirit.length + rules.technique.length + rules.power.length + rules.pacing.length,
-        }, request.traceId);
+        return success(requireBindingStore().resolve(request.params.projectId, input), request.traceId);
       },
     },
 ]

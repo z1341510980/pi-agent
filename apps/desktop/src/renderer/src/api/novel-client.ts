@@ -2653,56 +2653,6 @@ export async function aiArrangeFlow(
   }
 }
 
-/**
- * 从正文反推实体到矩阵（SSE 流式）
- *
- * 后端端点 POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/reverse-arrange
- * 用户手写章节正文后，调用此接口从正文提取实体并落库到矩阵。
- * SSE 事件格式与 aiArrangeFlow 一致（progress/result/error），无 checkpoint。
- */
-export async function reverseArrangeFlow(
-  projectId: string,
-  chapterNumber: number,
-  options: AiArrangeFlowOptions,
-): Promise<void> {
-  const url = `${browserConfig.apiBaseUrl}${BASE}/projects/${projectId}/chapters/${chapterNumber}/reverse-arrange`
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    },
-    body: JSON.stringify({}),
-    signal: options.signal,
-  })
-
-  if (!response.ok) {
-    throw new Error(`反推实体启动失败: HTTP ${response.status} ${response.statusText}`)
-  }
-  if (!response.body) {
-    throw new Error('响应体为空，无法读取 SSE 流')
-  }
-
-  // 反推无 checkpoint 事件，其余 SSE 事件格式与 aiArrangeFlow 一致。
-  try {
-    await parseSseStream(response.body, (event) => {
-      if (event.type === 'CUSTOM') {
-        const custom = event as { type: 'CUSTOM'; name: string; value: unknown }
-        if (custom.name === 'novel:progress') {
-          options.onProgress?.(custom.value)
-        } else if (custom.name === 'novel:result') {
-          options.onResult?.(custom.value)
-        }
-      } else if (event.type === 'RUN_ERROR') {
-        const errEvent = event as { type: 'RUN_ERROR'; message: string }
-        options.onError?.(errEvent.message ?? '反推实体失败')
-      }
-    })
-  } catch (err) {
-    if (options?.signal?.aborted) return
-    throw err
-  }
-}
 
 export interface CacheDiagnostics {
   systemPromptHashes: Record<string, string>
