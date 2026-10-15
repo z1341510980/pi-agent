@@ -1313,6 +1313,24 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             }
           }
         }
+        if (isArrange && services.creationRunLifecycle) {
+          const checkpointArgs = pending.args as { workflowRunId?: string }
+          if (checkpointArgs.workflowRunId) {
+            try {
+              services.creationRunLifecycle.resolveCheckpoint(
+                checkpointArgs.workflowRunId,
+                checkpointId,
+                decision as 'approve' | 'revise' | 'rewrite' | 'reject',
+                {
+                  resumeStage: 'arranging',
+                  reason: `用户选择：${describeDecision('arrange_review', decision)}`,
+                },
+              )
+            } catch (error) {
+              request.log.warn({ error, workflowRunId: checkpointArgs.workflowRunId, checkpointId, decision }, 'AI 编排运行内核决策投影失败')
+            }
+          }
+        }
         return { ok: true, data: { accepted: true } }
       },
     })
@@ -2090,7 +2108,24 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       // reply.raw 的 close 事件在 response 流关闭时触发，
       // 配合 writableEnded 检查可区分"正常结束"与"客户端中途断开"。
       let clientDisconnected = false
-      const task = registerNovelChapterTask(lockKey, 'ai-arrange')
+      const arrangeRunId = randomUUID()
+      const creationRunLifecycle = services.creationRunLifecycle
+      if (creationRunLifecycle) {
+        try {
+          creationRunLifecycle.start({
+            runId: arrangeRunId,
+            projectId,
+            chapterNumber: chNum,
+            mode: 'arrange',
+            initialStage: 'arranging',
+          })
+        } catch (error) {
+          request.log.warn({ error, projectId, chapterNumber: chNum, arrangeRunId }, 'AI 编排运行内核受理失败')
+          reply.code(409).send({ ok: false, error: '无法为该章节创建 AI 编排运行，请检查是否已有活动运行' })
+          return
+        }
+      }
+      const task = registerNovelChapterTask(lockKey, 'ai-arrange', arrangeRunId)
       const abortOnDisconnect = () => {
         if (!reply.raw.writableEnded) {
           clientDisconnected = true
@@ -2131,7 +2166,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const emitter = createNovelAgUiEmitter(
         createSseEmitterSink(writeRaw),
         `novel:arrange:${projectId}:${chapterNumber}`,
-        randomUUID(),
+        arrangeRunId,
       )
       const heartbeat = setInterval(() => {
         if (clientDisconnected || reply.raw.writableEnded) return
@@ -2160,7 +2195,16 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               chNum,
               chapter.outline,
               // 注意：...evt 必须放在 phase 之前，否则 evt.phase 会覆盖 'arranging'。
-              (evt: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' }),
+              (evt: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => {
+                emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' })
+                if (creationRunLifecycle) {
+                  try {
+                    creationRunLifecycle.observePhase(arrangeRunId, 'arranging')
+                  } catch (error) {
+                    request.log.warn({ error, arrangeRunId }, 'AI 编排运行内核阶段投影失败')
+                  }
+                }
+              },
                arrangeInput.modelId,
               feedback,
               task.controller.signal,
@@ -2171,7 +2215,16 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               projectId,
               chNum,
               chapter.outline,
-              (evt: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' }),
+              (evt: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => {
+                emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' })
+                if (creationRunLifecycle) {
+                  try {
+                    creationRunLifecycle.observePhase(arrangeRunId, 'arranging')
+                  } catch (error) {
+                    request.log.warn({ error, arrangeRunId }, 'AI 编排运行内核阶段投影失败')
+                  }
+                }
+              },
               'outline',
               task.controller.signal,
                arrangeInput.modelId,
@@ -2228,10 +2281,18 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
                 options: ['approve', 'revise', 'reject'],
               },
               draftId,
+              workflowRunId: arrangeRunId,
             },
             reason: '等待用户确认 AI 编排结果是否落库',
           }, 0)
           const pending = services.confirmationManager.listPending().find((item) => item.toolCallId === draftId)
+          if (creationRunLifecycle) {
+            try {
+              creationRunLifecycle.awaitCheckpoint(arrangeRunId, pending?.id ?? draftId, Date.now())
+            } catch (error) {
+              request.log.warn({ error, arrangeRunId, checkpointType: 'arrange_review' }, 'AI 编排运行内核检查点投影失败')
+            }
+          }
           emitter.checkpoint({
             type: 'arrange_review',
             phase: 'checkpoint_review',
@@ -2252,11 +2313,25 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           if (decision === 'reject') {
             draft.rollback()
             pendingArrangeDrafts.delete(lockKey)
+            if (creationRunLifecycle) {
+              try {
+                creationRunLifecycle.finish(arrangeRunId, { status: 'cancelled', error: '用户拒绝 AI 编排结果' })
+              } catch (error) {
+                request.log.warn({ error, arrangeRunId }, 'AI 编排运行内核取消投影失败')
+              }
+            }
             emitter.result({ status: 'cancelled' })
             break
           }
           draft.commit()
           pendingArrangeDrafts.delete(lockKey)
+          if (creationRunLifecycle) {
+            try {
+              creationRunLifecycle.finish(arrangeRunId, { status: 'completed' })
+            } catch (error) {
+              request.log.warn({ error, arrangeRunId }, 'AI 编排运行内核终态投影失败')
+            }
+          }
           emitter.progress({
             type: 'arrange_committed',
             phase: 'arranging',
@@ -2275,6 +2350,16 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       } catch (err) {
         pendingArrangeDrafts.get(lockKey)?.handle.rollback()
         pendingArrangeDrafts.delete(lockKey)
+        if (creationRunLifecycle) {
+          try {
+            creationRunLifecycle.finish(arrangeRunId, {
+              status: task.controller.signal.aborted ? 'cancelled' : 'error',
+              error: err instanceof Error ? err.message : String(err),
+            })
+          } catch (lifecycleError) {
+            request.log.warn({ error: lifecycleError, arrangeRunId }, 'AI 编排运行内核异常终态投影失败')
+          }
+        }
         if (!task.controller.signal.aborted) {
           persistRouteFailureAudit({
             request,

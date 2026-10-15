@@ -75,9 +75,9 @@ const ALLOWED_STAGE_TRANSITIONS: Record<CreationRunStage, ReadonlySet<CreationRu
   planning: new Set(['planning', 'writing', 'acting', 'arranging', 'revising']),
   writing: new Set(['writing', 'acting', 'reviewing', 'revising', 'finalizing']),
   acting: new Set(['acting', 'reviewing', 'revising', 'finalizing']),
-  arranging: new Set(['arranging', 'reviewing', 'finalizing']),
+  arranging: new Set(['arranging', 'reviewing', 'revising', 'finalizing']),
   reviewing: new Set(['reviewing', 'revising', 'finalizing', 'planning']),
-  revising: new Set(['revising', 'writing', 'reviewing', 'planning', 'finalizing']),
+  revising: new Set(['revising', 'writing', 'reviewing', 'planning', 'arranging', 'finalizing']),
   finalizing: new Set(['finalizing']),
 }
 

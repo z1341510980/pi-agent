@@ -67,7 +67,7 @@ Each phase should produce a small verified slice. Do not combine broad file spli
 
 1. Keep the committed `CreationRunLifecycle` as the runtime lifecycle base.
 2. Migrate create-flow checkpoint feedback, cancellation, recovery, and status projection to persisted run commands/events. The initial create-flow path is wired; workflow resume now creates a new durable run from the saved `writing`/`reviewing`/`memory` boundary and records phase, checkpoint, and terminal transitions.
-3. Migrate discussion, arrange, and reverse-arrange in separate compatible slices; do not maintain two authoritative state machines for one run.
+3. Migrate discussion, arrange, and reverse-arrange in separate compatible slices; do not maintain two authoritative state machines for one run. AI arrange is now wired: `arranging` start, `arrange_review` checkpoint, decision projection, and completed/cancelled/failed terminal state all use `CreationRunLifecycle`.
 4. Reduce module-level registries to connection/transport bookkeeping only; persist business state and make stale run recovery deterministic.
 
 ### Phase C: Typed persistence and API boundaries
@@ -126,7 +126,7 @@ Each phase should produce a small verified slice. Do not combine broad file spli
 - Normal create/update/delete behavior remains idempotent and matrix reconciliation reports no new drift.
 - Chapter finalizer tests remain green; no second transaction or outbox layer is added to that path.
 
-## Current task: Phase B workflow resume lifecycle
+## Completed slice: Phase B workflow resume lifecycle
 
 ### Files and responsibilities
 
@@ -140,6 +140,21 @@ Each phase should produce a small verified slice. Do not combine broad file spli
 - Resume progress events, checkpoints, success, failure, and cancellation use the new run id without changing the original snapshot input.
 - A lifecycle admission conflict returns `409` before the resume task or event stream starts.
 - Existing workflow event tail and snapshot recovery behavior remains unchanged.
+
+## Current task: Phase B AI arrange lifecycle
+
+### Files and responsibilities
+
+- `apps/agent-server/src/plugins/novel-plugin/routes/creation-flow-routes.ts`: create and update the durable arrange run around the existing SSE and confirmation flow.
+- `apps/agent-server/src/plugins/novel-plugin/core/runtime/creation-run-state.ts`: allow `revising -> arranging` when an arrange review requests another generation.
+- `apps/agent-server/src/plugins/novel-plugin/__tests__/creation-flow-routes.test.ts`: verify arrange start, phase, checkpoint decision, and terminal projection.
+
+### Acceptance criteria
+
+- AI arrange creates a durable run in `arranging` before model work starts.
+- The `arrange_review` checkpoint is persisted and its `approve`, `revise`, and `reject` decisions resolve the same run.
+- The run reaches `completed`, `cancelled`, or `failed` when the existing arrange task reaches its terminal path.
+- The existing SSE contract, draft rollback, and confirmation behavior remain unchanged.
 
 ### Verification commands
 
@@ -159,3 +174,4 @@ git diff --check
 - 2026-10-14: Overall refactor sequence and current transaction slice documented here; Phase B migration beyond its committed lifecycle foundation remained next.
 - 2026-10-15: AI arrange projection commit is now atomic across the Story Ledger and appearance writes; failure performs strict compensating rollback and does not emit an arrange-completed event.
 - 2026-10-15: Workflow resume is wired to `CreationRunLifecycle`; its phase/checkpoint/terminal transitions use a new durable run id while retaining the original workflow snapshot as input.
+- 2026-10-15: AI arrange is wired to `CreationRunLifecycle`; `arranging` and `arrange_review` now have durable state and terminal projection.

@@ -332,6 +332,80 @@ describe('other creation-flow model and audit contracts', () => {
     expect(reply.statusCode).toBe(202)
   })
 
+  it('projects AI arrange through the durable lifecycle and resolves the arrange checkpoint', async () => {
+    const start = vi.fn(() => ({ runId: 'arrange-run-1' }))
+    const observePhase = vi.fn()
+    const awaitCheckpoint = vi.fn()
+    const resolveCheckpoint = vi.fn()
+    const finish = vi.fn()
+    let resolveDecision!: (decision: 'approve' | 'revise' | 'reject') => void
+    const decision = new Promise<'approve' | 'revise' | 'reject'>(resolve => { resolveDecision = resolve })
+    const services = {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting', outline: '章纲' })),
+        getCharacter: vi.fn(), getConflict: vi.fn(), getForeshadow: vi.fn(), getFaction: vi.fn(),
+        getLocation: vi.fn(), getItem: vi.fn(), getNarrative: vi.fn(),
+      },
+      entityGenerator: {
+        getArrangeModel: vi.fn(() => undefined),
+        generateArrangeDraft: vi.fn(async (_projectId: string, _chapterNumber: number, _outline: string, onProgress: (event: any) => void) => {
+          onProgress({ phase: 'arranging', message: '生成完成' })
+          return {
+            result: { characterIds: [], conflictIds: [], foreshadowIds: [], clueIds: [], factionIds: [], locationIds: [], itemIds: [], narrativeIds: [] },
+            commit: vi.fn(), rollback: vi.fn(),
+          }
+        }),
+      },
+      creationRunLifecycle: { start, observePhase, awaitCheckpoint, resolveCheckpoint, finish },
+      confirmationManager: {
+        requestDecision: vi.fn(() => decision),
+        listPending: vi.fn(() => ({
+          find: vi.fn(() => ({
+            id: 'arrange-checkpoint-1', toolCallId: 'draft-1', threadId: 'novel-arrange-project-1-1',
+            args: { checkpoint: { type: 'arrange_review', options: ['approve', 'revise', 'reject'] }, workflowRunId: 'arrange-run-1' },
+          })),
+        })),
+        respondDecision: vi.fn(() => {
+          resolveDecision('approve')
+          return true
+        }),
+      },
+      chapterChatStore: { add: vi.fn() },
+    } as any
+    const route = createCreationFlowRoutes(services).find(item => (
+      item.path === '/projects/:projectId/chapters/:chapterNumber/ai-arrange'
+    ))!
+    const reply = createSseReply()
+
+    const flowPromise = route.handler({
+      params: { projectId: 'project-1', chapterNumber: '1' },
+      body: {}, headers: {}, raw: { socket: { setNoDelay: vi.fn() } },
+      log: { error: vi.fn(), warn: vi.fn() },
+    } as any, reply as any)
+
+    await vi.waitFor(() => expect(awaitCheckpoint).toHaveBeenCalledWith(expect.any(String), 'arrange-checkpoint-1', expect.any(Number)))
+    const decisionRoute = createCreationFlowRoutes(services).find(item => (
+      item.path === '/projects/:projectId/checkpoint/:checkpointId/decision'
+    ))!
+    await decisionRoute.handler({
+      params: { projectId: 'project-1', checkpointId: 'arrange-checkpoint-1' },
+      body: { decision: 'approve' },
+      log: { warn: vi.fn() },
+    } as any, createReply() as any)
+    await flowPromise
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-1', chapterNumber: 1, mode: 'arrange', initialStage: 'arranging',
+    }))
+    expect(observePhase).toHaveBeenCalledWith(expect.any(String), 'arranging')
+    expect(awaitCheckpoint).toHaveBeenCalledWith(expect.any(String), 'arrange-checkpoint-1', expect.any(Number))
+    expect(resolveCheckpoint).toHaveBeenCalledWith(
+      expect.any(String), 'arrange-checkpoint-1', 'approve',
+      expect.objectContaining({ resumeStage: 'arranging' }),
+    )
+    expect(finish).toHaveBeenCalledWith(expect.any(String), { status: 'completed', error: undefined })
+  })
+
   it('projects create-flow start, phases, and terminal state into the shared run lifecycle', async () => {
     const start = vi.fn(() => ({ runId: 'run-1' }))
     const observePhase = vi.fn()
