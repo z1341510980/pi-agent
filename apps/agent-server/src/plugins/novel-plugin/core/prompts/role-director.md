@@ -56,7 +56,6 @@ disable-model-invocation: true
 - 场景数与 `sceneCount` 一致，`order` 从 1 开始连续编号。
 - 每场因果契约字段：`title`（场景标题）、`goal`（本场必须完成的推进）、`entry`（入场目的与承接上一章结尾）、`pressure`（本场具体阻力）、`choice`（被迫选择，必须有代价）、`consequence`（选择造成的即时后果）。
 - 必须写出的核心事件不超过 3 个。章纲事件链装不进一章时，在 `narrativeTask` 里指出冲突并建议拆章——Writer 为兑现全部事件只能平均用力，主剧情没展开字数就爆了。
-- `memoryAnchor` 只允许一个：它必须同时写出具体画面（`image`）和不可逆变化（`irreversibleChange`）。不要写抽象主题、口号或“读者会感到震撼”。
 
 ## 生成前的 Director 自检
 
@@ -248,4 +247,4 @@ novel_submit_narrative_task({
 5. **禁止自行新增伏笔**：只处理矩阵已编排且本章有实际动作的伏笔
 6. **禁止改纲**：若方案与大纲严重冲突，在 `narrativeTask` 中指出冲突并请求用户确认，不要擅自改纲
 
-输出前核对（字段完整性，与上文「生成前的 Director 自检」互补，不重复内容）：taskType 合法且与本章意图一致；priority、secondaryTasks、povCharacters、sceneCount、positioning、timelineOffset、memoryAnchor 完整；scenes[] 数量与 sceneCount 一致、order 连续、核心 ≤2、targetWords 之和等于本章目标字数，每场的 entry/pressure/choice/consequence 齐备——Writer 能从中知道开头怎么进入现场、笔墨该往哪场倾斜，而不是只知道本章要完成什么；memoryAnchor 的 image 能在正文中复现，irreversibleChange 是可验证后果；钩子为具体动作、台词、发现或画面。
+输出前核对（字段完整性，与上文「生成前的 Director 自检」互补，不重复内容）：taskType 合法且与本章意图一致；priority、secondaryTasks、povCharacters、sceneCount、positioning、timelineOffset、memoryAnchor 完整；scenes[] 数量与 sceneCount 一致、order 连续、核心 ≤2、targetWords 之和等于本章目标字数，每场的 entry/pressure/choice/consequence 齐备——Writer 能从中知道开头怎么进入现场、笔墨该往哪场倾斜，而不是只知道本章要完成什么；钩子为具体动作、台词、发现或画面。

@@ -24,7 +24,7 @@
 
 import { NovelStore } from './core/novel-store.js'
 import { PromptManager } from './core/prompting/prompt-manager.js'
-import { NovelPromptBuilder } from './core/prompt-builder.js'
+import { NovelPromptBuilder } from './core/prompting/prompt-builder.js'
 import { NovelEngine } from './core/novel-engine.js'
 import { createNovelTools } from './core/novel-tools.js'
 import { NovelOrchestrator } from './core/novel-orchestrator.js'
@@ -62,7 +62,6 @@ import { CostReportService } from './core/analysis/cost-report-service.js'
 import { ObservabilityService } from './core/analysis/observability-service.js'
 import { SharedOverlapAnalyzer } from './core/analysis/shared-overlap-analyzer.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
-import type { TeamManager } from '../../core/agent/team-manager.js'
 import type { AgentManager } from '../../core/agent/subagent-tool.js'
 import type { ConfirmationManager } from '../../core/tool/confirmation-manager.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
@@ -92,12 +91,6 @@ export interface NovelServices {
   /** LLM 驱动的相似实体扫描器（语义相似去重，与 deduplicateEntities 互补） */
   similarityScanner: NovelSimilarityScanner
   tools: ToolDefinition[]
-  /**
-   * TeamManager（可选，由 teamPlugin 提供）
-   * 当 teamPlugin 已注册且 plugin-loader 完成注入时可用，
-   * 供 novel-routes 的 create-team 路由触发统一团队执行。
-   */
-  teamManager?: TeamManager
   /**
    * AgentManager（可选，由 subagentPlugin 提供）
    * 当用户通过 PUT /agent-config 调整温度时，需同步到 AgentManager
@@ -166,7 +159,7 @@ export interface NovelServices {
  * @param context PluginContext（提供 db / cwd / logger / createSession 等）
  */
 export function createNovelServices(context: PluginContext): NovelServices {
-  const { db, cwd, teamManager, subagentManager: agentManager, confirmationManager } = context
+  const { db, cwd, subagentManager: agentManager, confirmationManager } = context
 
   // confirmationManager 现按 confirmation.request capability 条件注入。
   // novel 是 builtin（默认持有全部 capability），因此这里只可能因宿主装配错误而缺失，
@@ -408,7 +401,6 @@ export function createNovelServices(context: PluginContext): NovelServices {
     entityGenerator,
     similarityScanner,
     tools,
-    teamManager,
     agentManager,
     confirmationManager,
     discussionRunner,

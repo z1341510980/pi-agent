@@ -1,7 +1,7 @@
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import { success } from '../../../lib/api-response.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
-import type { NovelPromptBuilder } from '../core/prompt-builder.js'
+import type { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 import type { NovelStore } from '../core/novel-store.js'
 import type { NovelEngine } from '../core/novel-engine.js'
 import { buildP3ContextReport } from '../core/prompting/p3-context-report.js'

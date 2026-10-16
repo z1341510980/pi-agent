@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { NovelPromptBuilder } from '../core/prompt-builder.js'
+import { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
 import { CHAPTER_ANCHOR_BUDGET } from '../core/prompting/prompt-budget.js'

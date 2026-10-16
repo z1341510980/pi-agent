@@ -3,7 +3,7 @@
  *
  * 守护：
  * 1. CHUNK_CATALOG 结构合法性（id 唯一、priority/mode/layer 枚举合法、sizeTier 合法）；
- * 2. 目录 builderMethod 锚点与 prompt-builder.ts 真实方法对应（防止 T03-2 改方法名导致目录漂移）；
+ * 2. 目录 builderMethod 锚点与 prompting/prompt-builder.ts 真实方法对应（防止方法名漂移）；
  * 3. contextChunksEnabled flag 默认关闭（回滚安全：关 = 完全旧字符串路径）。
  */
 import { describe, it, expect } from 'vitest'
@@ -15,7 +15,7 @@ import { NOVEL_FEATURE_FLAGS } from '../core/domain/novel-feature-flags.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const promptBuilderSource = fs.readFileSync(
-  path.join(__dirname, '../core/prompt-builder.ts'),
+  path.join(__dirname, '../core/prompting/prompt-builder.ts'),
   'utf8',
 )
 
@@ -37,12 +37,12 @@ describe('Context Chunk 契约（T03-1）', () => {
   })
 
   it('目录覆盖 shared 层全部真实 section（builderMethod 锚点与源码对应）', () => {
-    // 目录中所有 semi-shared chunk 的构建方法必须在 prompt-builder.ts 真实存在
+    // 目录中所有 semi-shared chunk 的构建方法必须在唯一实现中真实存在
     for (const c of CHUNK_CATALOG) {
       if (c.layer !== 'semi-shared') continue
       // 方法名可能是 private（如 formatPreviousChapterEnding）或模块级函数（formatVoiceContrastTable）
       const methodExists = promptBuilderSource.includes(c.builderMethod)
-      expect(methodExists, `builderMethod ${c.builderMethod} 在 prompt-builder.ts 中不存在`).toBe(true)
+      expect(methodExists, `builderMethod ${c.builderMethod} 在 prompting/prompt-builder.ts 中不存在`).toBe(true)
     }
   })
 

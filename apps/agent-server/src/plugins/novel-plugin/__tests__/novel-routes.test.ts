@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { NovelStore } from '../core/novel-store.js'
 import { NovelMemoryStore } from '../core/novel-memory-store.js'
 import { PromptManager } from '../core/prompting/prompt-manager.js'
-import { NovelPromptBuilder } from '../core/prompt-builder.js'
+import { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 import { ConsistencyAuditor } from '../core/analysis/consistency-auditor.js'
 import { RelationshipGraph } from '../core/analysis/novel-relationship-graph.js'
 import { createNovelRoutes } from '../novel-routes.js'
@@ -157,7 +157,7 @@ beforeAll(async () => {
   const routes = createNovelRoutes(services)
   for (const route of routes) {
     const fullPath = `${PLUGIN_PREFIX}${route.path}`
-    const opts = { handler: route.handler }
+    const opts = { handler: route.handler, ...(route.schema ? { schema: route.schema } : {}) }
     switch (route.method) {
       case 'GET':
         app.get(fullPath, opts)
@@ -856,6 +856,17 @@ describe('Novel API 路由 - 大流程统一取消', () => {
     } else if (kind === 'discussion') {
       services.discussionRunner.run = vi.fn((_projectId, _chapterNumber, options) =>
         completeWhenAborted(options.signal!, { status: 'cancelled', transcript: [], scenes: [] })) as any
+    } else if (kind === 'ai-arrange') {
+      services.entityGenerator.generateArrangeDraft = vi.fn(
+        (_projectId, _chapterNumber, _outline, _onProgress, _modelId, _feedback, signal) => {
+          started(signal)
+          return new Promise((_resolve, reject) => {
+            const rejectAbort = () => reject(signal.reason ?? new Error('已取消'))
+            if (signal.aborted) return rejectAbort()
+            signal.addEventListener('abort', rejectAbort, { once: true })
+          })
+        },
+      ) as any
     } else {
       services.entityGenerator.generateAndArrange = vi.fn(
         (_projectId, _chapterNumber, _source, _onProgress, _sourceType, signal) => {

@@ -55,7 +55,13 @@ novel-plugin/
     ├── cache-routes.ts            # 缓存诊断与分层报告
     ├── chapter-routes.ts          # 章节与内容版本
     ├── character-routes.ts        # 角色与角色弧
-    └── creation-flow-routes.ts    # SSE 创作流程、群聊和章节聊天
+    ├── creation-flow-routes.ts    # SSE 创作流程、群聊和编排
+    ├── chapter-chat-routes.ts     # 章节聊天与消息持久化
+    ├── entity-plot-routes.ts      # 伏笔、冲突、钩子、线索、关系实体
+    ├── world-setting-routes.ts    # 世界规则、风格指南、约束、信息差及关联
+    ├── writing-style-routes.ts    # 文风档案、文风专家、样本与正文质量
+    ├── world-entity-routes.ts     # 势力、地点、物品、世界观要素
+    └── route-failure-audit.ts     # 路由错误到统一 Agent 审计记录的适配
 ```
 
 ### 1.2 入口 `index.ts` 的 setup 流程（7 步）
@@ -177,7 +183,7 @@ export interface ArrangedEntity {
 
 ---
 
-## 4. 提示词构建（`core/prompt-builder.ts`）
+## 4. 提示词构建（`core/prompting/prompt-builder.ts`）
 
 核心设计：**三层缓存结构**（STATIC / SEMI / DYNAMIC），缓存命中率是关键成本指标。
 
@@ -453,15 +459,6 @@ POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/ai-arrange
 
 阶段 2：前端接收编排结果并展示矩阵；用户确认后另行调用 create-flow，注入 `arrangedEntities`
 
-#### 路径 C：`create-team`（同步）
-
-```
-POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/create-team
-body: { narrativeTask, rhythm? }
-```
-
-- 兼容同步入口，内部复用 `orchestrator.createChapterWithFlow`，自动批准检查点；不再维护独立 TeamManager 创作旁路
-
 ### 7.2 `generateAndArrange` 详细流程（`novel-entity-generator.ts`）
 
 ```
@@ -640,7 +637,7 @@ interface NovelCharacter {
 
 ---
 
-## 10. API 路由（`novel-routes.ts`）
+## 10. API 路由（`routes/*-routes.ts`，由 `novel-routes.ts` 聚合）
 
 所有路径自动加 `/api/plugins/novel` 前缀。SSE 端点使用 ag-ui 兼容事件（RUN_STARTED / CUSTOM(novel:progress|novel:checkpoint|novel:result) / RUN_FINISHED / RUN_ERROR）。
 
@@ -677,6 +674,8 @@ interface NovelCharacter {
 ### 10.5 实体 CRUD
 
 每类实体（角色/伏笔/冲突/线索/关系/世界规则/风格指南/约束/信息差/势力/地点/世界观要素）都有 `POST /projects/:projectId/xxx`、`GET /projects/:projectId/xxx`、`PATCH /xxx/:id`、`DELETE /xxx/:id`。
+
+领域归属：剧情实体在 `entity-plot-routes.ts`，世界规则与约束在 `world-setting-routes.ts`，文风档案与专家在 `writing-style-routes.ts`，势力/地点/物品/世界观要素在 `world-entity-routes.ts`。每个领域只由聚合入口注册一次。
 
 ### 10.6 AI 生成端点（SSE）
 
@@ -716,7 +715,6 @@ interface NovelCharacter {
 | POST | /projects/:projectId/chapters/:chapterNumber/create-flow | **SSE**，触发多 Agent 创作流程，body 可带 arrangedEntities（模式 1 手动编排） |
 | POST | /projects/:projectId/checkpoint/:type/decision           | 推送检查点决策（approve/reject/revise/rewrite），可带 userMessages            |
 | POST | /projects/:projectId/chapters/:chapterNumber/ai-arrange  | **SSE**，模式 2：只执行 AI 编排；用户确认后另行触发 create-flow               |
-| POST | /projects/:projectId/chapters/:chapterNumber/create-team | 同步兼容入口，复用正式 Orchestrator 并自动批准检查点                           |
 
 ### 10.11 缓存诊断
 
@@ -813,7 +811,7 @@ interface NovelCharacter {
 | P1-3 修订按严重度路由 | issues 含 S2 时向 Reviser 首轮注入结构性修订指令（整段组重写+重建因果链）；S3/S4 维持最小补丁 | `buildRevisionSeverityDirective`（novel-orchestrator.ts） |
 | P1-4 Memory 补提取回路 | 主提取解析后确定性核对（正文出场但清单未提及的实体）→ 定向补提取一次 → 轨道拼接合并 | `generation/novel-memory-generator.ts` |
 | P2-1 Reader 门联动 publish | ~~迁移 117 `novel_chapters.lengdu_quality`；lengdu 完成后持久化报告；publish 门拦截 `needs_attention`~~ **已移除（2026-09-02）**：lengdu 链路实测无效果，整链删除（工作流/存储方法/publish 门/质量门信号/前端展示），迁移 117 列保留并标注停用 | `novel-migrations.ts`（迁移 117 注释） |
-| P2-2 审稿异源入口 | GET/PUT `/agent-config` 暴露 per-Agent `model`（null=回退项目主模型），reviewer/reviser 可切异源模型档位 | `domain/novel-agents.ts`、`routes/creation-flow-routes.ts` |
+| P2-2 审稿异源入口 | GET/PUT `/agent-config` 暴露 per-Agent `model`（null=回退项目主模型），reviewer/reviser 可切异源模型档位 | `domain/novel-agents.ts`、`routes/agent-config-routes.ts`、`routes/creation-flow-routes.ts`、`routes/chapter-chat-routes.ts` |
 | P2-3 修订形态指标差异 | `buildStyleMetricsDiff` 八项 L1 对比表；修订循环起止测量并经 `style_metrics_diff` 事件输出 | `analysis/style-measurement.ts`、`runTargetedRevisionLoop` |
 | P2-4 lengdu 通电与 AG-UI 接入（2026-08-24） | ~~底座修复：plugin-session 相邻 prompt 按完整生命周期串行化（此前 Reader 分包第二轮必撞 Pi "Agent is already processing"，恒降级，见 plugin-manager.ts 栅栏说明）。lengdu 三阶段改走 `createAgUiSession`……~~ **已移除（2026-09-02）**：lengdu 整链删除后仅存两点遗产——① plugin-manager 的多轮 prompt 串行化栅栏保留（reference-analysis / beat-plan / chapter-outline 的同会话修复轮仍依赖）；② 迁移 117 列保留标注停用 | `plugin-manager.ts`（串行化栅栏）、`novel-migrations.ts` |
 

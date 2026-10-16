@@ -23,6 +23,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createCreationFlowRoutes } from '../routes/creation-flow-routes.js'
+import { createInterjectRoutes } from '../routes/interject-routes.js'
 import {
   activeNovelChapterTasks,
   finishNovelChapterTask,
@@ -43,6 +44,10 @@ const FLOW_KEY = `${PROJECT_ID}|${CHAPTER}|${RUN_ID}`
 const INTERJECT_PATH = '/projects/:projectId/flows/:flowId/messages'
 const CREATE_FLOW_PATH = '/projects/:projectId/chapters/:chapterNumber/create-flow'
 const CREATE_DISCUSSION_PATH = '/projects/:projectId/chapters/:chapterNumber/create-discussion'
+
+function createRouteModules(services: any) {
+  return [...createCreationFlowRoutes(services), ...createInterjectRoutes(services)]
+}
 
 function createReply() {
   const reply = {
@@ -187,7 +192,7 @@ describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => 
     mockOrchestrator = createMockOrchestrator()
     chapterChatAdd = vi.fn()
     const services = createServices(mockOrchestrator, chapterChatAdd)
-    route = createCreationFlowRoutes(services).find(r => r.path === INTERJECT_PATH)! as typeof route
+    route = createRouteModules(services).find(r => r.path === INTERJECT_PATH)! as typeof route
   })
 
   afterEach(() => {
@@ -271,7 +276,7 @@ describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => 
     const publisher = seedPublisher()
     const failingAdd = vi.fn(() => { throw new Error('db locked') })
     const services = createServices(mockOrchestrator, failingAdd)
-    const failingRoute = createCreationFlowRoutes(services).find(r => r.path === INTERJECT_PATH)! as typeof route
+    const failingRoute = createRouteModules(services).find(r => r.path === INTERJECT_PATH)! as typeof route
 
     const reply = createReply()
     await failingRoute.handler(createRequest(), reply)
@@ -519,7 +524,7 @@ describe('create-flow 路由级插话接线（后台 run + 事件流）', () => 
       ...createServices(mockOrchestrator),
       orchestrator: { ...mockOrchestrator, createChapterWithFlow } as any,
     }
-    const routes = createCreationFlowRoutes(services)
+    const routes = createRouteModules(services)
     const createFlowRoute = routes.find(r => r.path === CREATE_FLOW_PATH)! as { handler: (request: any, reply: any) => Promise<any> }
     const interjectRoute = routes.find(r => r.path === INTERJECT_PATH)! as { handler: (request: any, reply: any) => Promise<any> }
 
@@ -599,7 +604,7 @@ describe('群聊插话端点（kind=discussion）', () => {
       discussionEventStore: { append: vi.fn(), list: vi.fn(() => []), lastSeq: vi.fn(() => 0) },
       workflowEventStore: createWorkflowEventStore(),
     } as any
-    route = createCreationFlowRoutes(services).find(r => r.path === INTERJECT_PATH)! as typeof route
+    route = createRouteModules(services).find(r => r.path === INTERJECT_PATH)! as typeof route
   })
 
   afterEach(() => {
@@ -814,7 +819,7 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
 
   it('injected：后台 run 中插话 201，queued/injected 状态落事件流；终态后再插话 409', async () => {
     const { services, enqueuerQueue, runnerOptions, resolveFlow, eventAppends } = createDiscussionServices()
-    const routes = createCreationFlowRoutes(services)
+    const routes = createRouteModules(services)
     const discussionRoute = routes.find(r => r.path === CREATE_DISCUSSION_PATH)! as { handler: (request: any, reply: any) => Promise<any> }
     const interjectRoute = routes.find(r => r.path === INTERJECT_PATH)! as { handler: (request: any, reply: any) => Promise<any> }
 
@@ -868,7 +873,7 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
 
   it('dropped：engine 收尾 flush 的未消费插话，dropped 状态落事件流', async () => {
     const { services, runnerOptions, resolveFlow, eventAppends } = createDiscussionServices()
-    const routes = createCreationFlowRoutes(services)
+    const routes = createRouteModules(services)
     const discussionRoute = routes.find(r => r.path === CREATE_DISCUSSION_PATH)!
     const interjectRoute = routes.find(r => r.path === INTERJECT_PATH)!
     void discussionRoute

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NovelPromptBuilder } from '../core/prompt-builder.js'
+import { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 
 function entity(id: string, projectId: string, name: string) {
   return {

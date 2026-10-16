@@ -27,7 +27,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi, type MockInstance } from 'vitest'
 import { NovelOrchestrator } from '../core/novel-orchestrator.js'
-import { NovelPromptBuilder } from '../core/prompt-builder.js'
+import { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 import { PromptManager } from '../core/prompting/prompt-manager.js'
 import { getNovelAskStoryPolicy } from '../core/domain/novel-ask-story-policy.js'
 import { createChapterBudgetUsage } from '../core/chapters/chapter-budget.js'

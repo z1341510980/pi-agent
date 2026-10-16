@@ -16,7 +16,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
 import { NovelMemoryGenerator } from '../core/generation/novel-memory-generator.js'
-import { NovelPromptBuilder } from '../core/prompt-builder.js'
+import { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 import { PromptManager } from '../core/prompting/prompt-manager.js'
 import type { NovelEngine } from '../core/novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'

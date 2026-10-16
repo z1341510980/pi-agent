@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfirmationManager } from '../../../core/tool/confirmation-manager.js'
 import { createCreationFlowRoutes } from '../routes/creation-flow-routes.js'
+import { createAgentConfigRoutes } from '../routes/agent-config-routes.js'
 import { NOVEL_AGENT_CONFIGS } from '../core/domain/novel-agents.js'
 import { finishNovelChapterTask, registerNovelChapterTask, activeNovelChapterTasks } from '../utils/chapter-task-registry.js'
 
@@ -1115,43 +1116,27 @@ describe('workflow resume contract', () => {
   })
 })
 
-describe('create-team compatibility route', () => {
-  it('uses the canonical orchestrator flow instead of the legacy TeamManager pipeline', async () => {
-    const createChapterWithFlow = vi.fn(async () => ({ status: 'completed', content: '正文' }))
-    const execute = vi.fn()
-    const services = {
-      store: {
-        getProject: vi.fn(() => ({ id: 'project-1', title: '测试项目' })),
-        getChapter: vi.fn(() => ({ id: 'chapter-1', chapterNumber: 1 })),
-        updateChapter: vi.fn(),
-      },
-      orchestrator: { createChapterWithFlow, setUserMessages: vi.fn() },
-      teamManager: { execute, getTeam: vi.fn(() => ({ id: 'novel-team' })) },
-    } as any
-    const route = createCreationFlowRoutes(services).find(item => (
-      item.path === '/projects/:projectId/chapters/:chapterNumber/create-team'
-    ))!
-    const reply = createReply()
+describe('creation flow route surface', () => {
+  it('does not expose the synchronous create-team compatibility endpoint', () => {
+    const routes = createCreationFlowRoutes({} as any)
+    expect(routes.some(route => route.path.endsWith('/create-team'))).toBe(false)
+  })
 
-    const result = await route.handler({
-      params: { projectId: 'project-1', chapterNumber: '1' },
-      body: { narrativeTask: '推进主线', rhythm: '紧凑' },
-      traceId: 'trace-1',
-    } as any, reply as any)
+  it('keeps interject endpoints out of the create-flow module', () => {
+    const routes = createCreationFlowRoutes({} as any)
+    expect(routes.some(route => route.path === '/projects/:projectId/flows/:flowId/messages')).toBe(false)
+  })
 
-    expect(createChapterWithFlow).toHaveBeenCalledWith(
-      'project-1',
-      1,
-      expect.objectContaining({ onCheckpoint: expect.any(Function), onProgress: expect.any(Function) }),
-    )
-    expect(services.orchestrator.setUserMessages).toHaveBeenCalledWith(
-      'project-1', 1, ['推进主线', '节奏建议：紧凑'],
-    )
-    expect(services.store.updateChapter).toHaveBeenCalledWith(
-      'chapter-1', { narrativeTask: '推进主线' },
-    )
-    expect(execute).not.toHaveBeenCalled()
-    expect(result).toMatchObject({ ok: true, data: { status: 'completed', content: '正文' } })
+  it('exposes one canonical checkpoint decision endpoint', () => {
+    const routes = createCreationFlowRoutes({} as any)
+    expect(routes.some(route => route.path === '/projects/:projectId/checkpoint/:checkpointId/decision')).toBe(true)
+    expect(routes.some(route => route.path === '/projects/:projectId/discussion-checkpoint/:checkpointId/decision')).toBe(false)
+  })
+
+  it('keeps operational logs and timeline markers out of the creation-flow module', () => {
+    const routes = createCreationFlowRoutes({} as any)
+    expect(routes.some(route => route.path.includes('/agent-logs'))).toBe(false)
+    expect(routes.some(route => route.path.includes('/markers'))).toBe(false)
   })
 })
 
@@ -1427,7 +1412,7 @@ describe('novel agent model config', () => {
 
   it('按 Agent 配置 API 保存并返回思考强度', async () => {
     const services = createAgentConfigServices()
-    const route = createCreationFlowRoutes(services as any).find(item => item.path === '/agent-config' && item.method === 'PUT')!
+    const route = createAgentConfigRoutes(services as any).find(item => item.path === '/agent-config' && item.method === 'PUT')!
 
     const result = await route.handler({
       body: {
@@ -1450,7 +1435,7 @@ describe('novel agent model config', () => {
 
   it('拒绝 Agent 模型不支持的思考强度值', async () => {
     const services = createAgentConfigServices()
-    const route = createCreationFlowRoutes(services as any).find(item => item.path === '/agent-config' && item.method === 'PUT')!
+    const route = createAgentConfigRoutes(services as any).find(item => item.path === '/agent-config' && item.method === 'PUT')!
     const reply = {
       status: vi.fn().mockReturnThis(),
       send: vi.fn(),

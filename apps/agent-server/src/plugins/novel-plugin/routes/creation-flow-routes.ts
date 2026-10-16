@@ -4,17 +4,11 @@
  * 拆分自原 novel-routes.ts（PR-6），包含所有 SSE 流式创作流程：
  * - cancel-active-flow（统一取消：工作流/群聊/编排/反推共用同一任务控制器）
  * - create-flow（多 Agent 创作流程 SSE + 检查点）
- * - flows/:flowId/messages（create-flow 运行中插话：REST 受理 + SSE 状态回显 + 落库）
  * - 检查点决策（workflow / discussion 共用）
  * - create-discussion（群聊共创 SSE）+ 断点续跑 + 群聊检查点
  * - discussion-settings（群聊模式设置 GET/PUT）
  * - ai-arrange（按章纲生成实体并编排到矩阵 SSE）
  * - reverse-arrange（从已写正文反推实体到矩阵 SSE）
- * - create-team（TeamManager 统一触发 pipeline）
- * - agent-logs（Agent 调用日志 GET/DELETE）
- * - markers（时间轴标记 CRUD）
- * - agent-config（Agent 角色温度配置 GET/PUT）
- * - chat（章节聊天 GET/POST/DELETE + persist）
  *
  * 共享状态：通过 utils/chapter-task-registry.ts 模块级单例 Map/Set 跨子路由共享锁与 abort 控制器。
  */
@@ -23,12 +17,10 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import type { NovelServices } from '../novel-services.js'
-import type { NovelMarker } from '../core/types.js'
 import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { CheckpointDecision, CheckpointType } from '@repo/shared/novel'
-import { getAllNovelAgentTemperatures, updateNovelAgentTemperatures, getAllNovelAgentModels, updateNovelAgentModel, type NovelAgentType } from '../core/domain/novel-agents.js'
 import { persistDiscussionHistory } from '../core/discussion/discussion-history.js'
 import { deriveResumeInfo } from '../core/discussion/discussion-event-store.js'
 import type { DiscussionResult } from '../core/discussion/engine/discussion-types.js'
@@ -40,8 +32,6 @@ import {
   finishNovelChapterTask,
   registerInterjectFlow,
   unregisterInterjectFlow,
-  announceInterjectQueued,
-  getInterjectEnqueuer,
   dispatchInterjectStatus,
 } from '../utils/chapter-task-registry.js'
 import { createNovelAgUiEmitter, createSseEmitterSink } from '../utils/sse-emitter.js'
@@ -56,10 +46,11 @@ import { buildArrangeReviewDetails } from './arrange-review-contract.js'
 import { parseNovelModelRef } from '../core/domain/novel-model-ref.js'
 import type { ArrangeDraftHandle } from '../core/generation/novel-entity-generator.js'
 import { modelSelectionSchema } from './model-selection-contract.js'
-import { persistNovelFailureAudit } from '../core/observability/novel-error-audit.js'
+import { persistRouteFailureAudit as persistRouteFailureAuditRecord } from './route-failure-audit.js'
 import { appendCheckpointFeedback, clearCheckpointFeedbackForRun } from '../utils/checkpoint-feedback-registry.js'
 import { waitForCheckpointDecision, withDiscussionCheckpointOptions } from '../utils/checkpoint-controller.js'
 import type { CreationRunStage } from '../core/runtime/creation-run-state.js'
+import { requireNovelChapter, requireWritableNovelChapter, requireDerivedStateWritableNovelChapter } from './chapter-route-helpers.js'
 
 /**
  * 群聊可续跑阶段：这些阶段失败时快照携带足够状态（transcript/scenes/content/
@@ -108,27 +99,25 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     displayAgentName?: string
     phase?: string
   }): void => {
-    persistNovelFailureAudit({
+    persistRouteFailureAuditRecord({
+      request: params.request,
       store,
+      sourceFile: CREATION_FLOW_ROUTES_FILE,
+      sourceSymbol: params.sourceSymbol,
       projectId: params.projectId,
       chapterNumber: params.chapterNumber,
       operation: params.operation,
-      source: { file: CREATION_FLOW_ROUTES_FILE, symbol: params.sourceSymbol },
       input: params.input,
       errorCode: params.errorCode,
       error: params.error,
       durationMs: params.durationMs,
       result: params.result,
-      requestTraceId: params.request.traceId,
       agentType: params.agentType,
       agentName: params.agentName,
       displayAgentType: params.displayAgentType,
       displayAgentName: params.displayAgentName,
       phase: params.phase,
-      onAuditFailure: (auditError) => params.request.log?.error?.(
-        { err: auditError, projectId: params.projectId, chapterNumber: params.chapterNumber, operation: params.operation },
-        '创作流程错误审计写入失败',
-      ),
+      auditFailureMessage: '创作流程错误审计写入失败',
     })
   }
 
@@ -140,51 +129,12 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     modelId: modelSelectionSchema.optional(),
   }).optional().default({})
 
-  const requireChapter = (projectId: string, chapterNumber: string): number => {
-    const parsed = Number(chapterNumber)
-    if (!Number.isInteger(parsed) || parsed < 1) {
-      throw new AppError(ErrorCode.BAD_REQUEST, `无效的 chapterNumber: ${chapterNumber}`, 400)
-    }
-    if (!store.getProject(projectId)) {
-      throw new AppError(ErrorCode.NOT_FOUND, `项目不存在: ${projectId}`, 404)
-    }
-    if (!store.getChapter(projectId, parsed)) {
-      throw new AppError(ErrorCode.NOT_FOUND, `章节不存在或不属于该项目: ${chapterNumber}`, 404)
-    }
-    return parsed
-  }
-
-  const requireWritableChapter = (projectId: string, chapterNumber: string): number => {
-    const parsed = requireChapter(projectId, chapterNumber)
-    if (store.getChapter(projectId, parsed)?.status === 'published') {
-      throw new AppError(ErrorCode.CONFLICT, '已发布章节不能重新创作，请先进入修订流程', 409)
-    }
-    try {
-      store.assertTimelineAllowsGeneration?.(projectId, parsed)
-    } catch (error) {
-      throw new AppError(
-        ErrorCode.CONFLICT,
-        error instanceof Error ? error.message : String(error),
-        409,
-      )
-    }
-    return parsed
-  }
-
-  /** 会写实体/矩阵当前态的入口从失效起始章起即禁止，避免叠加到未来活库。 */
-  const requireDerivedStateWritableChapter = (projectId: string, chapterNumber: string): number => {
-    const parsed = requireWritableChapter(projectId, chapterNumber)
-    try {
-      store.assertTimelineAllowsPublish?.(projectId, parsed)
-    } catch (error) {
-      throw new AppError(
-        ErrorCode.CONFLICT,
-        error instanceof Error ? error.message : String(error),
-        409,
-      )
-    }
-    return parsed
-  }
+  const requireChapter = (projectId: string, chapterNumber: string): number =>
+    requireNovelChapter(services, projectId, chapterNumber)
+  const requireWritableChapter = (projectId: string, chapterNumber: string): number =>
+    requireWritableNovelChapter(services, projectId, chapterNumber)
+  const requireDerivedStateWritableChapter = (projectId: string, chapterNumber: string): number =>
+    requireDerivedStateWritableNovelChapter(services, projectId, chapterNumber)
 
   /** 一个章节同一时间只允许存在一份待确认编排草稿。 */
   const pendingArrangeDrafts = new Map<string, {
@@ -1210,9 +1160,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     // （由 onCheckpoint 在创建决策请求后通过 SSE 推送给前端，前端在用户点决策时回传）
     // type 仍在 body 中传递，便于日志/校验（不再作为路由参数）
     //
-    // 同时接受 workflow（novel-checkpoint-）与群聊（novel-discussion-）两种 threadId 前缀：
-    // 前端 use-novel-creation-flow.ts 的 submitCheckpoint 统一调用本端点，
-    // 群聊模式的 /discussion-checkpoint/.../decision 端点作为别名保留。
+    // workflow、discussion 和 arrange 都通过同一个检查点决策端点完成确认。
     routes.push({
       method: 'POST',
       path: '/projects/:projectId/checkpoint/:checkpointId/decision',
@@ -1372,173 +1320,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     })
 
     // ═══════════════════════════════════════════════════════════════
-    // 插话（对话化交互形态 §3.1）：向运行中的 create-flow 注入用户中途反馈
-    // ═══════════════════════════════════════════════════════════════
-
-    // flowId 是 RUN_STARTED 发出的本次运行 ID；chapterNumber 仅用于定位章节任务。
-    // 兼容旧客户端：数字 flowId 仍可作为 chapterNumber 解析，但只会命中同样以数字
-    // 注册的测试/旧任务，不会被新 UUID 运行接受。
-    const interjectMessageSchema = z.object({
-      content: z.string().min(1).max(4000),
-      targetAgent: z.enum(['director', 'writer', 'reviewer', 'reviser', 'memory']).optional(),
-      chapterNumber: z.number().int().min(1).optional(),
-    })
-
-    routes.push({
-      method: 'POST',
-      path: '/projects/:projectId/flows/:flowId/messages',
-      handler: async (request: any, reply: any) => {
-        const { projectId, flowId } = request.params as { projectId: string; flowId: string }
-        const input = validateBody(interjectMessageSchema, request, reply)
-        if (!input) return reply
-
-        const queryChapter = Number((request.query as Record<string, string | undefined>)?.chapterNumber)
-        let chapterNumber = input.chapterNumber
-          ?? (/^\d+$/.test(flowId) ? Number(flowId) : undefined)
-          ?? (Number.isInteger(queryChapter) && queryChapter > 0 ? queryChapter : undefined)
-
-        // create-flow（kind='workflow'）经 orchestrator 消费（drain）并终态收尾（dropped）插话；
-        // create-discussion（kind='discussion'，批次 1 任务 3）经 runner 登记的 engine
-        // enqueue 闭包入队，Moderator 每轮 decide 前 drain、engine 收尾 dropped。
-        // 其余流程（编排/反推等）无此通道，入队只会石沉大海。
-        const locateByFlowId = chapterNumber == null
-        let task = chapterNumber
-          ? activeNovelChapterTasks.get(`${projectId}:${chapterNumber}`)
-          : undefined
-        if (locateByFlowId) {
-          for (const [candidateLockKey, candidateTask] of activeNovelChapterTasks) {
-            if (!candidateLockKey.startsWith(`${projectId}:`) || candidateTask.flowId !== flowId) continue
-            const candidateChapter = Number(candidateLockKey.slice(projectId.length + 1))
-            if (!Number.isInteger(candidateChapter) || candidateChapter < 1) continue
-            chapterNumber = candidateChapter
-            task = candidateTask
-            break
-          }
-        }
-        if (!task || (task.kind !== 'workflow' && task.kind !== 'discussion' && task.kind !== 'discussion-resume')) {
-          reply.code(409).send({ ok: false, error: '该章节当前没有运行中的可插话创作流程（工作流/群聊），无法接收插话' })
-          return
-        }
-        if (task.flowId !== flowId) {
-          reply.code(409).send({ ok: false, error: 'flowId 已过期或不属于当前运行中的创作流程' })
-          return
-        }
-
-        // 命中任务后 chapterNumber 必然来自显式参数或活动任务 key。
-        const resolvedChapterNumber = chapterNumber as number
-        const flowKey = `${projectId}|${resolvedChapterNumber}|${task.flowId}`
-
-        // 群聊分支：无 targetAgent 语义（Moderator 自主决定响应方式），定向字段直接拒绝
-        if (task.kind === 'discussion' || task.kind === 'discussion-resume') {
-          if (input.targetAgent) {
-            reply.code(400).send({
-              ok: false,
-              error: '群聊插话不支持 targetAgent：由主持人自主决定如何响应，请省略 targetAgent 后重试',
-            })
-            return
-          }
-          const enqueue = getInterjectEnqueuer(flowKey)
-          if (!enqueue) {
-            // 极小竞态窗口：任务已注册但 runner 尚未创建 engine（或刚好已收尾）
-            reply.code(409).send({ ok: false, error: '群聊引擎尚未就绪或已结束，请稍后重试' })
-            return
-          }
-          const discussionMessageId = randomUUID()
-          // 闭包存活标记（TOCTOU 防护）：取到闭包与实际投递之间引擎可能刚好收尾
-          // （engine finally 已 flush dropped），enqueue 返回 false 时按已收尾拒绝，
-          // 不推 queued 事件、不落库，让前端立即感知流程已结束。
-          if (!enqueue({
-            id: discussionMessageId,
-            content: input.content,
-            createdAt: Date.now(),
-          })) {
-            reply.code(409).send({ ok: false, error: '群聊引擎已收尾，不再接收插话' })
-            return
-          }
-          announceInterjectQueued({
-            flowKey,
-            flowId,
-            messageId: discussionMessageId,
-            content: input.content,
-          })
-          // queued 状态经 flow 注册的 publisher → emitter → mirror sink 落事件流，
-          // 与旧 SSE 同一条 novel:user-message 事件契约。
-          try {
-            services.chapterChatStore.add({
-              projectId,
-              chapterNumber: resolvedChapterNumber,
-              role: 'user',
-              fromId: 'user',
-              fromName: '用户',
-              content: input.content,
-              phase: 'discussion',
-              metadata: {
-                interject: true,
-                messageId: discussionMessageId,
-                flowMode: 'discussion',
-                flowId,
-                interjectStatus: 'queued',
-              },
-            })
-          } catch (err) {
-            request.log.error({ err, projectId, chapterNumber: resolvedChapterNumber, messageId: discussionMessageId }, '群聊插话消息落库失败')
-          }
-          reply.code(201).send(success({ flowId, messageId: discussionMessageId, status: 'queued' }, request.traceId))
-          return
-        }
-        const messageId = randomUUID()
-        const accepted = services.orchestrator.enqueueUserMessage({
-          id: messageId,
-          content: input.content,
-          targetAgent: input.targetAgent,
-          flowKey,
-        })
-        if (!accepted) {
-          reply.code(409).send({
-            ok: false,
-            error: '创作流程已收尾，不再接收插话',
-          })
-          return
-        }
-
-        // 立即向该 flow 的 SSE 通道推 queued 事件（登记详情供 hooks 回查 injected/dropped）
-        announceInterjectQueued({
-          flowKey,
-          flowId,
-          messageId,
-          content: input.content,
-          targetAgent: input.targetAgent,
-        })
-
-        // 插话成功即写 chapterChatStore（前端按 metadata.interject 渲染状态徽标）；
-        // 写入失败只记日志，不影响 201 响应、flow 运行（端点本就在 flow 之外，无共享可变状态）。
-        try {
-          services.chapterChatStore.add({
-            projectId,
-            chapterNumber: resolvedChapterNumber,
-            role: 'user',
-            fromId: 'user',
-            fromName: '用户',
-            content: input.content,
-            phase: 'checkpoint',
-            metadata: {
-              interject: true,
-              messageId,
-              targetAgent: input.targetAgent,
-              flowMode: 'workflow',
-              flowId,
-              interjectStatus: 'queued',
-            },
-          })
-        } catch (err) {
-          request.log.error({ err, projectId, chapterNumber: resolvedChapterNumber, messageId }, '插话消息落库失败')
-        }
-
-        reply.code(201).send(success({ flowId, messageId, status: 'queued' }, request.traceId))
-      },
-    })
-
-    // ═══════════════════════════════════════════════════════════════
     // 群聊共创模式（SSE + 检查点）
     // ═══════════════════════════════════════════════════════════════
 
@@ -1636,8 +1417,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
                 onEvent: event => services.discussionEventStore.append(discussionRunId, event.type, event.payload),
                 onCheckpoint: async (checkpoint) => {
                   // 后台 run 的检查点经 ConfirmationManager 挂起；用户重连后用
-                  // discussion-checkpoint/:checkpointId/decision 端点决策。
-                  // checkpoint_pending 事件携带 checkpointId，事件 tail 是决策入口的路由依据。
+                                    // checkpoint_pending 事件携带 checkpointId，事件 tail 是决策入口的路由依据。
                   return waitForCheckpointDecision({
                     manager: services.confirmationManager,
                     threadId: `novel-discussion-${projectId}-${chapterNumber}`,
@@ -2168,51 +1948,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     },
   })
 
-  // 群聊检查点决策端点
-  // 与 create-flow 的 checkpoint decision 端点对应，threadId 前缀为 novel-discussion-。
-  // 不调用 orchestrator.setUserMessages（群聊流程的用户消息机制独立于 orchestrator）。
-  routes.push({
-    method: 'POST',
-    path: '/projects/:projectId/discussion-checkpoint/:checkpointId/decision',
-    handler: async (request: any, reply: any) => {
-      const { projectId, checkpointId } = request.params as { projectId: string; checkpointId: string }
-      const { decision, userMessages } = request.body as { decision: string; userMessages?: string[] }
-      const pending = services.confirmationManager.listPending().find((r) => r.id === checkpointId)
-      if (!pending || !pending.threadId.startsWith(`novel-discussion-${projectId}-`)) {
-        reply.code(404).send({ ok: false, error: '群聊检查点不存在或已处理' })
-        return
-      }
-      const allowedDecisions = (pending.args as { checkpoint?: { options?: string[] } }).checkpoint?.options
-      if (!allowedDecisions?.includes(decision)) {
-        reply.code(400).send({ ok: false, error: '该群聊检查点不支持此决策，可能已过期' })
-        return
-      }
-      if (userMessages && userMessages.length > 0) {
-        appendCheckpointFeedback(checkpointId, userMessages)
-      }
-      // 委托 ConfirmationManager 响应决策（resolve 对应 pending Promise）
-      const accepted = services.confirmationManager.respondDecision(checkpointId, decision)
-      if (!accepted) {
-        reply.code(404).send({ ok: false, error: '群聊检查点不存在或已处理' })
-        return
-      }
-      const checkpointArgs = pending.args as { workflowRunId?: string }
-      if (services.creationRunLifecycle && checkpointArgs.workflowRunId) {
-        try {
-          services.creationRunLifecycle.resolveCheckpoint(
-            checkpointArgs.workflowRunId,
-            checkpointId,
-            decision as 'approve' | 'revise' | 'rewrite' | 'reject',
-            { reason: `用户选择：${describeDecision(undefined, decision)}` },
-          )
-        } catch (error) {
-          request.log.warn({ error, workflowRunId: checkpointArgs.workflowRunId, checkpointId, decision }, '群聊运行内核决策投影失败')
-        }
-      }
-      return { ok: true, data: { accepted: true } }
-    },
-  })
-
   // ═══════════════════════════════════════════════════════════════
   // 群聊模式设置
   // ═══════════════════════════════════════════════════════════════
@@ -2351,48 +2086,25 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         let feedback: string | undefined
         while (true) {
           const draftId = randomUUID()
-          if (typeof (entityGenerator as any).generateArrangeDraft === 'function') {
-            draft = await (entityGenerator as any).generateArrangeDraft(
-              projectId,
-              chNum,
-              chapter.outline,
-              // 注意：...evt 必须放在 phase 之前，否则 evt.phase 会覆盖 'arranging'。
-              (evt: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => {
-                emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' })
-                if (creationRunLifecycle) {
-                  try {
-                    creationRunLifecycle.observePhase(arrangeRunId, 'arranging')
-                  } catch (error) {
-                    request.log.warn({ error, arrangeRunId }, 'AI 编排运行内核阶段投影失败')
-                  }
+          draft = await entityGenerator.generateArrangeDraft(
+            projectId,
+            chNum,
+            chapter.outline,
+            // 注意：...evt 必须放在 phase 之前，否则 evt.phase 会覆盖 'arranging'。
+            (evt: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => {
+              emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' })
+              if (creationRunLifecycle) {
+                try {
+                  creationRunLifecycle.observePhase(arrangeRunId, 'arranging')
+                } catch (error) {
+                  request.log.warn({ error, arrangeRunId }, 'AI 编排运行内核阶段投影失败')
                 }
-              },
-               arrangeInput.modelId,
-              feedback,
-              task.controller.signal,
-            )
-          } else {
-            // 仅兼容旧测试替身/第三方注入服务；正式 NovelEntityGenerator 始终走事务草稿。
-            const arrangedEntities = await entityGenerator.generateAndArrange(
-              projectId,
-              chNum,
-              chapter.outline,
-              (evt: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => {
-                emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' })
-                if (creationRunLifecycle) {
-                  try {
-                    creationRunLifecycle.observePhase(arrangeRunId, 'arranging')
-                  } catch (error) {
-                    request.log.warn({ error, arrangeRunId }, 'AI 编排运行内核阶段投影失败')
-                  }
-                }
-              },
-              'outline',
-              task.controller.signal,
-               arrangeInput.modelId,
-            )
-            draft = { result: arrangedEntities, commit: () => undefined, rollback: () => undefined }
-          }
+              }
+            },
+            arrangeInput.modelId,
+            feedback,
+            task.controller.signal,
+          )
           pendingArrangeDrafts.set(lockKey, { draftId, handle: draft, modelId: arrangeInput.modelId, feedback })
           const arrangedEntities = draft.result
           const entityDetails = buildArrangeReviewDetails(store, arrangedEntities, chNum)
@@ -2800,387 +2512,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
   })
 
   // ═══════════════════════════════════════════════════════════════
-  // TeamManager 统一触发（pipeline 策略：Director → Writer → Reviewer → Reviser → Memory）
-  // ═══════════════════════════════════════════════════════════════
-
-  const createTeamSchema = z.object({
-    narrativeTask: z.string().min(1).describe('本章叙事任务描述'),
-    rhythm: z.string().optional().describe('节奏建议（可选）'),
-    modelId: modelSelectionSchema.optional(),
-  })
-
-  routes.push({
-    method: 'POST',
-    path: '/projects/:projectId/chapters/:chapterNumber/create-team',
-    handler: async (request: any, reply: any) => {
-      const { projectId, chapterNumber } = request.params as { projectId: string; chapterNumber: string }
-      const input = validateBody(createTeamSchema, request, reply)
-      if (!input) return reply
-
-      const chapterNum = requireWritableChapter(projectId, chapterNumber)
-      const chapter = store.getChapter(projectId, chapterNum)!
-      const creationLockKey = `${projectId}:${chapterNumber}`
-      if (chapterCreationLocks.has(creationLockKey) || aiArrangeLocks.has(creationLockKey) || activeNovelChapterTasks.has(creationLockKey)) {
-        throw new AppError(ErrorCode.CONFLICT, '该章节正在创作中，请勿重复启动团队创作', 409)
-      }
-
-      services.orchestrator.setUserMessages(projectId, chapterNum, [
-        input.narrativeTask,
-        ...(input.rhythm ? [`节奏建议：${input.rhythm}`] : []),
-      ])
-      store.updateChapter(chapter.id, { narrativeTask: input.narrativeTask })
-      const teamRunId = randomUUID()
-      const task = registerNovelChapterTask(creationLockKey, 'workflow', teamRunId)
-      chapterCreationLocks.add(creationLockKey)
-      try {
-        const result = await services.orchestrator.createChapterWithFlow(projectId, chapterNum, {
-          emit: (() => {}) as any,
-          onCheckpoint: async () => 'approve',
-          onProgress: () => {},
-          modelId: input.modelId,
-          flowKey: `${projectId}|${chapterNum}|${teamRunId}`,
-          signal: task.controller.signal,
-        })
-        return success(result, request.traceId)
-      } finally {
-        finishNovelChapterTask(creationLockKey, task)
-        chapterCreationLocks.delete(creationLockKey)
-      }
-    },
-  })
-
-  // ═══════════════════════════════════════════════════════════════
-  // Agent 调用日志（记录每次 Agent 调用的完整上下文：系统提示词/章节上下文/任务指令/工具/结果）
-  // ═══════════════════════════════════════════════════════════════
-
-  // 列出日志（精简字段，支持按章节/Agent 类型过滤）
-  routes.push({
-    method: 'GET',
-    path: '/projects/:projectId/agent-logs',
-    handler: async (request: any) => {
-      const { projectId } = request.params as { projectId: string }
-      const query = request.query as {
-        chapterNumber?: string
-        agentType?: string
-        limit?: string
-      }
-      const limit = query.limit ? parseInt(query.limit, 10) : 100
-      const filter: { chapterNumber?: number; agentType?: string } = {}
-      if (query.chapterNumber != null) {
-        const n = parseInt(query.chapterNumber, 10)
-        if (!Number.isNaN(n)) filter.chapterNumber = n
-      }
-      if (query.agentType) filter.agentType = query.agentType
-
-      const logs = store.listAgentLogs(projectId, Object.keys(filter).length > 0 ? filter : undefined, limit)
-      return success(logs, request.traceId)
-    },
-  })
-
-  // 获取单条日志详情（含完整 systemPrompt / userMessage / result 全文）
-  routes.push({
-    method: 'GET',
-    path: '/agent-logs/:id',
-    handler: async (request: any) => {
-      const log = store.getAgentLog(request.params.id)
-      if (!log) throw new AppError(ErrorCode.NOT_FOUND, `日志不存在: ${request.params.id}`, 404)
-      return success(log, request.traceId)
-    },
-  })
-
-  // 删除项目下所有日志
-  routes.push({
-    method: 'DELETE',
-    path: '/projects/:projectId/agent-logs',
-    handler: async (request: any) => {
-      const deleted = store.deleteAgentLogsByProject(request.params.projectId)
-      return success({ projectId: request.params.projectId, deleted }, request.traceId)
-    },
-  })
-
-  // ═══════════════════════════════════════════════════════════════
-  // 时间轴标记
-  // ═══════════════════════════════════════════════════════════════
-
-  const createMarkerSchema = z.object({
-    chapter: z.number().int().min(1),
-    title: z.string().default(''),
-    note: z.string().default(''),
-    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'clip-note', 'in', 'out']).default('bookmark'),
-    color: z.enum(['blue', 'yellow', 'green', 'red', 'purple']).default('blue'),
-    entityType: z.string().nullable().default(null),
-    entityId: z.string().nullable().default(null),
-  })
-
-  const updateMarkerSchema = z.object({
-    chapter: z.number().int().min(1).optional(),
-    title: z.string().nullable().optional(),
-    note: z.string().nullable().optional(),
-    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'clip-note', 'in', 'out']).optional(),
-    color: z.enum(['blue', 'yellow', 'green', 'red', 'purple']).optional(),
-    entityType: z.string().nullable().optional(),
-    entityId: z.string().nullable().optional(),
-  })
-
-  routes.push({
-    method: 'POST',
-    path: '/projects/:projectId/markers',
-    handler: async (request: any, reply: any) => {
-      const input = validateBody(createMarkerSchema, request, reply)
-      if (!input) return reply
-
-      const marker = store.createMarker({
-        id: randomUUID(),
-        projectId: request.params.projectId,
-        ...input,
-      })
-      return success(marker, request.traceId)
-    },
-  })
-
-  routes.push({
-    method: 'GET',
-    path: '/projects/:projectId/markers',
-    handler: async (request: any) => {
-      return success(store.listMarkers(request.params.projectId), request.traceId)
-    },
-  })
-
-  routes.push({
-    method: 'PATCH',
-    path: '/markers/:id',
-    handler: async (request: any, reply: any) => {
-      const input = validateBody(updateMarkerSchema, request, reply)
-      if (!input) return reply
-
-      const updated = store.updateMarker(request.params.id, input as Partial<NovelMarker>)
-      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `标记不存在: ${request.params.id}`, 404)
-      return success(updated, request.traceId)
-    },
-  })
-
-  routes.push({
-    method: 'DELETE',
-    path: '/markers/:id',
-    handler: async (request: any) => {
-      const deleted = store.deleteMarker(request.params.id)
-      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `标记不存在: ${request.params.id}`, 404)
-      return success({ id: request.params.id, deleted: true }, request.traceId)
-    },
-  })
-
-  // ═══════════════════════════════════════════════════════════════
-  // 小说 Agent 角色温度配置（全局，不按 project 区分）
-  // ═══════════════════════════════════════════════════════════════
-
-  routes.push({
-    method: 'GET',
-    path: '/agent-config',
-    handler: async (request: any) => {
-      const temperatures = getAllNovelAgentTemperatures(services.agentManager)
-      const models = getAllNovelAgentModels(services.agentManager)
-      const result = (Object.entries(temperatures) as Array<[NovelAgentType, number]>).map(([agentType, temperature]) => ({
-        agentType,
-        temperature,
-        // P2-2：per-Agent 模型（null = 未配置，运行时回退项目主模型）
-        model: models[agentType],
-      }))
-      return success(result, request.traceId)
-    },
-  })
-
-  const updateAgentConfigSchema = z.object({
-    items: z.array(z.object({
-      agentType: z.enum(['director', 'writer', 'reviser', 'reviewer', 'memory']),
-      temperature: z.number().min(0).max(2),
-      // P2-2：可选模型覆盖（审稿异源：把 reviewer/reviser 切到与 writer 不同的模型档位）
-      model: z.object({
-        provider: z.string().min(1),
-        modelId: z.string().min(1),
-        thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']).nullable().optional(),
-      }).nullable().optional(),
-    })),
-  })
-
-  routes.push({
-    method: 'PUT',
-    path: '/agent-config',
-    handler: async (request: any, reply: any) => {
-      const input = validateBody(updateAgentConfigSchema, request, reply)
-      if (!input) return reply
-      updateNovelAgentTemperatures(input.items, services.agentManager)
-      // updateNovelAgentTemperatures 内部已通过 agentManager.updateAgent 同步温度，
-      // subagent / team_execute 路径立即可见，无需手动同步
-      for (const item of input.items) {
-        if (item.model !== undefined) {
-          updateNovelAgentModel(item.agentType, item.model, services.agentManager)
-        }
-      }
-      const temperatures = getAllNovelAgentTemperatures(services.agentManager)
-      const models = getAllNovelAgentModels(services.agentManager)
-      const result = (Object.entries(temperatures) as Array<[NovelAgentType, number]>).map(([agentType, temperature]) => ({
-        agentType,
-        temperature,
-        model: models[agentType],
-      }))
-      return success(result, request.traceId)
-    },
-  })
-
-  // ═══════════════════════════════════════════════════════════════
-  // 章节聊天（按章节持久化用户输入 + 自由聊天）
-  // ═══════════════════════════════════════════════════════════════
-
-  // GET /projects/:projectId/chapters/:chapterNumber/chat — 获取章节聊天历史
-  routes.push({
-    method: 'GET',
-    path: '/projects/:projectId/chapters/:chapterNumber/chat',
-    handler: async (request: any) => {
-      const { projectId, chapterNumber } = request.params
-      const chapterNum = requireChapter(projectId, chapterNumber)
-      const messages = services.chapterChatStore.list(projectId, chapterNum)
-      return success(messages, request.traceId)
-    },
-  })
-
-  // DELETE /projects/:projectId/chapters/:chapterNumber/chat — 清空章节聊天历史
-  routes.push({
-    method: 'DELETE',
-    path: '/projects/:projectId/chapters/:chapterNumber/chat',
-    handler: async (request: any) => {
-      const { projectId, chapterNumber } = request.params
-      const chapterNum = requireChapter(projectId, chapterNumber)
-      services.chapterChatStore.clear(projectId, chapterNum)
-      return success({ cleared: true }, request.traceId)
-    },
-  })
-
-  // POST /projects/:projectId/chapters/:chapterNumber/chat — 自由聊天（SSE 流式）
-  //
-  // Body: { message: string, mentionedAgents?: string[] }
-  // - mentionedAgents 非空时，依次让被 @ 的 Agent 回复
-  // - 否则由 Moderator 单轮决策选一个 Agent 回复
-  const chatBodySchema = z.object({
-    message: z.string().min(1).max(8000),
-    mentionedAgents: z.array(z.string()).max(10).optional(),
-    /** per-call 模型覆盖（输入框旁选择器传入，本次回复临时切换模型） */
-    modelId: z.object({
-      provider: z.string(),
-      modelId: z.string(),
-      thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']).nullable().optional(),
-    }).optional(),
-    styleExpertIds: z.array(z.string().min(1).max(80)).max(8).optional(),
-  })
-
-  routes.push({
-    method: 'POST',
-    path: '/projects/:projectId/chapters/:chapterNumber/chat',
-    handler: async (request: any, reply: any) => {
-      const { projectId, chapterNumber } = request.params
-      const input = validateBody(chatBodySchema, request, reply)
-      if (!input) return reply
-
-      // 必须在 SSE 响应头写出前校验，否则 404/400 会被伪装成 200 事件流。
-      const chapterNum = requireChapter(projectId, chapterNumber)
-
-      // SSE 设置（与 create-flow / create-discussion 一致）
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-        'Access-Control-Allow-Origin': request.headers.origin || '*',
-        'Access-Control-Allow-Credentials': 'true',
-      })
-      request.raw.socket?.setNoDelay?.(true)
-
-      const heartbeat = setInterval(() => {
-        reply.raw.write(': keepalive\n\n')
-      }, 15000)
-
-      const threadId = `novel:chat:${projectId}:${chapterNum}`
-      const emitter = createNovelAgUiEmitter(
-        createSseEmitterSink((data) => reply.raw.write(data)),
-        threadId,
-        randomUUID(),
-      )
-      const startedAt = Date.now()
-
-      try {
-        const result = await services.chapterChatRunner.run(
-          projectId,
-          chapterNum,
-          { message: input.message, mentionedAgents: input.mentionedAgents },
-          {
-            emit: emitter.emit,
-            modelId: input.modelId,
-            styleExpertIds: input.styleExpertIds,
-          },
-        )
-        emitter.result({ status: 'completed', replies: result.replies })
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        persistRouteFailureAudit({
-          request,
-          projectId,
-          chapterNumber: chapterNum,
-          operation: 'chapter-chat',
-          sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/chat',
-          input,
-          errorCode: 'chapter_chat_request_failed',
-          error: err,
-          durationMs: Date.now() - startedAt,
-          phase: 'chat',
-        })
-        emitter.error(message)
-      } finally {
-        clearInterval(heartbeat)
-        reply.raw.end()
-      }
-    },
-  })
-
-  // POST /projects/:projectId/chapters/:chapterNumber/chat/persist — 持久化创作流程中的用户输入
-  //
-  // 供前端在创作流程各阶段（启动前/检查点/群聊）调用，把用户输入落库。
-  // Body: {
-  //   phase: 'pre_creation' | 'checkpoint' | 'discussion' | 'review',
-  //   role: 'user' | 'system',
-  //   content: string,
-  //   fromId?: string, fromName?: string,
-  //   metadata?: object
-  // }
-  const persistChatSchema = z.object({
-    phase: z.enum(['pre_creation', 'checkpoint', 'discussion', 'review']),
-    role: z.enum(['user', 'system']).default('user'),
-    content: z.string().min(1).max(20000),
-    fromId: z.string().optional().default('user'),
-    fromName: z.string().optional().default('用户'),
-    metadata: z.record(z.string(), z.unknown()).optional(),
-  })
-
-  routes.push({
-    method: 'POST',
-    path: '/projects/:projectId/chapters/:chapterNumber/chat/persist',
-    handler: async (request: any, reply: any) => {
-      const { projectId, chapterNumber } = request.params
-      const input = validateBody(persistChatSchema, request, reply)
-      if (!input) return reply
-      const chapterNum = requireChapter(projectId, chapterNumber)
-      const message = services.chapterChatStore.add({
-        projectId,
-        chapterNumber: chapterNum,
-        role: input.role,
-        fromId: input.fromId,
-        fromName: input.fromName,
-        content: input.content,
-        phase: input.phase,
-        metadata: input.metadata as Record<string, unknown> | undefined,
-      })
-      return success(message, request.traceId)
-    },
-  })
-
   return routes
 }
 

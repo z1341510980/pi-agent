@@ -8,7 +8,7 @@ import {
   type NovelAskStoryPolicy,
 } from '../core/domain/novel-ask-story-policy.js'
 import { NovelOrchestrator } from '../core/novel-orchestrator.js'
-import { NovelPromptBuilder } from '../core/prompt-builder.js'
+import { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 
 const AGENT_TYPES: NovelAgentType[] = ['director', 'writer', 'reviser', 'reviewer']
 const POLICY_ENV = 'PI_NOVEL_ASK_STORY_POLICY'

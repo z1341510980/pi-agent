@@ -20,12 +20,25 @@ describe('volume route contracts', () => {
     }
   })
 
+  it('declares volume creation defaults in the Fastify request schema', () => {
+    const createRoute = createVolumeRoutes({ store: {} } as unknown as NovelServices)
+      .find(route => route.method === 'POST')!
+
+    const properties = (createRoute.schema?.body as { properties: Record<string, Record<string, unknown>> }).properties
+    expect(properties).toMatchObject({
+      title: { default: '' },
+      outline: { default: '' },
+      sortOrder: { default: 0 },
+    })
+  })
+
   it('enforces volume params and body through the plugin route registrar', async () => {
     const app = Fastify({ logger: false })
+    let createdInput: Record<string, unknown> | undefined
     const routes = createVolumeRoutes({
       store: {
         listVolumes: () => [],
-        createVolume: (input: unknown) => input,
+        createVolume: (input: Record<string, unknown>) => { createdInput = input; return input },
         updateVolume: () => null,
         deleteVolume: () => true,
       },
@@ -37,7 +50,7 @@ describe('volume route contracts', () => {
     const invalidParams = await app.inject({
       method: 'POST',
       url: '/api/plugins/novel/projects/x/volumes',
-      payload: { volumeNumber: 1 },
+      payload: { volumeNumber: 1, unknownField: 'ignored' },
     })
     expect(invalidParams.statusCode).toBe(400)
 
@@ -47,6 +60,15 @@ describe('volume route contracts', () => {
       payload: { volumeNumber: 0 },
     })
     expect(invalidBody.statusCode).toBe(400)
+
+    const validBody = await app.inject({
+      method: 'POST',
+      url: '/api/plugins/novel/projects/00000000-0000-0000-0000-000000000001/volumes',
+      payload: { volumeNumber: 1 },
+    })
+    expect(validBody.statusCode).toBe(200)
+    expect(createdInput).toMatchObject({ title: '', outline: '', sortOrder: 0 })
+    expect(createdInput).not.toHaveProperty('unknownField')
 
     await app.close()
   })

@@ -11,7 +11,7 @@
  * ⚠️ 不要往这里加断言逻辑。断言属于行为测试，这里只负责"字节级不变"。
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { NovelPromptBuilder } from '../core/prompt-builder.js'
+import { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 import { PromptManager } from '../core/prompting/prompt-manager.js'
 import {
   createNovelFixture,

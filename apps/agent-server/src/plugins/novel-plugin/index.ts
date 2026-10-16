@@ -100,7 +100,6 @@ export function createNovelPlugin(): Plugin {
       // 3. 注册 Novel Agent 到 AgentManager
       //    使小说 Agent 可通过统一的 subagent / team_execute 工具触发。
       //    字段对齐：temperature / tools / identity / personality 全部填入，
-      //    保证 create-team 路径（走 AgentManager + subagent-plugin）与 create-flow 路径
       //    （走 NovelOrchestrator + createAgUiSession）行为一致。
       //
       //    A4 扩展：注入 systemPromptBuilder 和 toolFilter 回调，

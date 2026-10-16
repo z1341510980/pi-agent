@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
 import { NovelStore } from '../core/novel-store.js'
-import { NovelPromptBuilder } from '../core/prompt-builder.js'
+import { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 import { PromptManager } from '../core/prompting/prompt-manager.js'
 import { compileWritingStylePrompt } from '../core/prompting/writing-style-prompt-factory.js'
 import { novelMigrations } from '../novel-migrations.js'

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
 import { novelMigrations } from '../novel-migrations.js'
 import { NovelMemoryStore } from '../core/novel-memory-store.js'
-import { NovelPromptBuilder } from '../core/prompt-builder.js'
+import { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 import { NovelStore } from '../core/novel-store.js'
 
 function promptStores(store: NovelStore) {

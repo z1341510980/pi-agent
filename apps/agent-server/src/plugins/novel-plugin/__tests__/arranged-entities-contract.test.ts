@@ -11,7 +11,7 @@
  * 往 ArrangedEntity 加字段时，请在 §字段全覆盖 里补一条断言。
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { NovelPromptBuilder } from '../core/prompt-builder.js'
+import { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 import { PromptManager } from '../core/prompting/prompt-manager.js'
 import {
   arrangedEntitiesSchema,

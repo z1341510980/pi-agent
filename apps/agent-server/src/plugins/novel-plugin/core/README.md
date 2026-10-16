@@ -18,4 +18,4 @@
 
 暂留顶层的 `novel-store`、`novel-engine`、`novel-orchestrator`、`novel-memory-store`、`novel-tools` 属于跨域入口或事务编排器，暂不强行拆分。已完成迁移的顶层出口已删除，仓库内调用统一指向对应分区。
 
-`prompt-builder.ts` 是一个有意保留的兼容 seam：真实实现位于 `prompting/prompt-builder.ts`，顶层文件只承担稳定入口和契约测试定位，不再承载重复实现。
+提示词构建的唯一实现和导入路径是 `prompting/prompt-builder.ts`；调用方直接依赖 prompting 分区，不保留顶层转发出口。

@@ -14,7 +14,7 @@
  */
 
 import type { NovelStore } from './novel-store.js'
-import type { NovelPromptBuilder } from './prompt-builder.js'
+import type { NovelPromptBuilder } from './prompting/prompt-builder.js'
 import type { NovelEngine } from './novel-engine.js'
 import type { PluginContext, PluginSessionOptions } from '../../../core/plugin/plugin-types.js'
 import { NovelMemoryStore, type MemoryEvent } from './novel-memory-store.js'

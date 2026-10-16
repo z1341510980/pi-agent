@@ -18,6 +18,7 @@ import type { NovelServices } from '../novel-services.js'
 import { buildApplicationPreview } from '../core/analysis/reference-application-preview.js'
 import { validateScenarioSafety } from '../core/analysis/reference-validation-run-worker.js'
 import { ReferenceTemplateBindingConflictError } from '../core/analysis/reference-template-binding-store.js'
+import { emptyQuerySchema, standardResponseSchema } from './route-contracts.js'
 
 const previewSchema = z.object({
   findingKeys: z.array(z.string().min(1)).max(200).optional(),
@@ -108,8 +109,6 @@ const bindingResolveRouteSchema = Type.Object({
   chapterClassification: Type.Optional(Type.String({ maxLength: 100 })),
   chapterNumber: Type.Optional(Type.Integer({ minimum: 1 })),
 }, { additionalProperties: true })
-const emptyQuerySchema = Type.Object({}, { additionalProperties: true })
-const anyResponseSchema = { 200: Type.Any(), 400: Type.Any(), 404: Type.Any(), 409: Type.Any() }
 
 export function createReferenceTemplateRoutes(services: NovelServices): RouteDefinition[] {
   const reference = services.referenceAnalysis
@@ -511,7 +510,7 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
       schema: {
         params: projectParamsSchema,
         querystring: emptyQuerySchema,
-        response: anyResponseSchema,
+        response: standardResponseSchema,
       },
       handler: async (request: any) => {
         return success(bindingStore.listByProject(request.params.projectId), request.traceId);
@@ -524,7 +523,7 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
         params: bindingParamsSchema,
         querystring: emptyQuerySchema,
         body: bindingUpsertRouteSchema,
-        response: anyResponseSchema,
+        response: standardResponseSchema,
       },
       handler: async (request: any, reply: any) => {
         const input = validateBody(z.object({
@@ -552,7 +551,7 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
       schema: {
         params: bindingParamsSchema,
         querystring: emptyQuerySchema,
-        response: anyResponseSchema,
+        response: standardResponseSchema,
       },
       handler: async (request: any) => {
         const { projectId, templateId } = request.params;
@@ -571,7 +570,7 @@ export function createReferenceTemplateRoutes(services: NovelServices): RouteDef
         params: projectParamsSchema,
         querystring: emptyQuerySchema,
         body: bindingResolveRouteSchema,
-        response: anyResponseSchema,
+        response: standardResponseSchema,
       },
       handler: async (request: any, reply: any) => {
         const input = validateBody(z.object({
