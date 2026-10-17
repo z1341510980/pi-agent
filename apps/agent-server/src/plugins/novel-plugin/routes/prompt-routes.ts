@@ -1,9 +1,19 @@
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import type { NovelServices } from '../novel-services.js'
 import { z } from 'zod'
+import { Type } from 'typebox'
 import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { getPromptPartMeta } from '../core/prompting/prompt-part-catalog.js'
+import { emptyQuerySchema, standardResponseSchema } from './route-contracts.js'
+
+const promptNameParamsSchema = Type.Object({ name: Type.String({ minLength: 1 }) })
+const promptQuerySchema = Type.Object({ projectId: Type.Optional(Type.String()) }, { additionalProperties: true })
+const savePromptBodySchema = Type.Object({
+  content: Type.String({ minLength: 1 }),
+  projectId: Type.Union([Type.String(), Type.Null()]),
+  description: Type.Optional(Type.String()),
+}, { additionalProperties: false })
 
 export function createPromptRoutes(services: NovelServices): RouteDefinition[] {
   const { promptManager, store } = services
@@ -28,7 +38,7 @@ export function createPromptRoutes(services: NovelServices): RouteDefinition[] {
   }
 
   return [
-    { method: 'GET', path: '/prompts', handler: async (request: any) => {
+    { method: 'GET', path: '/prompts', schema: { params: Type.Object({}, { additionalProperties: true }), querystring: promptQuerySchema, response: standardResponseSchema }, handler: async (request: any) => {
       const projectId = request.query?.projectId ? String(request.query.projectId) : undefined
       const usage = usageByAgent(projectId)
       const items = promptManager.listTemplateNames().map((name) => {
@@ -55,7 +65,7 @@ export function createPromptRoutes(services: NovelServices): RouteDefinition[] {
         || a.name.localeCompare(b.name))
       return success(items, request.traceId)
     } },
-    { method: 'GET', path: '/prompts/:name', handler: async (request: any) => {
+    { method: 'GET', path: '/prompts/:name', schema: { params: promptNameParamsSchema, querystring: promptQuerySchema, response: standardResponseSchema }, handler: async (request: any) => {
       const projectId = request.query?.projectId ? String(request.query.projectId) : undefined
       const source = promptManager.getTemplateSource(request.params.name, projectId)
       const meta = getPromptPartMeta(request.params.name)
@@ -73,13 +83,13 @@ export function createPromptRoutes(services: NovelServices): RouteDefinition[] {
         charCount: content.length,
       }, request.traceId)
     } },
-    { method: 'PUT', path: '/prompts/:name', handler: async (request: any, reply: any) => {
+    { method: 'PUT', path: '/prompts/:name', schema: { params: promptNameParamsSchema, querystring: emptyQuerySchema, body: savePromptBodySchema, response: standardResponseSchema }, handler: async (request: any, reply: any) => {
       const input = validateBody(savePromptSchema, request, reply); if (!input) return reply
       promptManager.saveTemplate(request.params.name, input.content, input.projectId, input.description)
       promptManager.clearCache()
       return success({ name: request.params.name, saved: true }, request.traceId)
     } },
-    { method: 'DELETE', path: '/prompts/:name', handler: async (request: any) => {
+    { method: 'DELETE', path: '/prompts/:name', schema: { params: promptNameParamsSchema, querystring: promptQuerySchema, response: standardResponseSchema }, handler: async (request: any) => {
       // 恢复默认：删除运行时覆盖（projectId 精确范围；不传则删全局覆盖）
       const projectId = request.query?.projectId ? String(request.query.projectId) : undefined
       const deleted = promptManager.deleteTemplateOverride(request.params.name, projectId)

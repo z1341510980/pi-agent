@@ -236,9 +236,48 @@ git diff --check
 - Malformed JSON falls back to typed empty values rather than returning a 500 from a route.
 - All novel route modules remain behind store/service boundaries, enforced by an automated architecture test.
 
-### Current task: Phase C typed route contracts
+### Phase C status: completed
 
-Extend `RouteDefinition` and the plugin loader with typed params/query/body/response schema metadata, then migrate one route family under contract tests. Keep this separate from repository extraction so route schema changes can be rolled out without mixing storage behavior changes.
+`RouteDefinition` and the plugin loader carry typed params/query/body/response schema metadata. Project, volume, reference-template binding, world-setting, world-entity, writing-style, and entity-plot route families declare field-level Fastify contracts with request-boundary tests. The plugin registration boundary guarantees metadata for all Novel routes; legacy families retain their handler-level Zod validation behind the same boundary. The bounded repository/application slices, route storage guard, page-level interface matrix, and no-measured-bottleneck pagination decision satisfy Phase C. No new pagination layer is added because current measurements show bounded list limits and no identified full-project bottleneck.
+
+## Completed slice: Phase D create-flow orchestration and revision control
+
+The bounded revision loop now uses `RevisionController` as the only automatic revision policy. It records successful/failed patches, remaining quality-gate failures, no-progress stops, round limits, and structured checkpoint reasons. Director, Writer, QualityGate, RevisionController, and MemoryFinalizer have typed role boundaries in `core/orchestration/role-boundaries.ts`; the orchestrator wires those boundaries to the existing runtime paths and keeps lightweight test doubles compatible. Durable creation-run terminal projection writes the revision outcome through the run metrics store.
+
+Acceptance evidence:
+
+- `revision-controller.test.ts`, `novel-orchestrator-revision-loop.test.ts`, and `novel-orchestrator-quality-gate-keep.test.ts`: 12 targeted tests pass.
+- Automatic revision is bounded to two rounds, stops after an ineffective patch, preserves the best content, and emits round progress.
+- Structured submit-tool paths remain the primary protocol for beat plans, outlines, narrative tasks, prose, and reviews; JSON/text parsing is explicitly fallback-only for unsupported providers.
+
+## Completed slice: Phase E frontend transport and interaction state
+
+Creation-flow state now has pure reducers for persisted lifecycle events and interject status. The lifecycle reducer folds event sequence cursors idempotently, handles reconnect replay and terminal `run_finished`, and the transport keeps exact persisted tail events from being rendered twice after reconnect. Commands for checkpoint decisions, chapter chat persistence, and interject submission are centralized while the hook API remains unchanged. Pure selectors expose checkpoint, resumability, and result-content decisions.
+
+Acceptance evidence:
+
+- `creation-flow-lifecycle-reducer.test.ts`, `creation-flow-reducer.test.ts`, `creation-flow-selectors.test.ts`, `creation-flow-commands.test.ts`, and `use-novel-creation-flow.test.ts`: 22 targeted tests pass.
+- Desktop web typecheck passes.
+
+## Completed slice: Phase F prompt and matrix hot paths
+
+Prompt section collection remains a pure measured boundary with stable hashes, token estimates, and section IDs. The acceptance threshold for the representative writer prompt is less than 30,000 measured characters and less than 50 ms collection overhead. Matrix model and viewport virtualization retain the shared row model and horizontal/vertical windows; the long-matrix threshold renders at most 40 rows for a 640 px viewport with six-row overscan.
+
+Acceptance evidence:
+
+- `prompt-hot-path-thresholds.test.ts` passes the prompt collection threshold.
+- `matrix-render-work-threshold.test.ts` and existing horizontal virtualization tests pass the render-window threshold.
+- `context-section-metrics.test.ts` and `cost-report-service.test.ts` preserve section-level cost attribution and cache/report drill-down behavior.
+
+## Completed slice: Phase G quality, observability, and architecture guardrails
+
+The durable creation lifecycle now writes `novel_creation_run_metrics` for every terminal workflow, discussion, arrange, and reverse-arrange run. Metrics include word target/actual/deviation, revision rounds and patches, quality-gate failures, recovery result, terminal latency, and token/cache totals. Finalization links emitted memory facts to the durable run, current chapter content revision, body evidence, and later confirmation/rejection status through `novel_memory_fact_links`. The observability API exposes these run dimensions at `/observability/runs`; existing cost, cache, prompt-section, memory-operation, route-contract, storage-boundary, and structured-submit guards remain active.
+
+Acceptance evidence:
+
+- `creation-run-metrics.test.ts`, `memory-fact-links.test.ts`, and `observability-run-metrics.test.ts` pass.
+- `structured-submit-architecture.test.ts` verifies the beat/outline primary session paths carry submit tools and state that text parsing is fallback-only.
+- `observability-service.test.ts` and `cost-report-service.test.ts` pass with token/cache and report drill-down coverage.
 
 ## Progress log
 
@@ -259,4 +298,11 @@ Extend `RouteDefinition` and the plugin loader with typed params/query/body/resp
 - 2026-10-16: Phase C 路由模块化继续：章节聊天（历史、SSE、持久化）迁移到 `routes/chapter-chat-routes.ts`，章节存在性/可写性守卫收敛到 `chapter-route-helpers.ts`；Agent 日志和时间轴标记保持独立路由。删除创作流程中的重复聊天实现与旧决策别名，新增聊天路由归属契约测试；受影响路由测试 89 个用例全部通过，agent-server TypeScript 检查通过。
 - 2026-10-16: Phase C 实体剧情路由继续模块化：伏笔、冲突、钩子、线索、关系及其请求校验从 `novel-routes.ts` 提取到 `routes/entity-plot-routes.ts`，聚合入口保留单一注册点，文风专家端点不混入实体模块。
 - 2026-10-16: Phase C 世界领域路由继续模块化：世界规则/风格指南/约束/信息差迁移到 `world-setting-routes.ts`，文风档案/专家/样本/正文质量迁移到 `writing-style-routes.ts`，势力/地点/物品/世界观要素迁移到 `world-entity-routes.ts`；聚合器只保留模块注册，新增领域归属契约测试。
+- 2026-10-16: Phase C 为世界设定、世界实体和文风三组模块的 36 条路由声明 Fastify params/query/body/response schema；请求在 handler 前执行结构校验，既有 Zod 领域校验与默认值归一化保留。新增 3 个路由契约测试文件，领域归属/路由/API 与文风蒸馏相关定向回归 53 项通过，agent-server TypeScript 检查通过。
+- 2026-10-16: Phase C 为 entity-plot 模块的 16 条伏笔、冲突、钩子、线索和关系路由补齐 Fastify 契约。回归测试发现并修复 faction/location/item/world-element PATCH 将创建默认值写入省略字段的问题；相关路由契约和业务回归通过，agent-server 全量 267 个测试文件/2845 个用例通过。
+- 2026-10-16: Phase C 为伏笔、冲突、钩子、线索和关系模块的 16 条 entity-plot 路由声明 Fastify params/query/body/response schema；PATCH 契约不应用创建默认值，并为线索更新补充显式无默认值解析，避免部分更新重置未提交字段。新增 entity-plot 路由契约测试，相关领域/路由回归 49 项通过，agent-server TypeScript 检查通过。
+- 2026-10-16: Phase C 注册边界补全：`completeRouteContracts` 为所有 294 条 Novel 路由保证 params/query/body/response 元数据，保留已迁移模块的字段级 TypeBox schema；新增完整性架构测试。配置、日志、缓存诊断、上下文预览、实体删除、插话、标记、Prompt、剧情等 36 个小型 endpoint 补齐字段级契约，agent-server 全量 269 个测试文件/2847 个用例通过。
+- 2026-10-16: Phase C 页面级接口矩阵补齐为 `docs/novel/refactoring-interface-matrix.md`，按页面记录用户路径、字段来源、外部系统、复用边界和模糊项，并链接 Story Matrix 与 pluginization 详细设计。
+- 2026-10-16: Phase C 验收完成：注册边界、存储边界、页面接口矩阵、字段级路由契约和分页决策均有代码/测试/文档证据；项目 watchdog 全量回归 269 个测试文件、2847 个用例通过。
 - 2026-10-16: 清理 AI 编排路由中仅服务旧测试替身/第三方注入的 `generateAndArrange` 兼容分支，统一使用正式 `generateArrangeDraft` 草稿契约；章节聊天与创作流程共用 `route-failure-audit.ts` 请求审计适配器，保留数据迁移与失败兜底路径。
+- 2026-10-16: Phase D-G 最小兼容切片完成：RevisionController 接入有界修订循环与结构化角色边界；创建流程前端补齐持久事件游标 reducer、selectors、commands 与重连去重；prompt/matrix 热路径增加字符、采集耗时和虚拟窗口阈值；创建 run 指标、记忆事实证据关联、观测 runs API 与结构化 submit 架构守卫落库并有定向验收测试。

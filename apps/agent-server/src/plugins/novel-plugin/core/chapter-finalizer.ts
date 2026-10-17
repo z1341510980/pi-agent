@@ -97,6 +97,8 @@ function appendChapterToSpans(spans: ChapterSpan[], chapter: number): ChapterSpa
 }
 
 export interface CreationOptions {
+  /** Durable creation run id used to link accepted memory facts to this revision. */
+  runId?: string
   /** AG-UI 事件发射器（与 chat 共用同一类型），供 StreamEmitter 发射标准 AG-UI 事件 */
   emit: AgUiEventSink
   onCheckpoint: (checkpoint: import('./domain/novel-agents.js').CheckpointData) => Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
@@ -261,11 +263,12 @@ export class ChapterFinalizer {
       : await this.analyzeMemoryForFinalization(projectId, chapterNumber, cleanedContent, memoryOptions)
     let memoryResult = deferredMemory.summary
     let memoryEvents: MemoryEvent[] = []
+    let committedChapterRevisionId: string | null = null
 
     // 正文、不可变 revision、Memory 实体、事件、章节维度和快照共享一个短事务。
     // LLM 分析已在事务外完成，避免网络调用长时间占用 SQLite 写锁。
     this.store.withTransaction(() => {
-      this.store.completeChapterForReview(chapterId, {
+      const committedChapter = this.store.completeChapterForReview(chapterId, {
         content: cleanedContent,
         wordCount: cleanedContent.length,
         positioning: directorTask?.positioning
@@ -274,11 +277,21 @@ export class ChapterFinalizer {
         timeOffset: directorTask?.timeOffset ?? null,
         chapterEndingHook: directorTask?.chapterEndingHook ?? null,
       }, params.versionSource)
+      committedChapterRevisionId = committedChapter
+        ? this.store.getCurrentContentRevision(committedChapter.id)?.id ?? null
+        : null
 
       if (!historicalRewrite) {
         const applied = deferredMemory.apply?.()
         if (applied) memoryResult = applied.summary
         memoryEvents = this.recordMemoryEvents(projectId, chapterNumber, chapterId, beforeState)
+        if (options.runId && memoryEvents.length > 0) {
+          this.memoryStore.linkFactsToRun(memoryEvents, {
+            runId: options.runId,
+            chapterRevisionId: committedChapterRevisionId,
+            bodyEvidence: cleanedContent.slice(0, 500),
+          })
+        }
         this.syncChapterDimensions(
           projectId,
           chapterNumber,

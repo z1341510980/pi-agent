@@ -164,7 +164,7 @@ export class ChapterOutlineGenerator {
 
     const rolePrompt = this.promptManager.getTemplate('role-outline-planner', params.projectId)
     // 方案 D：结构化提交工具为主路径（参数结构由 provider 约束 + SDK 校验），
-    // 文本 JSON 解析降级为 provider 不支持工具时的兜底。
+    // 文本解析只作兜底：仅在 provider 不支持工具时使用。
     const submitDraft: ChapterOutlineSubmitDraftHolder = {}
     const submitTool = createChapterOutlineSubmitTool(submitDraft)
     const systemPrompt = this.promptManager.render(

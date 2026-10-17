@@ -38,6 +38,10 @@ export function createObservabilityRoutes(services: NovelServices): RouteDefinit
       const { projectId } = request.params as { projectId: string }; if (!store.getProject(projectId)) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
       return success(services.observabilityService.timeline(projectId, parseObsFilter(request.query)), request.traceId)
     } },
+    { method: 'GET', path: '/projects/:projectId/observability/runs', handler: async (request: any) => {
+      const { projectId } = request.params as { projectId: string }; if (!store.getProject(projectId)) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
+      return success(services.observabilityService.runMetrics(projectId, parseObsFilter(request.query)), request.traceId)
+    } },
     { method: 'GET', path: '/projects/:projectId/cost-report', handler: async (request: any) => {
       const { projectId } = request.params as { projectId: string }; if (!store.getProject(projectId)) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
       const chapterNumber = request.query?.chapterNumber != null ? parseInt(String(request.query.chapterNumber), 10) : undefined

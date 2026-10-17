@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { Type } from 'typebox'
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import type { NovelServices } from '../novel-services.js'
 import { success } from '../../../lib/api-response.js'
@@ -10,6 +11,32 @@ import {
   updateNovelAgentModel,
   type NovelAgentType,
 } from '../core/domain/novel-agents.js'
+import { emptyParamsSchema, emptyQuerySchema, standardResponseSchema } from './route-contracts.js'
+
+const agentConfigBodySchema = Type.Object({
+  items: Type.Array(Type.Object({
+    agentType: Type.Union([
+      Type.Literal('director'), Type.Literal('writer'), Type.Literal('reviser'),
+      Type.Literal('reviewer'), Type.Literal('memory'),
+    ]),
+    temperature: Type.Number({ minimum: 0, maximum: 2 }),
+    model: Type.Optional(Type.Union([Type.Object({
+      provider: Type.String({ minLength: 1 }),
+      modelId: Type.String({ minLength: 1 }),
+      thinkingLevel: Type.Optional(Type.Union([
+        Type.Literal('off'), Type.Literal('minimal'), Type.Literal('low'), Type.Literal('medium'),
+        Type.Literal('high'), Type.Literal('xhigh'), Type.Null(),
+      ])),
+    }, { additionalProperties: false }), Type.Null()])),
+  }, { additionalProperties: false })),
+}, { additionalProperties: false })
+
+const routeSchema = (body?: object) => ({
+  params: emptyParamsSchema,
+  querystring: emptyQuerySchema,
+  ...(body ? { body } : {}),
+  response: standardResponseSchema,
+})
 
 const updateAgentConfigSchema = z.object({
   items: z.array(z.object({
@@ -38,11 +65,13 @@ export function createAgentConfigRoutes(services: NovelServices): RouteDefinitio
     {
       method: 'GET',
       path: '/agent-config',
+      schema: routeSchema(),
       handler: async (request: any) => success(formatAgentConfig(services), request.traceId),
     },
     {
       method: 'PUT',
       path: '/agent-config',
+      schema: routeSchema(agentConfigBodySchema),
       handler: async (request: any, reply: any) => {
         const input = validateBody(updateAgentConfigSchema, request, reply)
         if (!input) return reply

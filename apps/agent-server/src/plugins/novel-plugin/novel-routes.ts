@@ -38,6 +38,7 @@ import { createEntityPlotRoutes } from './routes/entity-plot-routes.js'
 import { createWorldSettingRoutes } from './routes/world-setting-routes.js'
 import { createWritingStyleRoutes } from './routes/writing-style-routes.js'
 import { createWorldEntityRoutes } from './routes/world-entity-routes.js'
+import { completeRouteContracts } from './routes/route-contracts.js'
 
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   const { store, promptBuilder } = services
@@ -75,5 +76,5 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
 
   routes.push(...createContextPreviewRoutes(promptBuilder, store, services.engine))
   routes.push(...createCreationFlowRoutes(services))
-  return routes
+  return completeRouteContracts(routes)
 }

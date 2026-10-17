@@ -2,10 +2,14 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
+    setupFiles: ['./src/test-setup.ts'],
     pool: 'forks',
     poolOptions: {
       forks: {
-        singleFork: false,
+        // Integration tests start real Fastify/SQLite/plugin hosts. Limiting
+        // worker fan-out prevents Windows file locks and hook timeouts.
+        maxForks: 4,
+        minForks: 1,
       },
     },
     // 集成测试每次 createApp 启动真实宿主（含 SQLite 迁移与插件加载），

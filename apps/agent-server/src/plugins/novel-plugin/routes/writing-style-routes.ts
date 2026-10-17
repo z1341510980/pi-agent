@@ -1,11 +1,131 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { Type } from 'typebox'
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import type { NovelServices } from '../novel-services.js'
 import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { evaluateProseQuality } from '../core/quality/prose-quality-evaluator.js'
+import { emptyQuerySchema, standardResponseSchema } from './route-contracts.js'
+
+const projectParamsSchema = Type.Object({ projectId: Type.String({ minLength: 1 }) })
+const expertParamsSchema = Type.Object({
+  projectId: Type.String({ minLength: 1 }),
+  expertId: Type.String({ minLength: 1 }),
+})
+const entityParamsSchema = Type.Object({ id: Type.String({ minLength: 1 }) })
+const proseQualityParamsSchema = Type.Object({
+  projectId: Type.String({ minLength: 1 }),
+  chapterNumber: Type.String({ minLength: 1 }),
+})
+
+const stringArray = (maxItems?: number, minLength?: number, maxLength?: number) => Type.Array(
+  Type.String({ ...(minLength !== undefined ? { minLength } : {}), ...(maxLength !== undefined ? { maxLength } : {}) }),
+  { ...(maxItems !== undefined ? { maxItems } : {}) },
+)
+const unknownArray = Type.Array(Type.Unknown())
+const unknownRecord = Type.Record(Type.String(), Type.Unknown())
+
+const styleExpertSchema = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 80 }),
+  name: Type.String({ minLength: 1, maxLength: 40 }),
+  sourceTitle: Type.String({ minLength: 1, maxLength: 160 }),
+  sourceAuthor: Type.Optional(Type.String({ maxLength: 100 })),
+  description: Type.String({ minLength: 1, maxLength: 400 }),
+  distilledPrompt: Type.Optional(Type.String({ minLength: 1, maxLength: 3000 })),
+  prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 3000 })),
+  customPrompt: Type.Optional(Type.Union([Type.String({ maxLength: 3000 }), Type.Null()])),
+  metrics: Type.Optional(unknownRecord),
+  techniques: Type.Optional(unknownArray),
+  exclusions: Type.Optional(Type.Array(Type.String())),
+  exemplarPassages: Type.Optional(unknownArray),
+  expressionDna: Type.Optional(unknownRecord),
+  tensions: Type.Optional(unknownArray),
+  antiPatterns: Type.Optional(Type.Array(Type.String())),
+  boundaries: Type.Optional(Type.Array(Type.String())),
+  distillMeta: Type.Optional(unknownRecord),
+  enabled: Type.Optional(Type.Boolean({ default: true })),
+}, {
+  additionalProperties: false,
+  anyOf: [{ required: ['distilledPrompt'] }, { required: ['prompt'] }],
+})
+
+const writingStyleProfileBodySchema = Type.Object({
+  name: Type.String({ minLength: 1, maxLength: 80 }),
+  preset: Type.Optional(Type.String({ minLength: 1, maxLength: 40, default: 'custom' })),
+  narrativePerson: Type.Optional(Type.Union([
+    Type.Literal('first'), Type.Literal('third'), Type.Literal('mixed'),
+  ], { default: 'third' })),
+  narrativeDistance: Type.Optional(Type.Union([
+    Type.Literal('intimate'), Type.Literal('limited'), Type.Literal('omniscient'),
+  ], { default: 'limited' })),
+  sentenceRhythm: Type.Optional(Type.Union([
+    Type.Literal('short'), Type.Literal('balanced'), Type.Literal('long'),
+  ], { default: 'balanced' })),
+  dialogueRatio: Type.Optional(Type.Number({ minimum: 10, maximum: 90, default: 45 })),
+  emotionalTemperature: Type.Optional(Type.Number({ minimum: 0, maximum: 10, default: 5 })),
+  imageryDensity: Type.Optional(Type.Number({ minimum: 0, maximum: 10, default: 3 })),
+  vocabularyRegister: Type.Optional(Type.Union([
+    Type.Literal('colloquial'), Type.Literal('plain'), Type.Literal('literary'), Type.Literal('classical'),
+  ], { default: 'plain' })),
+  hardRules: Type.Optional(stringArray(20, 1, 300)),
+  softRules: Type.Optional(stringArray(20, 1, 300)),
+  positiveExamples: Type.Optional(stringArray(5, 20, 3000)),
+  negativeExamples: Type.Optional(stringArray(5, 20, 3000)),
+  notes: Type.Optional(Type.String({ maxLength: 2000, default: '' })),
+  styleExperts: Type.Optional(Type.Array(styleExpertSchema, { maxItems: 8, default: [] })),
+}, { additionalProperties: false })
+
+const createStyleExpertBodySchema = Type.Object({
+  name: Type.String({ minLength: 1, maxLength: 80 }),
+  sourceTitle: Type.String({ minLength: 1, maxLength: 160 }),
+  sourceAuthor: Type.Optional(Type.String({ maxLength: 100 })),
+  description: Type.String({ minLength: 1, maxLength: 400 }),
+  distilledPrompt: Type.String({ minLength: 1, maxLength: 3000 }),
+  customPrompt: Type.Optional(Type.String({ maxLength: 3000 })),
+  enabled: Type.Optional(Type.Boolean({ default: true })),
+  sortOrder: Type.Optional(Type.Integer({ minimum: 0, maximum: 1000, default: 0 })),
+  distillMeta: Type.Optional(unknownRecord),
+  metrics: Type.Optional(unknownRecord),
+  techniques: Type.Optional(unknownArray),
+  exclusions: Type.Optional(Type.Array(Type.String())),
+  exemplarPassages: Type.Optional(unknownArray),
+  expressionDna: Type.Optional(unknownRecord),
+  tensions: Type.Optional(unknownArray),
+  antiPatterns: Type.Optional(Type.Array(Type.String())),
+  boundaries: Type.Optional(Type.Array(Type.String())),
+}, { additionalProperties: false })
+
+const updateStyleExpertBodySchema = Type.Object({
+  name: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+  sourceTitle: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
+  sourceAuthor: Type.Optional(Type.String({ maxLength: 100 })),
+  description: Type.Optional(Type.String({ minLength: 1, maxLength: 400 })),
+  customPrompt: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 3000 }), Type.Null()])),
+  enabled: Type.Optional(Type.Boolean()),
+  sortOrder: Type.Optional(Type.Integer({ minimum: 0, maximum: 1000 })),
+  reviewStatus: Type.Optional(Type.Union([Type.Literal('draft'), Type.Literal('approved')])),
+}, { additionalProperties: false })
+
+const rollbackStyleExpertBodySchema = Type.Object({ version: Type.Integer({ minimum: 1 }) }, { additionalProperties: false })
+const appendReferenceSamplesBodySchema = Type.Object({
+  sourceId: Type.String({ minLength: 1 }),
+  sectionIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 5 }),
+  kind: Type.Optional(Type.Union([Type.Literal('positive'), Type.Literal('negative')], { default: 'positive' })),
+}, { additionalProperties: false })
+const autoBaselineBodySchema = Type.Object({
+  sourceId: Type.String({ minLength: 1 }),
+  sectionIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+}, { additionalProperties: false })
+const previewQuerySchema = Type.Object({ target: Type.Optional(Type.String()) }, { additionalProperties: true })
+
+const writingStyleRouteSchema = (options: { body?: object; params?: object; querystring?: object } = {}) => ({
+  params: options.params ?? projectParamsSchema,
+  querystring: options.querystring ?? emptyQuerySchema,
+  ...(options.body ? { body: options.body } : {}),
+  response: standardResponseSchema,
+})
 
 /**
  * 参考章节 → 文风基线样本：句界截断（单条 ≤2800 字，避免样本以半句话收尾）。
@@ -45,12 +165,14 @@ export function createWritingStyleRoutes(services: NovelServices): RouteDefiniti
   routes.push({
     method: 'GET',
     path: '/projects/:projectId/writing-style-experts/:expertId/versions',
+    schema: writingStyleRouteSchema({ params: expertParamsSchema }),
     handler: async (request: any) => success(store.listStyleExpertVersions(request.params.projectId, request.params.expertId), request.traceId),
   })
 
   routes.push({
     method: 'POST',
     path: '/projects/:projectId/writing-style-experts/:expertId/rollback',
+    schema: writingStyleRouteSchema({ params: expertParamsSchema, body: rollbackStyleExpertBodySchema }),
     handler: async (request: any, reply: any) => {
       const input = z.object({ version: z.number().int().positive() }).parse(request.body ?? {})
       const expert = store.rollbackStyleExpert(request.params.projectId, request.params.expertId, input.version)
@@ -106,6 +228,7 @@ export function createWritingStyleRoutes(services: NovelServices): RouteDefiniti
   routes.push({
     method: 'GET',
     path: '/projects/:projectId/writing-style-profile',
+    schema: writingStyleRouteSchema(),
     handler: async (request: any) => {
       return success(store.getWritingStyleProfile(request.params.projectId) ?? null, request.traceId)
     },
@@ -114,12 +237,14 @@ export function createWritingStyleRoutes(services: NovelServices): RouteDefiniti
   routes.push({
     method: 'GET',
     path: '/projects/:projectId/writing-style-experts',
+    schema: writingStyleRouteSchema(),
     handler: async (request: any) => success(store.listStyleExperts(request.params.projectId), request.traceId),
   })
 
   routes.push({
     method: 'POST',
     path: '/projects/:projectId/writing-style-experts',
+    schema: writingStyleRouteSchema({ body: createStyleExpertBodySchema }),
     handler: async (request: any, _reply: any) => {
       const input = z.object({
         name: z.string().trim().min(1).max(80), sourceTitle: z.string().trim().min(1).max(160),
@@ -148,6 +273,7 @@ export function createWritingStyleRoutes(services: NovelServices): RouteDefiniti
   routes.push({
     method: 'PATCH',
     path: '/projects/:projectId/writing-style-experts/:expertId',
+    schema: writingStyleRouteSchema({ params: expertParamsSchema, body: updateStyleExpertBodySchema }),
     handler: async (request: any, reply: any) => {
       const input = z.object({
         name: z.string().trim().min(1).max(80).optional(),
@@ -173,6 +299,7 @@ export function createWritingStyleRoutes(services: NovelServices): RouteDefiniti
   routes.push({
     method: 'DELETE',
     path: '/projects/:projectId/writing-style-experts/:expertId',
+    schema: writingStyleRouteSchema({ params: expertParamsSchema }),
     handler: async (request: any, reply: any) => {
       const deleted = store.deleteStyleExpert(request.params.projectId, request.params.expertId)
       if (!deleted) return reply.code(404).send({ ok: false, error: '文风专家不存在' })
@@ -183,6 +310,7 @@ export function createWritingStyleRoutes(services: NovelServices): RouteDefiniti
   routes.push({
     method: 'PUT',
     path: '/projects/:projectId/writing-style-profile',
+    schema: writingStyleRouteSchema({ body: writingStyleProfileBodySchema }),
     handler: async (request: any, reply: any) => {
       const input = validateBody(writingStyleProfileSchema, request, reply)
       if (!input) return reply
@@ -223,6 +351,7 @@ export function createWritingStyleRoutes(services: NovelServices): RouteDefiniti
   routes.push({
     method: 'GET',
     path: '/projects/:projectId/writing-style-profile/preview',
+    schema: writingStyleRouteSchema({ querystring: previewQuerySchema }),
     handler: async (request: any) => {
       const target = request.query?.target
       const normalizedTarget = target === 'reviser' || target === 'reviewer' ? target : 'writer'
@@ -240,6 +369,7 @@ export function createWritingStyleRoutes(services: NovelServices): RouteDefiniti
   routes.push({
     method: 'POST',
     path: '/projects/:projectId/writing-style-profile/append-reference-samples',
+    schema: writingStyleRouteSchema({ body: appendReferenceSamplesBodySchema }),
     handler: async (request: any, reply: any) => {
       const input = validateBody(
         z.object({
@@ -321,6 +451,7 @@ export function createWritingStyleRoutes(services: NovelServices): RouteDefiniti
   routes.push({
     method: 'POST',
     path: '/projects/:projectId/writing-style-profile/auto-baseline',
+    schema: writingStyleRouteSchema({ body: autoBaselineBodySchema }),
     handler: async (request: any, reply: any) => {
       const input = validateBody(
         z.object({
@@ -408,6 +539,7 @@ export function createWritingStyleRoutes(services: NovelServices): RouteDefiniti
   routes.push({
     method: 'GET',
     path: '/projects/:projectId/chapters/:chapterNumber/prose-quality',
+    schema: writingStyleRouteSchema({ params: proseQualityParamsSchema }),
     handler: async (request: any) => {
       const chapterNumber = Number(request.params.chapterNumber)
       const chapter = Number.isInteger(chapterNumber)

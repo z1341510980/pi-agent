@@ -6,6 +6,10 @@ import {
   type CreationRunState,
 } from './creation-run-state.js'
 import { CreationRunStore, type CreationRunEvent } from './creation-run-store.js'
+import {
+  CreationRunMetricsStore,
+  type CreationRunMetricsInput,
+} from './creation-run-metrics-store.js'
 
 export type CreationCheckpointDecision = 'approve' | 'revise' | 'rewrite' | 'reject'
 
@@ -23,7 +27,10 @@ const PHASE_STAGE: Partial<Record<string, CreationRunStage>> = {
 
 /** Application service that translates legacy flow callbacks into the shared run kernel. */
 export class CreationRunLifecycle {
-  constructor(private readonly store: CreationRunStore) {}
+  constructor(
+    private readonly store: CreationRunStore,
+    private readonly metrics?: CreationRunMetricsStore,
+  ) {}
 
   start(input: CreateCreationRunInput, now?: number): CreationRunState {
     const created = this.store.create(input)
@@ -83,7 +90,11 @@ export class CreationRunLifecycle {
 
   finish(
     runId: string,
-    result: { status: 'completed' | 'cancelled' | 'error'; error?: string },
+    result: {
+      status: 'completed' | 'cancelled' | 'error'
+      error?: string
+      metrics?: CreationRunMetricsInput
+    },
     now: number = Date.now(),
   ): CreationRunState {
     const current = this.store.get(runId)
@@ -93,14 +104,32 @@ export class CreationRunLifecycle {
       if (current.status === expectedStatus) return current
       throw new Error(`Creation run already finished as ${current.status}`)
     }
+    let state: CreationRunState
     if (result.status === 'cancelled') {
-      return this.store.dispatch(runId, { type: 'cancel', reason: result.error }, now)
+      state = this.store.dispatch(runId, { type: 'cancel', reason: result.error }, now)
+    } else if (result.status === 'error') {
+      state = this.store.dispatch(runId, { type: 'fail', reason: result.error ?? 'Creation run failed' }, now)
+    } else {
+      this.moveToStage(runId, 'finalizing', now)
+      state = this.store.dispatch(runId, { type: 'complete' }, now)
     }
-    if (result.status === 'error') {
-      return this.store.dispatch(runId, { type: 'fail', reason: result.error ?? 'Creation run failed' }, now)
-    }
-    this.moveToStage(runId, 'finalizing', now)
-    return this.store.dispatch(runId, { type: 'complete' }, now)
+    if (result.metrics) this.recordMetrics(runId, result.metrics, now)
+    return state
+  }
+
+  recordMetrics(
+    runId: string,
+    metrics: CreationRunMetricsInput,
+    now: number = Date.now(),
+  ): void {
+    if (!this.metrics) return
+    const state = this.store.get(runId)
+    if (!state) throw new Error(`Creation run not found: ${runId}`)
+    this.metrics.upsert(
+      { runId: state.runId, projectId: state.projectId, chapterNumber: state.chapterNumber },
+      metrics,
+      now,
+    )
   }
 
   reconcileInterruptedRuns(reason: string, now: number = Date.now()): number {

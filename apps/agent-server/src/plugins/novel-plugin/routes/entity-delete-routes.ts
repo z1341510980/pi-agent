@@ -1,8 +1,13 @@
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
+import { Type } from 'typebox'
 import type { NovelServices } from '../novel-services.js'
 import { success } from '../../../lib/api-response.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { activeNovelChapterTasks, chapterCreationLocks } from '../utils/chapter-task-registry.js'
+import { emptyQuerySchema, standardResponseSchema } from './route-contracts.js'
+
+const entityParamsSchema = Type.Object({ id: Type.String({ minLength: 1 }) })
+const chapterParamsSchema = Type.Object({ id: Type.String({ minLength: 1 }) })
 
 type DeleteEntity = (id: string) => boolean
 
@@ -10,6 +15,7 @@ function deleteRoute(path: string, label: string, remove: DeleteEntity): RouteDe
   return {
     method: 'DELETE',
     path,
+    schema: { params: entityParamsSchema, querystring: emptyQuerySchema, response: standardResponseSchema },
     handler: async (request: any) => {
       if (!remove(request.params.id)) throw new AppError(ErrorCode.NOT_FOUND, `${label}不存在: ${request.params.id}`, 404)
       return success({ id: request.params.id, deleted: true }, request.traceId)
@@ -24,6 +30,7 @@ export function createEntityDeleteRoutes(services: NovelServices): RouteDefiniti
     {
       method: 'DELETE',
       path: '/chapters/:id',
+      schema: { params: chapterParamsSchema, querystring: emptyQuerySchema, response: standardResponseSchema },
       handler: async (request: any) => {
         const chapter = store.getChapterById(request.params.id)
         if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)

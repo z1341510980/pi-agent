@@ -102,6 +102,25 @@ export interface MemoryEvent {
   createdAt: number
 }
 
+export interface MemoryFactLink {
+  id: string
+  memoryEventId: string
+  runId: string
+  projectId: string
+  chapterNumber: number
+  chapterRevisionId: string | null
+  bodyEvidence: string
+  factStatus: 'pending' | 'confirmed' | 'rejected'
+  acceptedAt: number | null
+  createdAt: number
+}
+
+export interface LinkMemoryFactsInput {
+  runId: string
+  chapterRevisionId?: string | null
+  bodyEvidence: string
+}
+
 /** 记忆快照 */
 export interface MemorySnapshot {
   id: string
@@ -223,6 +242,19 @@ interface MemoryEventRow {
   style_note: string | null
   status: string
   confirmed_at: number | null
+  created_at: number
+}
+
+interface MemoryFactLinkRow {
+  id: string
+  memory_event_id: string
+  run_id: string
+  project_id: string
+  chapter_number: number
+  chapter_revision_id: string | null
+  body_evidence: string
+  fact_status: string
+  accepted_at: number | null
   created_at: number
 }
 
@@ -541,25 +573,30 @@ export class NovelMemoryStore {
     const inferred = event.dimension
       ? { dimension: event.dimension, valueType: event.valueType ?? null }
       : inferDimension(event.eventType, event.newValue, event.oldValue)
+    // AI 自动写入的事件标记为 ai-extracted（schema 默认 'migration' 不符合实时写入语义）。
+    // 注意：status 判定必须基于回落后的 source，否则未显式传 source 的事件
+    // 会落 source='ai-extracted' 但 status='confirmed'，绕过 pending 队列。
+    const resolvedSource = event.source ?? 'ai-extracted'
+    const resolvedStatus: MemoryEvent['status'] =
+      resolvedSource === 'ai-extracted' || resolvedSource === 'ai-planned' ? 'pending' : 'confirmed'
     const full: MemoryEvent = {
       ...event,
       dimension: event.dimension ?? inferred.dimension,
       valueType: event.valueType ?? inferred.valueType,
+      source: resolvedSource,
+      status: resolvedStatus,
+      confirmedAt: resolvedStatus === 'confirmed' ? now() : null,
       id: randomUUID(),
       createdAt: now(),
     }
-    // AI 自动写入的事件标记为 ai-extracted（schema 默认 'migration' 不符合实时写入语义）。
-    // 注意：status 判定必须基于回落后的 source，否则未显式传 source 的事件
-    // 会落 source='ai-extracted' 但 status='confirmed'，绕过 pending 队列。
-    const resolvedSource = full.source ?? 'ai-extracted'
     this.db.prepare(`
       INSERT INTO novel_memory_events
       (id, project_id, chapter_id, chapter_number, event_type, entity_id, entity_type,
        description, old_value, new_value, cause, effect_ids, significance,
-       dimension, value_type, source, style_note, status, created_at)
+       story_event_id, dimension, value_type, source, style_note, status, created_at)
       VALUES (@id, @project_id, @chapter_id, @chapter_number, @event_type, @entity_id, @entity_type,
               @description, @old_value, @new_value, @cause, @effect_ids, @significance,
-              @dimension, @value_type, @source, @style_note, @status, @created_at)
+            @story_event_id, @dimension, @value_type, @source, @style_note, @status, @created_at)
     `).run({
       id: full.id,
       project_id: full.projectId,
@@ -574,12 +611,13 @@ export class NovelMemoryStore {
       cause: full.cause,
       effect_ids: JSON.stringify(full.effectIds),
       significance: full.significance,
+      story_event_id: full.storyEventId ?? null,
       dimension: full.dimension ?? null,
       value_type: full.valueType ?? null,
       source: resolvedSource,
       style_note: full.styleNote ?? null,
       // T02-6：AI 自动写入的 change record 标记 pending（随事件待确认）；手动写入 confirmed
-      status: (resolvedSource === 'ai-extracted' || resolvedSource === 'ai-planned') ? 'pending' : 'confirmed',
+      status: resolvedStatus,
       created_at: full.createdAt,
     })
     return full
@@ -1091,6 +1129,9 @@ export class NovelMemoryStore {
       this.db.prepare(
         "UPDATE novel_memory_events SET status = 'confirmed', confirmed_at = ? WHERE story_event_id = ? AND status = 'pending'",
       ).run(now(), id)
+      this.db.prepare(
+        "UPDATE novel_memory_fact_links SET fact_status = 'confirmed', accepted_at = ? WHERE memory_event_id IN (SELECT id FROM novel_memory_events WHERE story_event_id = ?)",
+      ).run(now(), id)
       return ev.changes > 0
     })
     return run(eventId)
@@ -1104,9 +1145,66 @@ export class NovelMemoryStore {
       this.db.prepare(
         "UPDATE novel_memory_events SET status = 'rejected', confirmed_at = ? WHERE story_event_id = ?",
       ).run(now(), id)
+      this.db.prepare(
+        "UPDATE novel_memory_fact_links SET fact_status = 'rejected', accepted_at = NULL WHERE memory_event_id IN (SELECT id FROM novel_memory_events WHERE story_event_id = ?)",
+      ).run(id)
       return ev.changes > 0
     })
     return run(eventId)
+  }
+
+  /** Link facts emitted during finalization to the durable run and body revision evidence. */
+  linkFactsToRun(events: MemoryEvent[], input: LinkMemoryFactsInput): void {
+    if (events.length === 0) return
+    const insert = this.db.prepare(`
+      INSERT INTO novel_memory_fact_links (
+        id, memory_event_id, run_id, project_id, chapter_number, chapter_revision_id,
+        body_evidence, fact_status, accepted_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(memory_event_id, run_id) DO UPDATE SET
+        chapter_revision_id = excluded.chapter_revision_id,
+        body_evidence = excluded.body_evidence
+    `)
+    const write = this.db.transaction((rows: MemoryEvent[]) => {
+      for (const event of rows) {
+        const status = event.status === 'confirmed' ? 'confirmed' : event.status === 'rejected' ? 'rejected' : 'pending'
+        insert.run(
+          randomUUID(),
+          event.id,
+          input.runId,
+          event.projectId,
+          event.chapterNumber,
+          input.chapterRevisionId ?? null,
+          input.bodyEvidence,
+          status,
+          status === 'confirmed' ? now() : null,
+          now(),
+        )
+      }
+    })
+    write(events)
+  }
+
+  listFactLinks(runId: string): MemoryFactLink[] {
+    const rows = this.db.prepare(`
+      SELECT id, memory_event_id, run_id, project_id, chapter_number, chapter_revision_id,
+             body_evidence, fact_status, accepted_at, created_at
+        FROM novel_memory_fact_links
+       WHERE run_id = ?
+       ORDER BY chapter_number ASC, created_at ASC
+    `).all(runId) as MemoryFactLinkRow[]
+    return rows.map((row) => ({
+      id: row.id,
+      memoryEventId: row.memory_event_id,
+      runId: row.run_id,
+      projectId: row.project_id,
+      chapterNumber: row.chapter_number,
+      chapterRevisionId: row.chapter_revision_id,
+      bodyEvidence: row.body_evidence,
+      factStatus: row.fact_status as MemoryFactLink['factStatus'],
+      acceptedAt: row.accepted_at,
+      createdAt: row.created_at,
+    }))
   }
 
   createChangeRecord(input: CreateChangeRecordInput): NovelChangeRecord {

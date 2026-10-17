@@ -45,6 +45,7 @@ import { WorkflowRunStore } from './core/workflow-run-store.js'
 import { WorkflowEventStore } from './core/workflow-event-store.js'
 import { CreationRunStore } from './core/runtime/creation-run-store.js'
 import { CreationRunLifecycle } from './core/runtime/creation-run-lifecycle.js'
+import { CreationRunMetricsStore } from './core/runtime/creation-run-metrics-store.js'
 import { DiscussionSettingsStore } from './core/discussion/engine/discussion-settings-store.js'
 import { ConsistencyAuditor } from './core/analysis/consistency-auditor.js'
 import { RelationshipGraph } from './core/analysis/novel-relationship-graph.js'
@@ -281,7 +282,10 @@ export function createNovelServices(context: PluginContext): NovelServices {
   const discussionEventStore = new DiscussionEventStore(db)
   const workflowRunStore = new WorkflowRunStore(db)
   const workflowEventStore = new WorkflowEventStore(db)
-  const creationRunLifecycle = new CreationRunLifecycle(new CreationRunStore(db))
+  const creationRunLifecycle = new CreationRunLifecycle(
+    new CreationRunStore(db),
+    new CreationRunMetricsStore(db),
+  )
   const interruptedCreationRuns = creationRunLifecycle.reconcileInterruptedRuns(
     '服务重启导致创作流程中断；可从断点继续',
   )

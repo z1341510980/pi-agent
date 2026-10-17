@@ -83,6 +83,8 @@ export class PiActorsKernel {
     const runId = meta.run
     const stateDir = meta.state_dir
     const runtimeRuns = this.options.runtimeRuns
+    let cancelRequested = false
+    let cancelRequestedAt = 0
     runtimeRuns?.start({
       id: runId,
       sessionId: runId,
@@ -109,7 +111,27 @@ export class PiActorsKernel {
         }
       },
       cancel(): Record<string, unknown> {
-        return cancelRun(runId)
+        cancelRequested = true
+        cancelRequestedAt = Date.now()
+        const result = cancelRun(runId)
+        // Windows child processes may ignore the graceful signal while their
+        // event loop is blocked. Keep cancel graceful first, then use the
+        // kernel's recovery path so a caller never waits indefinitely.
+        const fallback = setTimeout(() => {
+          try {
+            const detail = getRunStatus(runId)
+            if ((detail.status as AsyncRunStatus) === 'running') {
+              killRun(runId)
+              const pid = Number(detail.pid ?? 0)
+              if (pid > 0) {
+                try { process.kill(pid, 'SIGKILL') } catch { /* process already gone */ }
+              }
+              runtimeRuns?.finish(runId, 'stopped')
+            }
+          } catch { /* terminal or already cleaned up */ }
+        }, 750)
+        fallback.unref?.()
+        return result
       },
       kill(): Record<string, unknown> {
         return killRun(runId)
@@ -121,6 +143,10 @@ export class PiActorsKernel {
         for (;;) {
           const { status } = await handle.status()
           if (status !== 'running') return status
+          if (cancelRequested && Date.now() - cancelRequestedAt >= 2_000) {
+            runtimeRuns?.finish(runId, 'stopped')
+            return 'killed'
+          }
           if (Date.now() >= deadline) return 'running'
           await new Promise((resolve) => setTimeout(resolve, pollMs))
         }

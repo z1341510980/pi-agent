@@ -418,6 +418,7 @@ export class NovelDiscussionRunner {
           } satisfies VersionSource,
           options: {
             emit: options.emit,
+            runId: options.runId,
             onCheckpoint: async (checkpoint) => {
               const reply = await options.onCheckpoint({
                 type: 'discussion_pause',

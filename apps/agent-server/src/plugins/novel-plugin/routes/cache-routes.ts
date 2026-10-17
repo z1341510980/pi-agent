@@ -1,13 +1,24 @@
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
+import { Type } from 'typebox'
 import type { NovelServices } from '../novel-services.js'
 import { success } from '../../../lib/api-response.js'
 import { buildCacheLayerReport, diagnoseChapterCache } from '../core/analysis/cache-layer-diagnostics.js'
+import { standardResponseSchema } from './route-contracts.js'
+
+const projectParamsSchema = Type.Object({ projectId: Type.String({ minLength: 1 }) })
+const cacheDiagnosticsQuerySchema = Type.Object({
+  chapterNumber: Type.Optional(Type.String()),
+}, { additionalProperties: true })
+const cacheReportQuerySchema = Type.Object({
+  chapterNumber: Type.Optional(Type.String()),
+  limit: Type.Optional(Type.String()),
+}, { additionalProperties: true })
 
 export function createCacheRoutes(services: NovelServices): RouteDefinition[] {
   const { store, promptBuilder } = services
   const agentTypes = ['director', 'writer', 'reviewer', 'memory']
   return [
-    { method: 'GET', path: '/projects/:projectId/cache-diagnostics', handler: async (request: any) => {
+    { method: 'GET', path: '/projects/:projectId/cache-diagnostics', schema: { params: projectParamsSchema, querystring: cacheDiagnosticsQuerySchema, response: standardResponseSchema }, handler: async (request: any) => {
       const projectId = request.params.projectId; const chapterNumber = request.query?.chapterNumber != null ? parseInt(request.query.chapterNumber, 10) : undefined
       const systemPromptHashes: Record<string, string> = {}; for (const agentType of agentTypes) { try { systemPromptHashes[agentType] = promptBuilder.getSystemPromptHash(projectId, agentType) } catch { systemPromptHashes[agentType] = 'error' } }
       let chapterContextHash: string | undefined; const chapterContextHashes: Record<string, string> = {}
@@ -19,7 +30,7 @@ export function createCacheRoutes(services: NovelServices): RouteDefinition[] {
       }
       return success({ systemPromptHashes, chapterContextHash, chapterContextHashes, agentTypes, timestamp: Date.now() }, request.traceId)
     } },
-    { method: 'GET', path: '/projects/:projectId/cache-layer-report', handler: async (request: any) => {
+    { method: 'GET', path: '/projects/:projectId/cache-layer-report', schema: { params: projectParamsSchema, querystring: cacheReportQuerySchema, response: standardResponseSchema }, handler: async (request: any) => {
       const projectId = request.params.projectId; const chapterNumber = request.query?.chapterNumber != null ? parseInt(request.query.chapterNumber, 10) : undefined
       const limit = request.query?.limit != null ? Math.min(Math.max(parseInt(request.query.limit, 10) || 200, 1), 500) : 200
       const logs = store.listAgentLogsByProject(projectId, limit); const scoped = chapterNumber != null && !Number.isNaN(chapterNumber) ? logs.filter((log: any) => log.chapterNumber === chapterNumber) : logs

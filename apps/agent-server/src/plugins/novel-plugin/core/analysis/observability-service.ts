@@ -105,6 +105,24 @@ export interface ObservabilityTimelineRow {
   createdAt: number
 }
 
+export interface ObservabilityRunMetricsRow {
+  runId: string
+  chapterNumber: number
+  wordTarget: number | null
+  wordActual: number | null
+  wordDeviation: number | null
+  revisionRounds: number
+  revisionPatches: number
+  qualityGateFailures: number
+  recoveryResult: string | null
+  terminalLatencyMs: number | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  recordedAt: number
+}
+
 const DEFAULT_LIMIT = 100
 const MAX_LIMIT = 500
 
@@ -368,6 +386,60 @@ export class ObservabilityService {
       cacheProtocol: r.cache_protocol,
       cacheHitRate: cacheHitRate(r.cache_read_tokens, r.input_tokens),
       createdAt: r.created_at,
+    }))
+  }
+
+  /** Durable creation-run dimensions used by the quality and cost audit views. */
+  runMetrics(projectId: string, f: Pick<ObservabilityFilter, 'chapterNumber' | 'limit'> = {}): ObservabilityRunMetricsRow[] {
+    const limit = Math.min(Math.max(f.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT)
+    const conditions = ['project_id = ?']
+    const params: unknown[] = [projectId]
+    if (f.chapterNumber != null) {
+      conditions.push('chapter_number = ?')
+      params.push(f.chapterNumber)
+    }
+    const rows = this.db.prepare(`
+      SELECT run_id, chapter_number, word_target, word_actual, word_deviation,
+             revision_rounds, revision_patches, quality_gate_failures, recovery_result,
+             terminal_latency_ms, input_tokens, output_tokens, cache_read_tokens,
+             cache_write_tokens, recorded_at
+        FROM novel_creation_run_metrics
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY recorded_at DESC, run_id DESC
+       LIMIT ?
+    `).all(...params, limit) as Array<{
+      run_id: string
+      chapter_number: number
+      word_target: number | null
+      word_actual: number | null
+      word_deviation: number | null
+      revision_rounds: number
+      revision_patches: number
+      quality_gate_failures: number
+      recovery_result: string | null
+      terminal_latency_ms: number | null
+      input_tokens: number
+      output_tokens: number
+      cache_read_tokens: number
+      cache_write_tokens: number
+      recorded_at: number
+    }>
+    return rows.map((row) => ({
+      runId: row.run_id,
+      chapterNumber: row.chapter_number,
+      wordTarget: row.word_target,
+      wordActual: row.word_actual,
+      wordDeviation: row.word_deviation,
+      revisionRounds: row.revision_rounds,
+      revisionPatches: row.revision_patches,
+      qualityGateFailures: row.quality_gate_failures,
+      recoveryResult: row.recovery_result,
+      terminalLatencyMs: row.terminal_latency_ms,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+      cacheReadTokens: row.cache_read_tokens,
+      cacheWriteTokens: row.cache_write_tokens,
+      recordedAt: row.recorded_at,
     }))
   }
 

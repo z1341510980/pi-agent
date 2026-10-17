@@ -24,7 +24,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { browserConfig } from '@repo/config/browser'
-import { submitCheckpointDecision, persistChapterChat, sendFlowMessage } from '@/api/novel-client'
+import { creationFlowCommands } from './creation-flow-commands'
 import { parseSseStream } from '@/api/agui-client'
 import type { BaseEvent, CustomEvent } from '@repo/protocol/events'
 
@@ -51,6 +51,9 @@ import type {
   NovelUserMessageEvent,
   NovelInterjectTargetAgent
 } from '@repo/shared/novel'
+import { applyUserMessageEvent, streamsChapterContent, type InterjectMessage } from './creation-flow-reducer'
+export { applyUserMessageEvent, streamsChapterContent }
+export type { InterjectMessage }
 
 /** 用户在创作过程中发送的消息（参与创作的指令，前端 UI 独有类型） */
 export interface UserMessage {
@@ -59,72 +62,10 @@ export interface UserMessage {
   timestamp: number
 }
 
-/**
- * 插话消息（对话化交互形态 §3.1/§4）：flow 运行中用户的中途反馈。
- * 状态由 SSE novel:user-message 事件驱动：queued（端点受理）→ injected（被 Agent 消费）
- * | dropped（flow 终态未注入收尾）。
- */
-export interface InterjectMessage {
-  /** 与插话端点 201 响应 / SSE 事件的 messageId 对齐 */
-  messageId: string
-  content: string
-  status: 'queued' | 'injected' | 'dropped'
-  /** 定向 Agent（缺省注入下一个被调用的 Agent） */
-  targetAgent?: NovelInterjectTargetAgent
-  /** status='injected' 时实际消费该插话的 Agent 类型 */
-  agentType?: string
-  timestamp: number
-}
-
-/**
- * 插话状态单调序：只能从 queued 前进到终态（injected/dropped），
- * injected 与 dropped 同级互不回退。
- */
-const INTERJECT_STATUS_ORDER: Record<InterjectMessage['status'], number> = {
-  queued: 0,
-  injected: 1,
-  dropped: 1
-}
-
-/**
- * 归并一条 novel:user-message SSE 事件到插话消息列表（按 messageId upsert）：
- * - queued：本地乐观插入（端点 201 后）或 SSE 回显，同 id 幂等覆盖；
- * - injected/dropped：更新既有消息状态（含 agentType）。
- *
- * 状态单调防护：已有记录的序 >= 新事件的序则跳过（迟到的 queued 回显
- * 不得把 injected/dropped 回退成 queued）。
- */
-export function applyUserMessageEvent(
-  prev: InterjectMessage[],
-  event: NovelUserMessageEvent
-): InterjectMessage[] {
-  const next: InterjectMessage = {
-    messageId: event.messageId,
-    content: event.content,
-    status: event.status,
-    targetAgent: event.targetAgent,
-    agentType: event.agentType,
-    timestamp: event.timestamp
-  }
-  const index = prev.findIndex((message) => message.messageId === event.messageId)
-  if (index === -1) return [...prev, next]
-  if (INTERJECT_STATUS_ORDER[prev[index].status] >= INTERJECT_STATUS_ORDER[event.status]) {
-    return prev
-  }
-  const updated = [...prev]
-  updated[index] = { ...updated[index], ...next }
-  return updated
-}
-
 /** sendInterject 结果：成功返回 messageId（已排队），失败附 HTTP 状态码（409=无运行中流程） */
 export type SendInterjectOutcome =
   | { ok: true; messageId: string }
   | { ok: false; error: string; statusCode?: number }
-
-/** 只有 Writer 的原始输出是可直接展示的章节正文。 */
-export function streamsChapterContent(agentType: AgentOutput['agentType']): boolean {
-  return agentType === 'writer'
-}
 
 /**
  * 统一占位覆盖辅助（2026-08-28 控制平面重排 T3）：
@@ -839,6 +780,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const flowModeRef = useRef<'workflow' | 'discussion'>('workflow')
   /** 当前 SSE RUN_STARTED 的运行 ID，插话必须带它做运行级隔离。 */
   const activeFlowIdRef = useRef<string | null>(null)
+  /** Persisted tail sequence fingerprints; exact replay is ignored on reconnect. */
+  const tailEventFingerprintsRef = useRef<Map<number, string>>(new Map())
   /** 最近一次业务事件的阶段；标准 TEXT_MESSAGE_* 事件本身不带角色元数据时用于兜底。 */
   const activePhaseRef = useRef<string | undefined>(undefined)
   /** 保证实时气泡按到达顺序排列，即使后端事件时间戳相同或回退。 */
@@ -1789,7 +1732,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         throw new Error(`创作事件流连接失败: HTTP ${tailResponse.status}`)
       }
       await parseSseStream(tailResponse.body, (event) => {
-        const tail = event as unknown as { type?: string; payload?: Record<string, unknown> }
+        const tail = event as unknown as { type?: string; seq?: number; payload?: Record<string, unknown> }
+        if (Number.isInteger(tail.seq) && tail.seq! > 0) {
+          const fingerprint = JSON.stringify([tail.type, tail.payload])
+          const previous = tailEventFingerprintsRef.current.get(tail.seq!)
+          if (previous === fingerprint) return
+          tailEventFingerprintsRef.current.set(tail.seq!, fingerprint)
+        }
         switch (tail.type) {
           case 'agui':
             if (tail.payload) handleEvent(tail.payload as BaseEvent)
@@ -1825,6 +1774,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       controller: AbortController,
       options: { activeRunPath: string; failureLabel: string }
     ): Promise<void> => {
+      tailEventFingerprintsRef.current.clear()
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2307,7 +2257,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         if (!currentCheckpoint.checkpointId) {
           throw new Error('检查点缺少 checkpointId，无法提交决策')
         }
-        await submitCheckpointDecision(
+        await creationFlowCommands.submitCheckpoint(
           projectId,
           currentCheckpoint.checkpointId,
           decision,
@@ -2344,7 +2294,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       const chapterNumber = chapterNumberRef.current
       if (projectId && chapterNumber != null) {
         const persistPhase = currentCheckpoint ? 'checkpoint' : 'discussion'
-        persistChapterChat(projectId, chapterNumber, {
+          creationFlowCommands.persistChat(projectId, chapterNumber, {
           phase: persistPhase,
           content: trimmed,
           metadata: { flowMode: flowModeRef.current }
@@ -2381,7 +2331,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       return { ok: false, error: '创作流程尚未建立运行 ID，请稍后重试' }
     }
     try {
-      const res = await sendFlowMessage(projectId, flowId, {
+      const res = await creationFlowCommands.sendInterject(projectId, flowId, {
         content: trimmed,
         targetAgent,
         chapterNumber

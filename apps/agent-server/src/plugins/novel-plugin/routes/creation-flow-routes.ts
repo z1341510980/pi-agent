@@ -82,6 +82,54 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
   const { store } = services
   const routes: RouteDefinition[] = []
 
+  type RunResultLike = {
+    status: 'completed' | 'cancelled' | 'error'
+    error?: string
+    content?: string
+    revisionRounds?: Array<{ appliedPatches: number }>
+    qualityWarnings?: { failedItems?: unknown[]; revisionRounds?: Array<{ appliedPatches: number }> }
+    failedItems?: unknown[]
+  }
+
+  /** Persist one reportable metric row whenever a durable creation run reaches a terminal state. */
+  const finishCreationRun = (
+    runId: string,
+    result: RunResultLike,
+    startedAt: number,
+    projectId: string,
+    chapterNumber: number,
+  ): void => {
+    const lifecycle = services.creationRunLifecycle
+    if (!lifecycle) return
+    const project = store.getProject(projectId)
+    const rounds = result.revisionRounds ?? result.qualityWarnings?.revisionRounds ?? []
+    const content = typeof result.content === 'string' ? result.content : undefined
+    const logs = typeof store.listAgentLogs === 'function'
+      ? store.listAgentLogs(projectId, { chapterNumber }, 500)
+      : []
+    const metrics = {
+          wordTarget: project?.targetWords ?? null,
+          wordActual: content ? content.replace(/\s/g, '').length : null,
+          revisionRounds: rounds.length,
+          revisionPatches: rounds.reduce((sum, round) => sum + (round.appliedPatches ?? 0), 0),
+          qualityGateFailures: result.failedItems?.length ?? result.qualityWarnings?.failedItems?.length ?? 0,
+          recoveryResult: result.status === 'completed' ? 'completed' : result.status,
+          terminalLatencyMs: Math.max(0, Date.now() - startedAt),
+          inputTokens: logs.reduce((sum, log) => sum + log.inputTokens, 0),
+          outputTokens: logs.reduce((sum, log) => sum + log.outputTokens, 0),
+          cacheReadTokens: logs.reduce((sum, log) => sum + log.cacheReadTokens, 0),
+          cacheWriteTokens: logs.reduce((sum, log) => sum + log.cacheWriteTokens, 0),
+    }
+    try {
+      lifecycle.finish(runId, { status: result.status, error: result.error })
+      lifecycle.recordMetrics?.(runId, metrics)
+    } catch (error) {
+      // A terminal domain result is already available; observability failure must remain visible
+      // without turning a successful/cancelled flow into a second application failure.
+      services.context?.logger?.warn?.({ error, runId, projectId, chapterNumber }, '创作运行指标写入失败')
+    }
+  }
+
   const persistRouteFailureAudit = (params: {
     request: any
     projectId: string
@@ -365,6 +413,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             })
             const result = await orchestrator.createChapterWithFlow(projectId, chapterNumberValue, {
               emit: emitter.emit,
+              runId: workflowRunId,
               // per-call 模型覆盖（输入框旁选择器传入）
               modelId: input.modelId,
               flowKey: interjectFlowKey,
@@ -441,16 +490,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               signal: task.controller.signal,
               arrangedEntities
             })
-             if (creationRunLifecycle) {
-               try {
-                 creationRunLifecycle.finish(workflowRunId, {
-                   status: result.status,
-                   error: result.error,
-                 })
-               } catch (error) {
-                 request.log.warn({ error, workflowRunId, status: result.status }, '统一运行内核终态投影失败')
-               }
-             }
+            finishCreationRun(workflowRunId, result, startedAt, projectId, chapterNumberValue)
             persistWorkflowMessage({
               role: 'system',
               fromId: 'system',
@@ -508,16 +548,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             })
             // 路由层异常（orchestrator 未返回 result）：有边界产物同样可续跑
             if (lastBoundary != null) saveRunSnapshot('error', { error: errMessage })
-             if (creationRunLifecycle) {
-               try {
-                 creationRunLifecycle.finish(workflowRunId, {
-                   status: task.controller.signal.aborted ? 'cancelled' : 'error',
-                   error: errMessage,
-                 })
-               } catch (lifecycleError) {
-                 request.log.warn({ error: lifecycleError, workflowRunId }, '统一运行内核异常终态投影失败')
-               }
-             }
+            finishCreationRun(
+              workflowRunId,
+              { status: task.controller.signal.aborted ? 'cancelled' : 'error', error: errMessage },
+              startedAt,
+              projectId,
+              chapterNumberValue,
+            )
             cancelDebug('create-flow-catch', {
               projectId,
               chapterNumber,
@@ -843,6 +880,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               chapter,
               {
                 emit: emitter.emit,
+                runId: resumeRunId,
                 // 模型冻结：续跑沿用首跑的 per-call 模型
                 modelId: frozenModelId,
                 flowKey: interjectFlowKey,
@@ -919,16 +957,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
                 arrangedEntities: snapshot.arrangedEntities,
               },
             )
-            if (creationRunLifecycle) {
-              try {
-                creationRunLifecycle.finish(resumeRunId, {
-                  status: result.status,
-                  error: result.error,
-                })
-              } catch (error) {
-                request.log.warn({ error, resumeRunId, status: result.status }, '续跑运行内核终态投影失败')
-              }
-            }
+            finishCreationRun(resumeRunId, result, startedAt, projectId, chapter)
             persistWorkflowMessage({
               role: 'system',
               fromId: 'system',
@@ -970,16 +999,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             )
             } catch (err) {
             const errMessage = err instanceof Error ? err.message : String(err)
-            if (creationRunLifecycle) {
-              try {
-                creationRunLifecycle.finish(resumeRunId, {
-                  status: task.controller.signal.aborted ? 'cancelled' : 'error',
-                  error: errMessage,
-                })
-              } catch (lifecycleError) {
-                request.log.warn({ error: lifecycleError, resumeRunId }, '续跑运行内核异常终态投影失败')
-              }
-            }
+            finishCreationRun(
+              resumeRunId,
+              { status: task.controller.signal.aborted ? 'cancelled' : 'error', error: errMessage },
+              startedAt,
+              projectId,
+              chapter,
+            )
             persistWorkflowMessage({
               role: 'system',
               fromId: 'system',
@@ -1414,6 +1440,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               chapterNumberValue,
               {
                 emit: emitter.emit,
+                runId: discussionRunId,
                 onEvent: event => services.discussionEventStore.append(discussionRunId, event.type, event.payload),
                 onCheckpoint: async (checkpoint) => {
                   // 后台 run 的检查点经 ConfirmationManager 挂起；用户重连后用
@@ -1459,16 +1486,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               },
               arrangedEntities,
             )
-            if (creationRunLifecycle) {
-              try {
-                creationRunLifecycle.finish(discussionRunId, {
-                  status: result.status,
-                  error: result.error,
-                })
-              } catch (error) {
-                request.log.warn({ error, discussionRunId, status: result.status }, '群聊运行内核终态投影失败')
-              }
-            }
+            finishCreationRun(discussionRunId, result, startedAt, projectId, chapterNumberValue)
             // T5：run 行停写三元组；failedPhase 只透传 canResume 判定，不落库。
             // run_finished 携带最终正文与演出诊断：前端经事件 tail 拿结果，无需独立状态端点。
             services.discussionEventStore.append(discussionRunId, 'run_finished', {
@@ -1523,16 +1541,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               })
             }
           } catch (err) {
-            if (creationRunLifecycle) {
-              try {
-                creationRunLifecycle.finish(discussionRunId, {
-                  status: task.controller.signal.aborted ? 'cancelled' : 'error',
-                  error: err instanceof Error ? err.message : String(err),
-                })
-              } catch (lifecycleError) {
-                request.log.warn({ error: lifecycleError, discussionRunId }, '群聊运行内核异常终态投影失败')
-              }
-            }
+            finishCreationRun(
+              discussionRunId,
+              { status: task.controller.signal.aborted ? 'cancelled' : 'error', error: err instanceof Error ? err.message : String(err) },
+              startedAt,
+              projectId,
+              chapterNumberValue,
+            )
             // 引擎外层异常：补终态事件，避免事件流永远停在 running 让 fold 无法收口。
             services.discussionEventStore.append(discussionRunId, 'run_finished', {
               status: 'error',
@@ -1771,6 +1786,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             {
               checkpointFeedback,
               emit: emitter.emit,
+              runId: resumeRunId,
               // 续跑 run 拥有独立事件流（runId=resumeRunId）；plan 之前的已完成节点
               // 经 completedActionBeatIds 显式传入引擎，不再靠 transcript 反推。
               onEvent: event => services.discussionEventStore.append(resumeRunId, event.type, event.payload),
@@ -1828,16 +1844,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             },
           )
 
-          if (creationRunLifecycle) {
-            try {
-              creationRunLifecycle.finish(resumeRunId, {
-                status: result.status,
-                error: result.error,
-              })
-            } catch (error) {
-              request.log.warn({ error, resumeRunId, status: result.status }, '群聊续跑运行内核终态投影失败')
-            }
-          }
+          finishCreationRun(resumeRunId, result, startedAt, projectId, chapter)
 
           const finalResult = {
             ...result,
@@ -1899,16 +1906,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           }
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : String(err)
-          if (creationRunLifecycle) {
-            try {
-              creationRunLifecycle.finish(resumeRunId, {
-                status: task.controller.signal.aborted ? 'cancelled' : 'error',
-                error: errorMessage,
-              })
-            } catch (lifecycleError) {
-              request.log.warn({ error: lifecycleError, resumeRunId }, '群聊续跑运行内核异常终态投影失败')
-            }
-          }
+          finishCreationRun(
+            resumeRunId,
+            { status: task.controller.signal.aborted ? 'cancelled' : 'error', error: errorMessage },
+            startedAt,
+            projectId,
+            chapter,
+          )
           services.discussionEventStore.append(resumeRunId, 'run_finished', {
             status: task.controller.signal.aborted ? 'cancelled' : 'error',
             error: errorMessage,
@@ -2187,25 +2191,19 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           if (decision === 'reject') {
             draft.rollback()
             pendingArrangeDrafts.delete(lockKey)
-            if (creationRunLifecycle) {
-              try {
-                creationRunLifecycle.finish(arrangeRunId, { status: 'cancelled', error: '用户拒绝 AI 编排结果' })
-              } catch (error) {
-                request.log.warn({ error, arrangeRunId }, 'AI 编排运行内核取消投影失败')
-              }
-            }
+            finishCreationRun(
+              arrangeRunId,
+              { status: 'cancelled', error: '用户拒绝 AI 编排结果' },
+              startedAt,
+              projectId,
+              chNum,
+            )
             emitter.result({ status: 'cancelled' })
             break
           }
           draft.commit()
           pendingArrangeDrafts.delete(lockKey)
-          if (creationRunLifecycle) {
-            try {
-              creationRunLifecycle.finish(arrangeRunId, { status: 'completed' })
-            } catch (error) {
-              request.log.warn({ error, arrangeRunId }, 'AI 编排运行内核终态投影失败')
-            }
-          }
+          finishCreationRun(arrangeRunId, { status: 'completed' }, startedAt, projectId, chNum)
           emitter.progress({
             type: 'arrange_committed',
             phase: 'arranging',
@@ -2224,16 +2222,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       } catch (err) {
         pendingArrangeDrafts.get(lockKey)?.handle.rollback()
         pendingArrangeDrafts.delete(lockKey)
-        if (creationRunLifecycle) {
-          try {
-            creationRunLifecycle.finish(arrangeRunId, {
-              status: task.controller.signal.aborted ? 'cancelled' : 'error',
-              error: err instanceof Error ? err.message : String(err),
-            })
-          } catch (lifecycleError) {
-            request.log.warn({ error: lifecycleError, arrangeRunId }, 'AI 编排运行内核异常终态投影失败')
-          }
-        }
+        finishCreationRun(
+          arrangeRunId,
+          { status: task.controller.signal.aborted ? 'cancelled' : 'error', error: err instanceof Error ? err.message : String(err) },
+          startedAt,
+          projectId,
+          chNum,
+        )
         if (!task.controller.signal.aborted) {
           persistRouteFailureAudit({
             request,
@@ -2426,13 +2421,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               reviewPending: false,
             },
           })
-          if (creationRunLifecycle) {
-            try {
-              creationRunLifecycle.finish(reverseRunId, { status: 'completed' })
-            } catch (error) {
-              request.log.warn({ error, reverseRunId }, '反推编排运行内核终态投影失败')
-            }
-          }
+          finishCreationRun(reverseRunId, { status: 'completed' }, startedAt, projectId, chNum)
           services.workflowEventStore.append(reverseRunId, 'run_finished', {
             status: 'completed',
             workflowRunId: reverseRunId,
@@ -2444,13 +2433,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err)
           const status = task.controller.signal.aborted ? 'cancelled' : 'error'
-          if (creationRunLifecycle) {
-            try {
-              creationRunLifecycle.finish(reverseRunId, { status, error })
-            } catch (lifecycleError) {
-              request.log.warn({ error: lifecycleError, reverseRunId }, '反推编排运行内核异常终态投影失败')
-            }
-          }
+          finishCreationRun(reverseRunId, { status, error }, startedAt, projectId, chNum)
           if (!task.controller.signal.aborted) {
             persistRouteFailureAudit({
               request,

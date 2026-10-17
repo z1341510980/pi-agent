@@ -2704,4 +2704,60 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
         ON novel_creation_run_events(run_id, seq);
     `
   }
+  ,{
+    // 126: 创作运行可报表指标。状态机保存生命周期，指标表保存可聚合的字数、修订、
+    // 质量门、恢复、终态延迟和 token 维度，避免把分析字段塞进事件 payload。
+    id: '126_create_creation_run_metrics',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_creation_run_metrics (
+        run_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        chapter_number INTEGER NOT NULL CHECK (chapter_number > 0),
+        word_target INTEGER,
+        word_actual INTEGER,
+        word_deviation INTEGER,
+        revision_rounds INTEGER NOT NULL DEFAULT 0,
+        revision_patches INTEGER NOT NULL DEFAULT 0,
+        quality_gate_failures INTEGER NOT NULL DEFAULT 0,
+        recovery_result TEXT,
+        terminal_latency_ms INTEGER,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        recorded_at INTEGER NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES novel_creation_runs(run_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_creation_run_metrics_project
+        ON novel_creation_run_metrics(project_id, chapter_number, recorded_at DESC);
+    `
+  },
+  {
+    // 127: 记忆事实证据关联。事实本身继续由 novel_memory_events 承载，
+    // 这里记录它被哪个创作 run 接受、对应哪个正文 revision，以及正文证据片段。
+    id: '127_create_memory_fact_links',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_memory_fact_links (
+        id TEXT PRIMARY KEY,
+        memory_event_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        chapter_number INTEGER NOT NULL,
+        chapter_revision_id TEXT,
+        body_evidence TEXT NOT NULL,
+        fact_status TEXT NOT NULL DEFAULT 'pending',
+        accepted_at INTEGER,
+        created_at INTEGER NOT NULL,
+        UNIQUE (memory_event_id, run_id),
+        FOREIGN KEY (memory_event_id) REFERENCES novel_memory_events(id) ON DELETE CASCADE,
+        FOREIGN KEY (run_id) REFERENCES novel_creation_runs(run_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_fact_links_run
+        ON novel_memory_fact_links(run_id, chapter_number);
+      CREATE INDEX IF NOT EXISTS idx_memory_fact_links_event
+        ON novel_memory_fact_links(memory_event_id);
+    `
+  }
 ]

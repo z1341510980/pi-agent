@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { Type } from 'typebox'
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import type { NovelServices } from '../novel-services.js'
 import { success } from '../../../lib/api-response.js'
@@ -9,6 +10,21 @@ import {
   announceInterjectQueued,
   getInterjectEnqueuer,
 } from '../utils/chapter-task-registry.js'
+import { standardResponseSchema } from './route-contracts.js'
+
+const interjectParamsSchema = Type.Object({
+  projectId: Type.String({ minLength: 1 }),
+  flowId: Type.String({ minLength: 1 }),
+})
+const interjectQuerySchema = Type.Object({ chapterNumber: Type.Optional(Type.String()) }, { additionalProperties: true })
+const interjectBodySchema = Type.Object({
+  content: Type.String({ minLength: 1, maxLength: 4000 }),
+  targetAgent: Type.Optional(Type.Union([
+    Type.Literal('director'), Type.Literal('writer'), Type.Literal('reviewer'),
+    Type.Literal('reviser'), Type.Literal('memory'),
+  ])),
+  chapterNumber: Type.Optional(Type.Integer({ minimum: 1 })),
+}, { additionalProperties: false })
 
 export function createInterjectRoutes(services: Pick<NovelServices, 'orchestrator' | 'chapterChatStore'>): RouteDefinition[] {
   const routes: RouteDefinition[] = []
@@ -22,6 +38,7 @@ export function createInterjectRoutes(services: Pick<NovelServices, 'orchestrato
     routes.push({
       method: 'POST',
       path: '/projects/:projectId/flows/:flowId/messages',
+      schema: { params: interjectParamsSchema, querystring: interjectQuerySchema, body: interjectBodySchema, response: standardResponseSchema },
       handler: async (request: any, reply: any) => {
         const { projectId, flowId } = request.params as { projectId: string; flowId: string }
         const input = validateBody(interjectMessageSchema, request, reply)

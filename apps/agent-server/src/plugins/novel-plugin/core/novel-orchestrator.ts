@@ -93,6 +93,8 @@ import type { WriterSceneContext } from './prompting/prompt-builder.js'
 import type { WorkflowSceneDraft } from './workflow-run-store.js'
 import { measureStyleMetrics, buildStyleMetricsDiff } from './analysis/style-measurement.js'
 import { classifyLlmFailure, retryDelayMs, LLM_MAX_RETRIES } from './quality/llm-error-policy.js'
+import { RevisionController } from './quality/revision-controller.js'
+import type { NovelRoleBoundaries } from './orchestration/role-boundaries.js'
 import {
   buildRequestFingerprint,
   classifyDataQuality,
@@ -306,6 +308,7 @@ export class NovelOrchestrator {
   private readonly memoryGenerator?: NovelMemoryGenerator
   /** 章节收尾逻辑（Memory 阶段 + 实体同步 + 快照 + 持久化），workflow 和 discussion 共用 */
   private readonly finalizer: ChapterFinalizer
+  private readonly roleBoundaries: NovelRoleBoundaries
   constructor(
     private store: NovelStore,
     private memoryStore: NovelMemoryStore,
@@ -329,6 +332,46 @@ export class NovelOrchestrator {
       (agentType, projectId, chapterNumber, input, options) =>
         this.runAgent(agentType, projectId, chapterNumber, input, options),
     )
+    this.roleBoundaries = {
+      director: {
+        plan: input => this.runAgent(
+          'director',
+          input.projectId,
+          input.chapterNumber,
+          input.prompt,
+          input.options,
+          input.overrides as RunAgentOverrides | undefined,
+        ),
+      },
+      writer: {
+        run: input => this.runAgent(
+          'writer',
+          input.projectId,
+          input.chapterNumber,
+          input.prompt,
+          input.options,
+          input.overrides as RunAgentOverrides | undefined,
+        ),
+      },
+      qualityGate: {
+        inspect: content => {
+          const sanitized = sanitizeNovelProse(content)
+          const report = evaluateProseQuality(sanitized)
+          const clicheHits = scanCliches(sanitized)
+          return {
+            report,
+            clicheHits,
+            failures: this.scanQualityGateFailures(sanitized, report, clicheHits),
+          }
+        },
+      },
+      revisionController: {
+        create: maxRounds => new RevisionController(maxRounds),
+      },
+      memory: {
+        finalize: params => this.finalizer.finalize(params),
+      },
+    }
   }
 
   /**
@@ -676,8 +719,13 @@ export class NovelOrchestrator {
           ? `请依据章节上下文中的章纲、故事状态和节奏约束，为第 ${chapterNumber} 章规划叙事任务。${replanGuard}`
           : `上一轮没有通过 novel_submit_narrative_task 工具提交叙事任务。请立即调用该工具，为第 ${chapterNumber} 章规划叙事任务（任务类型/POV/钩子/场景数等由工具参数承载），不要只输出文本说明。${replanGuard}`
         try {
-          directorResult = await this.runAgent('director', projectId, chapterNumber, directorPrompt, options,
-            { extraTools: [submitNarrativeTaskTool] })
+          directorResult = await this.getRoleBoundaries().director.plan({
+            projectId,
+            chapterNumber,
+            prompt: directorPrompt,
+            options,
+            overrides: { extraTools: [submitNarrativeTaskTool] },
+          })
         } catch (err) {
           // 工具可能已执行成功、错误发生在工具结果之后的往返（与 luna 空终答同类）：
           // draft 里已有完整任务时以 payload 为准，不让一次 provider 抖动作废规划。
@@ -959,12 +1007,14 @@ export class NovelOrchestrator {
             options,
           )
         } else {
-          writerResult = await this.runAgent('writer', projectId, chapterNumber,
-            rewritePlan
+          writerResult = await this.getRoleBoundaries().writer.run({
+            projectId,
+            chapterNumber,
+            prompt: rewritePlan
               ? rewritePlan.input
               : `请执行已批准的本章叙事任务，直接创作第 ${chapterNumber} 章正文。`,
             options,
-          )
+          })
         }
 
         // 检测 Writer 是否标记推回
@@ -1272,7 +1322,7 @@ export class NovelOrchestrator {
           finalContent: resume.finalContent,
         })
         const resumedFinalContent = sanitizeNovelProse(resume.finalContent)
-        return await this.finalizer.finalize({
+        return await this.getRoleBoundaries().memory.finalize({
           projectId,
           chapterNumber,
           content: resumedFinalContent,
@@ -1830,7 +1880,7 @@ export class NovelOrchestrator {
           : qualityGateWarning
             ? { phase: 'writer_initial', agentType: 'writer', trigger: `质量门未通过，按原稿保留落库（${qualityGateWarning.failedItems.length} 项待处理）` }
             : { phase: 'writer_initial', agentType: 'writer', trigger: 'Writer 初稿落库' }
-      const result = await this.finalizer.finalize({
+      const result = await this.getRoleBoundaries().memory.finalize({
         projectId,
         chapterNumber,
         content: sanitizedFinalContent,
@@ -2049,7 +2099,9 @@ export class NovelOrchestrator {
     const { projectId, chapterNumber, options, initialContent, earlyPassIfClean, buildRoundPrompt } = params
     let content = initialContent
     const rounds: RevisionRoundRecord[] = []
-    let lastAppliedPatches = 1 // 起点视为"已应用"，保证首轮必然执行
+    const revisionController = this.getRoleBoundaries().revisionController.create(
+      NovelOrchestrator.MAX_AUTO_REVISION_ROUNDS,
+    )
     // P2-3：修订前后 L1 形态指标对比（证据化"修订改了什么"）
     const beforeMetrics = measureStyleMetrics(initialContent)
     const finishWithMetrics = (status: 'passed' | 'blocked', failedItems: QualityGateFailureItem[]) => {
@@ -2106,19 +2158,16 @@ export class NovelOrchestrator {
 
     for (let round = 1; round <= NovelOrchestrator.MAX_AUTO_REVISION_ROUNDS; round += 1) {
       const sanitized = sanitizeNovelProse(content)
-      const report = evaluateProseQuality(sanitized)
-      const clicheHits = scanCliches(sanitized)
-      const failedItems = this.scanQualityGateFailures(sanitized, report, clicheHits)
-      if (failedItems.length === 0) {
-        // 起点干净（re-revise 已修正内容）或上一轮修订后已通过 → 直接通过
-        if (round > 1 || earlyPassIfClean) {
-          return finishWithMetrics('passed', [])
-        }
-        // 主流程首轮：用户明确选择"修订"，即使确定性门干净也要让 Reviser
-        // 基于审稿意见走一轮（语义问题不在确定性扫描范围内）。
+      const inspection = this.getRoleBoundaries().qualityGate.inspect(content)
+      const report = inspection.report as ProseQualityReport
+      const clicheHits = inspection.clicheHits as ClicheHit[]
+      const failedItems = inspection.failures
+      const revisionDecision = revisionController.decide(failedItems, earlyPassIfClean)
+      if (revisionDecision.action === 'passed') return finishWithMetrics('passed', [])
+      if (revisionDecision.action === 'checkpoint') {
+        this.context.logger.warn({ projectId, chapterNumber, round, reason: revisionDecision.reason }, 'RevisionController stopped automatic revision')
+        break
       }
-      // 上一轮未成功应用任何 patch：继续调用只是烧钱，停止
-      if (round > 1 && lastAppliedPatches === 0) break
       // Guard/整章重写可能已消耗本章全部质量修订额度；此时保留当前最佳稿，
       // 不再启动新的 Reviser 调用。网络/Provider 瞬时重试不经过这里，不占额度。
       if (!this.qualityRevisionBudgetAvailable()) break
@@ -2161,7 +2210,6 @@ export class NovelOrchestrator {
       })
       this.recordQualityRevision('reviserRuns')
       const successful = draft.appliedPatches.filter(p => p.success)
-      lastAppliedPatches = successful.length
       if (successful.length > 0) {
         // 工具返回 success 但替换结果与输入相同（重复 patch、同义替换或模型
         // 反复提交旧意见）时，继续下一轮只会产生“修订死循环”。
@@ -2170,7 +2218,6 @@ export class NovelOrchestrator {
             { projectId, chapterNumber, round, appliedCount: successful.length },
             '修订内容未发生变化，停止重复修订循环',
           )
-          lastAppliedPatches = 0
         } else {
           content = draft.content
         }
@@ -2192,16 +2239,18 @@ export class NovelOrchestrator {
 
       // 修订后复检：记录本轮结果，通过即结束
       const afterSanitized = sanitizeNovelProse(content)
-      const afterReport = evaluateProseQuality(afterSanitized)
-      const afterCliches = scanCliches(afterSanitized)
-      const afterFailures = this.scanQualityGateFailures(afterSanitized, afterReport, afterCliches)
-      rounds.push({
+      const afterInspection = this.getRoleBoundaries().qualityGate.inspect(content)
+      const afterReport = afterInspection.report as ProseQualityReport
+      const afterCliches = afterInspection.clicheHits as ClicheHit[]
+      const afterFailures = afterInspection.failures
+      const revisionRound = revisionController.record({
         round,
         appliedPatches: successful.length,
         failedPatches: draft.appliedPatches.length - successful.length,
         remainingFailures: afterFailures,
         contentLength: content.replace(/\s/g, '').length,
       })
+      rounds.push(revisionRound)
       if (afterFailures.length === 0) {
         return finishWithMetrics('passed', [])
       }
@@ -2209,11 +2258,12 @@ export class NovelOrchestrator {
     }
     // 轮次耗尽或 patch 停滞 → blocked：返回当前修订稿与剩余问题，由调用方决定出口
     const finalSanitized = sanitizeNovelProse(content)
-    const finalReport = evaluateProseQuality(finalSanitized)
-    const finalCliches = scanCliches(finalSanitized)
+    const finalInspection = this.getRoleBoundaries().qualityGate.inspect(content)
+    const finalReport = finalInspection.report as ProseQualityReport
+    const finalCliches = finalInspection.clicheHits as ClicheHit[]
     return finishWithMetrics(
       'blocked',
-      this.scanQualityGateFailures(finalSanitized, finalReport, finalCliches),
+      finalInspection.failures,
     )
   }
 
@@ -4163,6 +4213,50 @@ export class NovelOrchestrator {
    * 工具参数 schema（SubmitNarrativeTaskParams）强制校验，orchestrator 直接读取
    * draft.task 作为 NarrativeTask，完全绕开正则解析。
    */
+
+  /**
+   * Compatibility accessor for lightweight tests that construct the orchestrator
+   * with Object.create and replace only the collaborators under test.
+   */
+  private getRoleBoundaries(): NovelRoleBoundaries {
+    if (this.roleBoundaries) return this.roleBoundaries
+    return {
+      director: {
+        plan: input => this.runAgent(
+          'director',
+          input.projectId,
+          input.chapterNumber,
+          input.prompt,
+          input.options,
+          input.overrides as RunAgentOverrides | undefined,
+        ),
+      },
+      writer: {
+        run: input => this.runAgent(
+          'writer',
+          input.projectId,
+          input.chapterNumber,
+          input.prompt,
+          input.options,
+          input.overrides as RunAgentOverrides | undefined,
+        ),
+      },
+      qualityGate: {
+        inspect: content => {
+          const sanitized = sanitizeNovelProse(content)
+          const report = evaluateProseQuality(sanitized)
+          const clicheHits = scanCliches(sanitized)
+          return {
+            report,
+            clicheHits,
+            failures: this.scanQualityGateFailures(sanitized, report, clicheHits),
+          }
+        },
+      },
+      revisionController: { create: maxRounds => new RevisionController(maxRounds) },
+      memory: { finalize: params => this.finalizer.finalize(params) },
+    }
+  }
 
   private requireRunContext(): CreationRunContext {
     const run = this.runStorage.getStore()

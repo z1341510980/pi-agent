@@ -5,6 +5,20 @@ import type { NovelPromptBuilder } from '../core/prompting/prompt-builder.js'
 import type { NovelStore } from '../core/novel-store.js'
 import type { NovelEngine } from '../core/novel-engine.js'
 import { buildP3ContextReport } from '../core/prompting/p3-context-report.js'
+import { Type } from 'typebox'
+import { standardResponseSchema } from './route-contracts.js'
+
+const projectParamsSchema = Type.Object({ projectId: Type.String({ minLength: 1 }) })
+const contextPreviewQuerySchema = Type.Object({
+  chapterNumber: Type.Optional(Type.String()),
+  agentType: Type.Optional(Type.String()),
+  mode: Type.Optional(Type.String()),
+}, { additionalProperties: true })
+const p3ContextQuerySchema = Type.Object({
+  chapterNumber: Type.Optional(Type.String()),
+  agentType: Type.Optional(Type.String()),
+  budgetTokens: Type.Optional(Type.String()),
+}, { additionalProperties: true })
 
 /**
  * context-preview 路由（P1 可观测性）。
@@ -33,6 +47,7 @@ export function createContextPreviewRoutes(
   routes.push({
     method: 'GET',
     path: '/projects/:projectId/context-preview',
+    schema: { params: projectParamsSchema, querystring: contextPreviewQuerySchema, response: standardResponseSchema },
     handler: async (request: any) => {
       const query = (request.query ?? {}) as Record<string, string | undefined>
       const chapterNumber = parseIntQuery(query.chapterNumber)
@@ -56,6 +71,7 @@ export function createContextPreviewRoutes(
   routes.push({
     method: 'GET',
     path: '/projects/:projectId/p3/context-report',
+    schema: { params: projectParamsSchema, querystring: p3ContextQuerySchema, response: standardResponseSchema },
     handler: async (request: any) => {
       const query = (request.query ?? {}) as Record<string, string | undefined>
       const chapterNumber = parseIntQuery(query.chapterNumber)

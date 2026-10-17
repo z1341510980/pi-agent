@@ -271,6 +271,8 @@ export interface DiscussionOptions {
   memberModel?: PluginSessionOptions['modelId']
   /** 本次群聊运行唯一插话隔离键。 */
   flowKey?: string
+  /** Durable creation run id used by ChapterFinalizer fact evidence links. */
+  runId?: string
   /** 本轮召集的独立蒸馏文风专家 ID；只作用于正文工种成员。 */
   styleExpertIds?: string[]
   /**

@@ -226,8 +226,8 @@ export function parseSingleBeatDraft(
 // 单章节拍此前依赖"模型自觉输出符合协议的 JSON 文本"（responseFormat: 'json' +
 // parseSingleBeatDraft），实测模型返回的 beat 对象会漂移（dramaticFunction 键缺失/
 // 大小写不一是轻的，键名改写直接打出"未知戏剧功能: undefined"）。改为闭包捕获式
-// 提交工具：参数结构由 provider 约束 + SDK 校验，文本解析降级为 provider 不支持
-// 工具时的兜底路径。
+// 提交工具：参数结构由 provider 约束 + SDK 校验；文本解析只作兜底，
+// 仅在 provider 不支持工具时使用。
 
 export interface ChapterBeatSubmitDraftHolder {
   /** 模型通过工具提交的单章节拍（未调用工具时为 undefined） */
@@ -587,7 +587,7 @@ export class VolumeBeatPlanner {
         systemPrompt,
         userMessage,
         // 挂载提交工具时不声明 responseFormat='json'（底座会注入 tool_choice='none'，
-        // 工具不会被调用，文本解析兜底也就没意义——与 submit_chapter_outline 同构）
+        // 工具不会被调用，文本解析只作兜底——与 submit_chapter_outline 同构）
         tools: [submitTool],
         modelId,
         temperature: directorAgent?.temperature ?? 0.4,

@@ -26,6 +26,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // agent-server 根目录（scripts/ 的上一级）
 const rootDir = join(__dirname, '..')
 const vitestEntry = join(rootDir, 'node_modules', 'vitest', 'vitest.mjs')
+// Third-party pi-actors defaults to ~/.pi/agent. In managed/CI environments that
+// location can be read-only; keep test runtime state inside the repository temp
+// area unless the caller explicitly selected a durable agent directory.
+const runtimeAgentDir = process.env.PI_CODING_AGENT_DIR ?? join(rootDir, 'tmp', 'pi-agent-runtime')
 
 const args = process.argv.slice(2)
 if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
@@ -52,7 +56,12 @@ const child = spawn(
   {
     stdio: 'inherit',
     cwd: rootDir,
-    env: { ...process.env, CI: 'true' },
+    env: {
+      ...process.env,
+      CI: 'true',
+      PI_CODING_AGENT_DIR: runtimeAgentDir,
+      PI_DATA_DIR: process.env.PI_DATA_DIR ?? runtimeAgentDir,
+    },
   },
 )
 
